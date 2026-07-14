@@ -108,12 +108,171 @@ impl Default for IndexConfig {
     }
 }
 
+/// Per-category app overrides for opening files from Blink.
+/// Values are desktop ids (e.g. `org.gnome.Loupe.desktop` or `org.gnome.Loupe`).
+/// Empty / missing = system default (`xdg-open`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OpenWithConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documents: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archives: Option<String>,
+}
+
+impl OpenWithConfig {
+    pub fn get(&self, cat: FileOpenCategory) -> Option<&str> {
+        let v = match cat {
+            FileOpenCategory::Images => self.images.as_deref(),
+            FileOpenCategory::Video => self.video.as_deref(),
+            FileOpenCategory::Audio => self.audio.as_deref(),
+            FileOpenCategory::Pdf => self.pdf.as_deref(),
+            FileOpenCategory::Markdown => self.markdown.as_deref(),
+            FileOpenCategory::Text => self.text.as_deref(),
+            FileOpenCategory::Documents => self.documents.as_deref(),
+            FileOpenCategory::Archives => self.archives.as_deref(),
+        };
+        v.filter(|s| !s.trim().is_empty())
+    }
+
+    pub fn set(&mut self, cat: FileOpenCategory, desktop_id: Option<String>) {
+        let val = desktop_id.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        });
+        match cat {
+            FileOpenCategory::Images => self.images = val,
+            FileOpenCategory::Video => self.video = val,
+            FileOpenCategory::Audio => self.audio = val,
+            FileOpenCategory::Pdf => self.pdf = val,
+            FileOpenCategory::Markdown => self.markdown = val,
+            FileOpenCategory::Text => self.text = val,
+            FileOpenCategory::Documents => self.documents = val,
+            FileOpenCategory::Archives => self.archives = val,
+        }
+    }
+}
+
+/// Coarse file kinds used for default-app overrides in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileOpenCategory {
+    Images,
+    Video,
+    Audio,
+    Pdf,
+    Markdown,
+    Text,
+    Documents,
+    Archives,
+}
+
+impl FileOpenCategory {
+    pub const ALL: &'static [FileOpenCategory] = &[
+        FileOpenCategory::Images,
+        FileOpenCategory::Video,
+        FileOpenCategory::Audio,
+        FileOpenCategory::Pdf,
+        FileOpenCategory::Markdown,
+        FileOpenCategory::Text,
+        FileOpenCategory::Documents,
+        FileOpenCategory::Archives,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Images => "Images",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Pdf => "PDF",
+            Self::Markdown => "Markdown",
+            Self::Text => "Plain text",
+            Self::Documents => "Documents",
+            Self::Archives => "Archives",
+        }
+    }
+
+    pub fn subtitle(self) -> &'static str {
+        match self {
+            Self::Images => "png, jpg, webp, gif, svg…",
+            Self::Video => "mp4, mkv, webm, mov…",
+            Self::Audio => "mp3, flac, ogg, wav…",
+            Self::Pdf => "pdf",
+            Self::Markdown => "md, markdown",
+            Self::Text => "txt, log, conf…",
+            Self::Documents => "odt, docx, rtf…",
+            Self::Archives => "zip, tar, 7z…",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Images => "image-x-generic",
+            Self::Video => "video-x-generic",
+            Self::Audio => "audio-x-generic",
+            Self::Pdf => "application-pdf",
+            Self::Markdown => "text-markdown",
+            Self::Text => "text-plain",
+            Self::Documents => "x-office-document",
+            Self::Archives => "package-x-generic",
+        }
+    }
+
+    /// Map a filesystem path to a category (files only; dirs → None).
+    pub fn from_path(path: &Path) -> Option<Self> {
+        if path.is_dir() {
+            return None;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" | "tif" | "tiff"
+            | "heic" | "heif" | "avif" | "jxl" => Some(Self::Images),
+            "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "wmv" | "flv" | "mpeg" | "mpg" => {
+                Some(Self::Video)
+            }
+            "mp3" | "flac" | "ogg" | "wav" | "m4a" | "aac" | "opus" | "wma" | "aiff" => {
+                Some(Self::Audio)
+            }
+            "pdf" => Some(Self::Pdf),
+            "md" | "markdown" | "mdown" | "mkd" => Some(Self::Markdown),
+            "txt" | "log" | "conf" | "cfg" | "ini" | "text" | "nfo" => Some(Self::Text),
+            "odt" | "doc" | "docx" | "rtf" | "odp" | "ppt" | "pptx" | "ods" | "xls" | "xlsx"
+            | "epub" | "csv" => Some(Self::Documents),
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" => {
+                Some(Self::Archives)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BlinkConfig {
     #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default)]
     pub index: IndexConfig,
+    /// Per-category default apps for opening files from Blink (not system MIME).
+    #[serde(default)]
+    pub open_with: OpenWithConfig,
 }
 
 fn default_version() -> u32 {

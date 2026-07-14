@@ -38,7 +38,28 @@ window.blink-window {{
   margin: 0;
 }}
 
-/* Panel shell — single card, no internal padding (sections handle it) */
+/* Transparent air around the card — keeps rounded corners + shadow inside
+   the square window surface (equal inset on all 4 sides). */
+window.blink-window .blink-frame {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 12px;
+  margin: 0;
+}}
+
+/* Kill default Adwaita fills that paint square under the rounded card. */
+window.blink-window > *,
+window.blink-window .blink-frame,
+window.blink-window .blink-frame > *,
+window.blink-window .blink-shell > *,
+window.blink-window .blink-shell stack,
+window.blink-window .blink-shell stack > * {{
+  background-image: none;
+}}
+
+/* Panel shell — single rounded card */
 window.blink-window .blink-shell {{
   background-color: {shell_bg};
   background-image: none;
@@ -49,6 +70,17 @@ window.blink-window .blink-shell {{
   margin: 0;
   /* Compact list width; Rust grows the window only when preview opens. */
   min-width: 720px;
+}}
+
+/* Stack / pages must stay transparent so only the shell paints the card. */
+window.blink-window .blink-shell > stack,
+window.blink-window .blink-shell > stack > * {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
 }}
 
 /* --- Header / search (Raycast: flush top, no boxed field) --- */

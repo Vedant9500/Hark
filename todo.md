@@ -58,14 +58,14 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 
 **Ask:** in Settings, pick which app opens each common file kind from Blink (images → image viewer, markdown/txt/pdf → editor/viewer, audio/video → media player), instead of always using the system generic handler (`xdg-open` / MIME default only).
 
-**Today:** `Action::OpenPath` → `providers::files::open_path` (system default only). No per-type override in `BlinkConfig` / settings UI.
+**Today:** `Action::OpenPath` → `open_path_with` + `BlinkConfig.open_with` (per-category desktop id; empty = `xdg-open`). Settings → **Default apps**.
 
 | Priority | Item | Notes | Status |
 |----------|------|-------|--------|
-| **P1** | Config: per-category default app | Extend `BlinkConfig` (e.g. `open_with: { images, video, audio, documents, text, markdown, pdf, archives, … }`) storing desktop-id or exec; empty = system default | pending |
-| **P1** | Settings page/section “Default apps” | New nav page (or section under Display/Files) with one row per category: label + current app + “Choose…” / “System default” | pending |
-| **P1** | App picker UI | List installed `.desktop` apps (reuse apps provider parse); filter by MIME/category when possible; allow reset to system default | pending |
-| **P1** | Open path honors overrides | `open_path` / engine activate: map path → category (ext + MIME) → launch chosen app with file URI/path; fallback `xdg-open` | pending |
+| **P1** | Config: per-category default app | `OpenWithConfig` on `BlinkConfig` (`images`, `video`, `audio`, `pdf`, `markdown`, `text`, `documents`, `archives`); desktop-id; empty = system default | **done** |
+| **P1** | Settings page/section “Default apps” | Nav page `defaults` — row per category: label + current app + Choose… / System | **done** |
+| **P1** | App picker UI | Modal list of installed GUI `.desktop` apps (`AppProvider::list_for_picker`); filter + system default row | **done** |
+| **P1** | Open path honors overrides | `FileOpenCategory::from_path` → `launch_with_desktop_id` (`gio::DesktopAppInfo`); fallback `xdg-open` | **done** |
 | **P2** | Per-extension overrides | Beyond coarse categories (e.g. `.svg` vs `.png`); only if category defaults feel too blunt | pending |
 | **P2** | “Open with…” on result / preview | Context or secondary action to pick once without changing default | pending |
 | **P2** | Detect system MIME default for display | Show “Loupe (system)” vs “Eye of GNOME (Blink)” so user knows what’s active | pending |

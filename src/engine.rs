@@ -59,6 +59,16 @@ impl Engine {
         self.config.clone()
     }
 
+    /// Installed GUI apps for Settings pickers (excludes terminal-only).
+    pub fn list_apps_for_picker(&self) -> Vec<crate::providers::apps::AppPickEntry> {
+        self.apps.list_for_picker()
+    }
+
+    /// Friendly name for a stored desktop id, if resolvable.
+    pub fn app_display_name(&self, desktop_id: &str) -> Option<String> {
+        self.apps.display_name_for_desktop_id(desktop_id)
+    }
+
     pub fn index_progress(&self) -> IndexProgress {
         self.files.index_progress()
     }
@@ -251,7 +261,8 @@ impl Engine {
             Action::OpenPath(path) => {
                 // Auto-promote parent project folder so future deep walks prefer it.
                 maybe_auto_promote_deep_root(self, path);
-                crate::providers::files::open_path(path);
+                let cfg = self.config.get();
+                crate::providers::files::open_path_with(path, Some(&cfg.open_with));
                 ExecuteOutcome::Launched
             }
             Action::OpenTerminal(path) => {

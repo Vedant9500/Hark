@@ -5,6 +5,7 @@ mod search;
 use crate::config::{pretty_path, ConfigStore};
 use crate::providers::{Action, Provider, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
+use gio::prelude::*;
 pub use index::{cache_bytes_on_disk, MAX_INDEX};
 use index::IndexState;
 use live_cache::LiveCache;
@@ -278,8 +279,96 @@ pub fn icon_for_path(path: &Path, is_dir: bool) -> &'static str {
     }
 }
 
-pub fn open_path(path: &Path) {
+/// Open `path`, honoring Blink per-category overrides when provided.
+/// Pass `None` / empty overrides to fall back to `xdg-open`.
+pub fn open_path_with(path: &Path, open_with: Option<&crate::config::OpenWithConfig>) {
+    if let Some(cfg) = open_with {
+        if let Some(cat) = crate::config::FileOpenCategory::from_path(path) {
+            if let Some(desktop_id) = cfg.get(cat) {
+                if launch_with_desktop_id(desktop_id, path) {
+                    return;
+                }
+            }
+        }
+    }
     let _ = Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Launch a `.desktop` app with `path` as a file argument.
+/// Returns true if a launch was attempted successfully.
+pub fn launch_with_desktop_id(desktop_id: &str, path: &Path) -> bool {
+    let id = desktop_id.trim();
+    if id.is_empty() {
+        return false;
+    }
+    // GDesktopAppInfo::new wants the desktop file id (usually ends with .desktop).
+    let candidates = if id.ends_with(".desktop") {
+        vec![id.to_string()]
+    } else {
+        vec![format!("{id}.desktop"), id.to_string()]
+    };
+
+    for cand in candidates {
+        if let Some(info) = gio::DesktopAppInfo::new(&cand) {
+            let file = gio::File::for_path(path);
+            let files = [file];
+            if info
+                .launch(&files, None::<&gio::AppLaunchContext>)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        // Fallback: absolute path to a .desktop file
+        let p = Path::new(&cand);
+        if p.is_file() {
+            if let Some(info) = gio::DesktopAppInfo::from_filename(p) {
+                let file = gio::File::for_path(path);
+                let files = [file];
+                if info
+                    .launch(&files, None::<&gio::AppLaunchContext>)
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Last resort: resolve via our app list is handled by caller; try gio default
+    // for the desktop id stem by scanning common dirs is expensive — fall through.
+    false
+}
+
+/// Resolve a friendly display name for a stored desktop id (settings UI).
+pub fn desktop_id_display_name(desktop_id: &str) -> Option<String> {
+    let id = desktop_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let candidates = if id.ends_with(".desktop") {
+        vec![id.to_string()]
+    } else {
+        vec![format!("{id}.desktop"), id.to_string()]
+    };
+    for cand in candidates {
+        if let Some(info) = gio::DesktopAppInfo::new(&cand) {
+            let name = info.name();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        let p = Path::new(&cand);
+        if p.is_file() {
+            if let Some(info) = gio::DesktopAppInfo::from_filename(p) {
+                let name = info.name();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn open_terminal_at(path: &Path) {

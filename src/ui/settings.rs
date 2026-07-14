@@ -1,4 +1,4 @@
-use crate::config::{discover_mounts, PathStyle};
+use crate::config::{discover_mounts, FileOpenCategory, PathStyle};
 use crate::engine::Engine;
 use gtk::gdk::Key;
 use gtk::glib;
@@ -7,7 +7,7 @@ use gtk::{
     Box as GtkBox, Button, CheckButton, Entry, EventControllerKey, Image, Label, ListBox,
     ListBoxRow, Orientation, ScrolledWindow, Separator,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,6 +38,12 @@ const CATEGORIES: &[Category] = &[
         icon: "edit-delete-symbolic",
     },
     Category {
+        id: "defaults",
+        title: "Default apps",
+        subtitle: "Open files with…",
+        icon: "preferences-desktop-default-applications-symbolic",
+    },
+    Category {
         id: "display",
         title: "Display",
         subtitle: "How paths are shown",
@@ -51,6 +57,8 @@ pub struct SettingsPanel {
     pub nav: ListBox,
     engine: Arc<Engine>,
     on_done: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    /// Closes in-panel overlays (e.g. default-app picker). Returns true if one was open.
+    dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>,
 }
 
 impl SettingsPanel {
@@ -59,6 +67,7 @@ impl SettingsPanel {
         root.add_css_class("blink-settings");
         root.set_hexpand(true);
         root.set_vexpand(true);
+        root.set_overflow(gtk::Overflow::Hidden);
 
         // Dual panel body (no bulky top chrome — Esc closes)
         let split = GtkBox::new(Orientation::Horizontal, 0);
@@ -214,6 +223,12 @@ impl SettingsPanel {
         let exclusions_page = build_exclusions_page(&engine);
         content_stack.add_named(&exclusions_page, Some("exclusions"));
 
+        let dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>> =
+            Rc::new(RefCell::new(None));
+
+        let defaults_page = build_defaults_page(&engine, dismiss_overlay.clone());
+        content_stack.add_named(&defaults_page, Some("defaults"));
+
         let display_page = build_display_page(&engine, &cfg);
         content_stack.add_named(&display_page, Some("display"));
 
@@ -223,7 +238,12 @@ impl SettingsPanel {
 
         {
             let content_stack = content_stack.clone();
+            let dismiss_overlay = dismiss_overlay.clone();
             nav.connect_row_selected(move |_, row| {
+                // Leaving Default apps closes any in-page picker.
+                if let Some(cb) = dismiss_overlay.borrow().as_ref() {
+                    let _ = cb();
+                }
                 if let Some(row) = row {
                     let id = row.widget_name();
                     if !id.is_empty() {
@@ -287,11 +307,33 @@ impl SettingsPanel {
             nav,
             engine,
             on_done,
+            dismiss_overlay,
         }
     }
 
     pub fn set_on_done<F: Fn() + 'static>(&self, f: F) {
         *self.on_done.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Close nested settings UI (app picker, etc.). `true` if something was dismissed.
+    pub fn dismiss_overlay(&self) -> bool {
+        self.dismiss_overlay
+            .borrow()
+            .as_ref()
+            .map(|cb| cb())
+            .unwrap_or(false)
+    }
+
+    /// Cloneable handle for window-level key capture (Esc).
+    pub fn dismiss_overlay_handle(&self) -> impl Fn() -> bool + 'static {
+        let dismiss = self.dismiss_overlay.clone();
+        move || {
+            dismiss
+                .borrow()
+                .as_ref()
+                .map(|cb| cb())
+                .unwrap_or(false)
+        }
     }
 
     pub fn refresh_status(&self) {
@@ -700,6 +742,396 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     body.append(&list);
     body.append(&add_row);
     outer
+}
+
+fn build_defaults_page(
+    engine: &Arc<Engine>,
+    dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>,
+) -> GtkBox {
+    let (outer, body) = page_shell(
+        "preferences-desktop-default-applications-symbolic",
+        "Default apps",
+        "Choose which app Blink uses for each file kind. Empty means system default (xdg-open).",
+    );
+
+    // Host stack: list page ↔ in-panel app picker (no extra Window — layer-shell exclusive
+    // keyboard grab cannot focus a separate modal, which deadlocks Esc / interaction).
+    let host = gtk::Stack::new();
+    host.add_css_class("blink-settings-defaults-host");
+    host.set_hexpand(true);
+    host.set_vexpand(true);
+    host.set_transition_type(gtk::StackTransitionType::Crossfade);
+    host.set_transition_duration(100);
+
+    let list_page = GtkBox::new(Orientation::Vertical, 0);
+    list_page.set_hexpand(true);
+    list_page.set_vexpand(true);
+
+    // Move page header + body content under list_page by re-parenting from outer.
+    // `outer` currently has header then scroll(body). Keep structure: outer → host → pages.
+    // Simpler: put group/card/hint into list_page, host into body.
+    list_page.append(&group_label("Open with"));
+
+    let card = GtkBox::new(Orientation::Vertical, 0);
+    card.add_css_class("blink-settings-card");
+
+    let host_rc = Rc::new(host.clone());
+    let picker_open = Rc::new(Cell::new(false));
+
+    {
+        let host = host.clone();
+        let picker_open = picker_open.clone();
+        *dismiss_overlay.borrow_mut() = Some(Box::new(move || {
+            if picker_open.get() {
+                picker_open.set(false);
+                // Drop any previous picker page named "picker"
+                if let Some(child) = host.child_by_name("picker") {
+                    host.remove(&child);
+                }
+                host.set_visible_child_name("list");
+                true
+            } else {
+                false
+            }
+        }));
+    }
+
+    for (i, cat) in FileOpenCategory::ALL.iter().enumerate() {
+        if i > 0 {
+            card.append(&Separator::new(Orientation::Horizontal));
+        }
+        card.append(&defaults_category_row(
+            engine,
+            *cat,
+            host_rc.clone(),
+            picker_open.clone(),
+        ));
+    }
+    list_page.append(&card);
+
+    let hint = Label::new(Some(
+        "These overrides apply only inside Blink — they do not change system MIME defaults.",
+    ));
+    hint.add_css_class("blink-hint");
+    hint.set_halign(gtk::Align::Start);
+    hint.set_wrap(true);
+    hint.set_margin_top(10);
+    list_page.append(&hint);
+
+    host.add_named(&list_page, Some("list"));
+    host.set_visible_child_name("list");
+    body.append(&host);
+
+    outer
+}
+
+fn defaults_category_row(
+    engine: &Arc<Engine>,
+    cat: FileOpenCategory,
+    host: Rc<gtk::Stack>,
+    picker_open: Rc<Cell<bool>>,
+) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 10);
+    row.add_css_class("blink-settings-list-row");
+    row.set_hexpand(true);
+
+    let icon = Image::from_icon_name(cat.icon());
+    icon.set_pixel_size(18);
+    icon.set_valign(gtk::Align::Center);
+
+    let text = GtkBox::new(Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    text.set_halign(gtk::Align::Start);
+    text.set_valign(gtk::Align::Center);
+
+    let title = Label::new(Some(cat.label()));
+    title.add_css_class("blink-settings-list-label");
+    title.set_halign(gtk::Align::Start);
+    title.set_xalign(0.0);
+
+    let current = engine.config().get().open_with.get(cat).map(|s| s.to_string());
+    let sub_text = format_open_with_label(engine, current.as_deref());
+    let sub = Label::new(Some(&sub_text));
+    sub.add_css_class("blink-settings-list-sub");
+    sub.set_halign(gtk::Align::Start);
+    sub.set_xalign(0.0);
+    sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    sub.set_max_width_chars(36);
+    sub.set_tooltip_text(Some(cat.subtitle()));
+
+    text.append(&title);
+    text.append(&sub);
+
+    let choose = Button::with_label("Choose…");
+    choose.add_css_class("blink-settings-btn");
+    choose.set_valign(gtk::Align::Center);
+
+    let reset = Button::with_label("System");
+    reset.add_css_class("blink-settings-btn");
+    reset.set_valign(gtk::Align::Center);
+    reset.set_tooltip_text(Some("Use system default (xdg-open)"));
+    reset.set_sensitive(current.is_some());
+
+    {
+        let engine = engine.clone();
+        let sub = sub.clone();
+        let reset = reset.clone();
+        let host = host.clone();
+        let picker_open = picker_open.clone();
+        choose.connect_clicked(move |_| {
+            show_app_picker(
+                host.clone(),
+                picker_open.clone(),
+                engine.clone(),
+                cat,
+                sub.clone(),
+                reset.clone(),
+            );
+        });
+    }
+    {
+        let engine = engine.clone();
+        let sub = sub.clone();
+        let reset_btn = reset.clone();
+        reset.connect_clicked(move |_| {
+            engine.config().update(|c| c.open_with.set(cat, None));
+            sub.set_text("System default");
+            reset_btn.set_sensitive(false);
+        });
+    }
+
+    row.append(&icon);
+    row.append(&text);
+    row.append(&choose);
+    row.append(&reset);
+    row
+}
+
+fn format_open_with_label(engine: &Engine, desktop_id: Option<&str>) -> String {
+    match desktop_id {
+        None => "System default".into(),
+        Some(id) => match engine.app_display_name(id) {
+            Some(name) => format!("{name} (Blink)"),
+            None => format!("{id} (Blink)"),
+        },
+    }
+}
+
+fn show_app_picker(
+    host: Rc<gtk::Stack>,
+    picker_open: Rc<Cell<bool>>,
+    engine: Arc<Engine>,
+    cat: FileOpenCategory,
+    status_label: Label,
+    reset_btn: Button,
+) {
+    // Replace any existing picker page.
+    if let Some(child) = host.child_by_name("picker") {
+        host.remove(&child);
+    }
+
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.add_css_class("blink-settings-picker");
+    root.set_hexpand(true);
+    root.set_vexpand(true);
+
+    let top = GtkBox::new(Orientation::Horizontal, 8);
+    top.set_margin_bottom(8);
+
+    let back = Button::with_label("← Back");
+    back.add_css_class("blink-settings-btn");
+    back.set_halign(gtk::Align::Start);
+
+    let head = Label::new(Some(&format!(
+        "Open {} with…",
+        cat.label().to_ascii_lowercase()
+    )));
+    head.add_css_class("blink-settings-page-title");
+    head.set_halign(gtk::Align::Start);
+    head.set_hexpand(true);
+    head.set_xalign(0.0);
+
+    top.append(&back);
+    top.append(&head);
+
+    let sub = Label::new(Some(cat.subtitle()));
+    sub.add_css_class("blink-hint");
+    sub.set_halign(gtk::Align::Start);
+    sub.set_margin_bottom(8);
+
+    let search = Entry::builder()
+        .placeholder_text("Filter apps…")
+        .hexpand(true)
+        .build();
+    search.add_css_class("blink-settings-search");
+    search.set_primary_icon_name(Some("system-search-symbolic"));
+    search.set_margin_bottom(8);
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .vexpand(true)
+        .hexpand(true)
+        .min_content_height(220)
+        .build();
+
+    let list = ListBox::new();
+    list.add_css_class("blink-settings-nav");
+    list.set_selection_mode(gtk::SelectionMode::Single);
+    list.set_activate_on_single_click(true);
+
+    // System default row first
+    {
+        let row = ListBoxRow::new();
+        row.add_css_class("blink-settings-nav-row");
+        row.set_widget_name("__system__");
+        let item = GtkBox::new(Orientation::Horizontal, 10);
+        item.set_margin_start(10);
+        item.set_margin_end(10);
+        item.set_margin_top(8);
+        item.set_margin_bottom(8);
+        let icon = Image::from_icon_name("emblem-system-symbolic");
+        icon.set_pixel_size(18);
+        let name = Label::new(Some("System default"));
+        name.add_css_class("blink-settings-nav-title");
+        name.set_halign(gtk::Align::Start);
+        name.set_hexpand(true);
+        name.set_xalign(0.0);
+        item.append(&icon);
+        item.append(&name);
+        row.set_child(Some(&item));
+        list.append(&row);
+    }
+
+    let apps = engine.list_apps_for_picker();
+    for app in &apps {
+        let row = ListBoxRow::new();
+        row.add_css_class("blink-settings-nav-row");
+        row.set_widget_name(&app.desktop_id);
+        row.set_tooltip_text(Some(&format!(
+            "{} · {}",
+            app.name,
+            if app.comment.is_empty() {
+                app.desktop_id.as_str()
+            } else {
+                app.comment.as_str()
+            }
+        )));
+
+        let item = GtkBox::new(Orientation::Horizontal, 10);
+        item.set_margin_start(10);
+        item.set_margin_end(10);
+        item.set_margin_top(7);
+        item.set_margin_bottom(7);
+
+        let icon = if app.icon.is_empty() {
+            Image::from_icon_name("application-x-executable")
+        } else {
+            Image::from_icon_name(&app.icon)
+        };
+        icon.set_pixel_size(18);
+        icon.set_valign(gtk::Align::Center);
+
+        let name = Label::new(Some(&app.name));
+        name.add_css_class("blink-settings-nav-title");
+        name.set_halign(gtk::Align::Start);
+        name.set_hexpand(true);
+        name.set_xalign(0.0);
+
+        item.append(&icon);
+        item.append(&name);
+        row.set_child(Some(&item));
+        list.append(&row);
+    }
+
+    {
+        let list = list.clone();
+        search.connect_changed(move |entry| {
+            let q = entry.text().to_lowercase();
+            let mut child = list.first_child();
+            while let Some(w) = child {
+                let next = w.next_sibling();
+                if let Ok(row) = w.downcast::<ListBoxRow>() {
+                    let id = row.widget_name().to_string();
+                    if id == "__system__" {
+                        row.set_visible(true);
+                    } else {
+                        let tip = row.tooltip_text().unwrap_or_default().to_lowercase();
+                        let visible =
+                            q.is_empty() || tip.contains(&q) || id.to_lowercase().contains(&q);
+                        row.set_visible(visible);
+                    }
+                }
+                child = next;
+            }
+        });
+    }
+
+    let close_picker = {
+        let host = host.clone();
+        let picker_open = picker_open.clone();
+        Rc::new(move || {
+            picker_open.set(false);
+            if let Some(child) = host.child_by_name("picker") {
+                host.remove(&child);
+            }
+            host.set_visible_child_name("list");
+        })
+    };
+
+    {
+        let engine = engine.clone();
+        let status_label = status_label.clone();
+        let reset_btn = reset_btn.clone();
+        let close_picker = close_picker.clone();
+        list.connect_row_activated(move |_, row| {
+            let id = row.widget_name().to_string();
+            if id == "__system__" {
+                engine.config().update(|c| c.open_with.set(cat, None));
+                status_label.set_text("System default");
+                reset_btn.set_sensitive(false);
+            } else {
+                let desktop_id = id.clone();
+                engine
+                    .config()
+                    .update(|c| c.open_with.set(cat, Some(desktop_id.clone())));
+                status_label.set_text(&format_open_with_label(&engine, Some(&desktop_id)));
+                reset_btn.set_sensitive(true);
+            }
+            close_picker();
+        });
+    }
+
+    {
+        let close_picker = close_picker.clone();
+        back.connect_clicked(move |_| close_picker());
+    }
+
+    // Esc on the picker closes back to the list (does not leave Settings).
+    {
+        let close_picker = close_picker.clone();
+        let key = EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        key.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == Key::Escape {
+                close_picker();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        root.add_controller(key);
+    }
+
+    scroll.set_child(Some(&list));
+    root.append(&top);
+    root.append(&sub);
+    root.append(&search);
+    root.append(&scroll);
+
+    host.add_named(&root, Some("picker"));
+    host.set_visible_child_name("picker");
+    picker_open.set(true);
+    search.grab_focus();
 }
 
 fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {

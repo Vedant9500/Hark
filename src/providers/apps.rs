@@ -79,6 +79,56 @@ impl AppProvider {
         let apps = self.apps.read().unwrap();
         apps.iter().take(limit).map(|a| to_result(a, 1000)).collect()
     }
+
+    /// GUI apps suitable for the Settings "Default apps" picker.
+    /// Filters out terminal-only entries; keeps NoDisplay=false apps already loaded.
+    pub fn list_for_picker(&self) -> Vec<AppPickEntry> {
+        let apps = self.apps.read().unwrap();
+        apps.iter()
+            .filter(|a| !a.terminal && !a.exec.is_empty())
+            .map(|a| AppPickEntry {
+                desktop_id: desktop_file_id(&a.desktop_path, &a.id),
+                name: a.name.clone(),
+                icon: a.icon.clone(),
+                comment: a.comment.clone(),
+            })
+            .collect()
+    }
+
+    /// Resolve a stored desktop id to a friendly name (uses loaded app list first).
+    pub fn display_name_for_desktop_id(&self, desktop_id: &str) -> Option<String> {
+        let key = normalize_desktop_id(desktop_id);
+        let apps = self.apps.read().unwrap();
+        for a in apps.iter() {
+            let id = desktop_file_id(&a.desktop_path, &a.id);
+            if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
+                return Some(a.name.clone());
+            }
+        }
+        crate::providers::files::desktop_id_display_name(desktop_id)
+    }
+}
+
+/// Lightweight app descriptor for settings UI (no launch plumbing).
+#[derive(Debug, Clone)]
+pub struct AppPickEntry {
+    /// Preferred desktop file id for GDesktopAppInfo (e.g. `org.gnome.Loupe.desktop`).
+    pub desktop_id: String,
+    pub name: String,
+    pub icon: String,
+    pub comment: String,
+}
+
+fn desktop_file_id(path: &Path, stem: &str) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{stem}.desktop"))
+}
+
+fn normalize_desktop_id(id: &str) -> String {
+    let id = id.trim().to_ascii_lowercase();
+    id.strip_suffix(".desktop").unwrap_or(&id).to_string()
 }
 
 impl Provider for AppProvider {

@@ -27,6 +27,9 @@ use std::sync::Arc;
 /// horizontal space from the list column instead.
 const WINDOW_WIDTH: i32 = 720;
 const WINDOW_MAX_HEIGHT: i32 = 520;
+/// Transparent inset around the rounded shell so corners/shadow aren't clipped
+/// by the square window surface (looks like square corners / padding glitch).
+const SHELL_INSET: i32 = 12;
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -59,12 +62,22 @@ impl Launcher {
             .build();
 
         window.set_hide_on_close(true);
-        // Fixed outer size — preview pane shows/hides inside this frame.
-        window.set_default_size(WINDOW_WIDTH, -1);
-        window.set_size_request(WINDOW_WIDTH, -1);
+        // Outer window is slightly larger than the card so rounded corners + shadow
+        // are not clipped by a square surface (reads as "padding" / square corners).
+        let outer_w = WINDOW_WIDTH + SHELL_INSET * 2;
+        window.set_default_size(outer_w, -1);
+        window.set_size_request(outer_w, -1);
         setup_window_chrome(&window);
 
         let theme = ThemeManager::new();
+
+        // Transparent frame: provides equal inset on all 4 sides.
+        let frame = GtkBox::new(Orientation::Vertical, 0);
+        frame.add_css_class("blink-frame");
+        frame.set_hexpand(true);
+        frame.set_vexpand(true);
+        frame.set_halign(gtk::Align::Fill);
+        frame.set_valign(gtk::Align::Fill);
 
         let shell = GtkBox::new(Orientation::Vertical, 0);
         shell.add_css_class("blink-shell");
@@ -73,6 +86,8 @@ impl Launcher {
         shell.set_halign(gtk::Align::Fill);
         shell.set_valign(gtk::Align::Start);
         shell.set_size_request(WINDOW_WIDTH, -1);
+        // Clip children to the rounded shell allocation (border-radius aware).
+        shell.set_overflow(gtk::Overflow::Hidden);
 
         let stack = Stack::new();
         stack.set_hexpand(true);
@@ -212,7 +227,8 @@ impl Launcher {
         stack.set_visible_child_name("search");
 
         shell.append(&stack);
-        window.set_child(Some(&shell));
+        frame.append(&shell);
+        window.set_child(Some(&frame));
 
         let results: Rc<RefCell<Vec<SearchResult>>> = Rc::new(RefCell::new(Vec::new()));
         let selected: Rc<Cell<usize>> = Rc::new(Cell::new(0));
@@ -366,11 +382,19 @@ impl Launcher {
             let in_settings = in_settings.clone();
             let close_settings = close_settings.clone();
             let open_settings = open_settings.clone();
+            let dismiss_settings_overlay = {
+                let settings_dismiss = settings.dismiss_overlay_handle();
+                settings_dismiss
+            };
 
             let settings_nav = settings.nav.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, state| {
                 if in_settings.get() {
                     if keyval == Key::Escape {
+                        // Nested overlays (default-app picker) first, then leave Settings.
+                        if dismiss_settings_overlay() {
+                            return glib::Propagation::Stop;
+                        }
                         close_settings();
                         return glib::Propagation::Stop;
                     }
