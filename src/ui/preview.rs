@@ -271,10 +271,6 @@ impl PreviewPanel {
         self.sep.set_visible(visible);
     }
 
-    pub fn is_visible(&self) -> bool {
-        self.root.is_visible()
-    }
-
     pub fn clear(&self) {
         self.cancel_debounce();
         self.gen.set(self.gen.get().wrapping_add(1));

@@ -23,15 +23,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Compact single-column launcher width (list only).
+/// Compact fixed outer width. Preview never grows the window — it takes
+/// horizontal space from the list column instead.
 const WINDOW_WIDTH: i32 = 720;
-/// Extra width reserved for the media preview pane + separator.
-const WINDOW_PREVIEW_EXTRA: i32 = preview::PREVIEW_WIDTH + 24;
 const WINDOW_MAX_HEIGHT: i32 = 520;
 
 pub struct Launcher {
     window: ApplicationWindow,
-    shell: GtkBox,
     search: Entry,
     list: ListBox,
     empty: Label,
@@ -61,7 +59,7 @@ impl Launcher {
             .build();
 
         window.set_hide_on_close(true);
-        // Start compact; expands only while a media preview is open.
+        // Fixed outer size — preview pane shows/hides inside this frame.
         window.set_default_size(WINDOW_WIDTH, -1);
         window.set_size_request(WINDOW_WIDTH, -1);
         setup_window_chrome(&window);
@@ -231,8 +229,6 @@ impl Launcher {
             let footer_action = footer_action.clone();
             let footer_term = footer_term.clone();
             let preview = preview.clone();
-            let window = window.clone();
-            let shell = shell.clone();
             let deep_gen = deep_gen.clone();
             let search_for_deep = search.clone();
             let drag_session = drag_session.clone();
@@ -248,8 +244,6 @@ impl Launcher {
                     &footer_action,
                     &footer_term,
                     &preview,
-                    &window,
-                    &shell,
                     &deep_gen,
                     &search_for_deep,
                     &drag_session,
@@ -286,8 +280,6 @@ impl Launcher {
             let footer_action = footer_action.clone();
             let footer_term = footer_term.clone();
             let preview = preview.clone();
-            let window = window.clone();
-            let shell = shell.clone();
             let deep_gen = deep_gen.clone();
             let drag_session = drag_session.clone();
             Rc::new(move || {
@@ -304,8 +296,6 @@ impl Launcher {
                     &footer_action,
                     &footer_term,
                     &preview,
-                    &window,
-                    &shell,
                     &deep_gen,
                     &search,
                     &drag_session,
@@ -342,8 +332,6 @@ impl Launcher {
             let footer_action = footer_action.clone();
             let footer_term = footer_term.clone();
             let preview = preview.clone();
-            let window = window.clone();
-            let shell = shell.clone();
             list.connect_row_selected(move |_, row| {
                 if let Some(row) = row {
                     let idx = row.index() as usize;
@@ -351,7 +339,6 @@ impl Launcher {
                     update_footer(&results, idx, &footer_action, &footer_term);
                     let item = results.borrow().get(idx).cloned();
                     preview.update(item.as_ref());
-                    apply_window_width(&window, &shell, preview.is_visible());
                 }
             });
         }
@@ -523,7 +510,6 @@ impl Launcher {
 
         Self {
             window,
-            shell,
             search,
             list,
             empty,
@@ -566,15 +552,11 @@ impl Launcher {
             &self.footer_action,
             &self.footer_term,
             &self.preview,
-            &self.window,
-            &self.shell,
             &self.deep_gen,
             &self.search,
             &self.drag_session,
         );
         self.settings.refresh_status();
-        // Always open compact; preview may expand after selection.
-        apply_window_width(&self.window, &self.shell, self.preview.is_visible());
         self.window.set_visible(true);
         self.window.present();
         self.search.grab_focus();
@@ -627,8 +609,6 @@ fn refresh_results(
     footer_action: &Label,
     footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
-    window: &ApplicationWindow,
-    shell: &GtkBox,
     deep_gen: &Rc<Cell<u64>>,
     search_entry: &Entry,
     drag_session: &DragSession,
@@ -668,7 +648,6 @@ fn refresh_results(
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
     }
-    apply_window_width(window, shell, preview.is_visible());
 
     // Async live deep: schedule only when index results are weak / specific query.
     let q = query.to_string();
@@ -688,8 +667,6 @@ fn refresh_results(
     let footer_action = footer_action.clone();
     let footer_term = footer_term.clone();
     let preview = preview.clone();
-    let window = window.clone();
-    let shell = shell.clone();
     let deep_gen = deep_gen.clone();
     let search_entry = search_entry.clone();
     let drag_session = drag_session.clone();
@@ -724,8 +701,6 @@ fn refresh_results(
                     &footer_action,
                     &footer_term,
                     &preview,
-                    &window,
-                    &shell,
                     &drag_session,
                 );
                 glib::ControlFlow::Break
@@ -747,8 +722,6 @@ fn apply_deep_hits(
     footer_action: &Label,
     footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
-    window: &ApplicationWindow,
-    shell: &GtkBox,
     drag_session: &DragSession,
 ) {
     // Rebuilding rows would cancel an active drag.
@@ -811,7 +784,6 @@ fn apply_deep_hits(
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
     }
-    apply_window_width(window, shell, preview.is_visible());
 }
 
 fn kind_rank_ui(k: ResultKind) -> u8 {
@@ -822,18 +794,6 @@ fn kind_rank_ui(k: ResultKind) -> u8 {
         ResultKind::Folder => 3,
         ResultKind::File => 4,
     }
-}
-
-/// Keep the launcher compact by default; expand only while the media preview is open.
-fn apply_window_width(window: &ApplicationWindow, shell: &GtkBox, preview_visible: bool) {
-    let width = if preview_visible {
-        WINDOW_WIDTH + WINDOW_PREVIEW_EXTRA
-    } else {
-        WINDOW_WIDTH
-    };
-    window.set_default_size(width, -1);
-    window.set_size_request(width, -1);
-    shell.set_size_request(width, -1);
 }
 
 fn setup_window_chrome(window: &ApplicationWindow) {
