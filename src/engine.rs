@@ -244,7 +244,7 @@ impl Engine {
 
     pub fn execute(&self, action: &Action) -> ExecuteOutcome {
         match action {
-            Action::LaunchApp { exec, terminal } => {
+            Action::LaunchApp { exec, terminal, .. } => {
                 crate::providers::apps::launch_app(exec, *terminal);
                 ExecuteOutcome::Launched
             }

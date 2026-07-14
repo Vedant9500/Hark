@@ -1,3 +1,4 @@
+use super::dnd::{DragSession, PathDragBinding};
 use crate::providers::{Action, ResultKind, SearchResult};
 use gtk::gdk::{self, Texture};
 use gtk::gdk_pixbuf::Pixbuf;
@@ -107,10 +108,12 @@ pub struct PreviewPanel {
     /// Pending / in-flight decode — always the latest selection only.
     inflight: Rc<RefCell<Option<DecodeRequest>>>,
     worker_busy: Rc<Cell<bool>>,
+    /// Drag source bound to the current preview file path.
+    drag: PathDragBinding,
 }
 
 impl PreviewPanel {
-    pub fn new() -> Self {
+    pub fn new(drag_session: DragSession) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("blink-preview");
         root.set_size_request(PREVIEW_WIDTH, -1);
@@ -227,6 +230,10 @@ impl PreviewPanel {
         stack.set_visible_child_name("icon");
         root.append(&stack);
 
+        // Drag the underlying file from the whole preview panel (image or icon view).
+        let drag = PathDragBinding::new(drag_session);
+        drag.attach(&root);
+
         Self {
             root,
             sep,
@@ -247,6 +254,7 @@ impl PreviewPanel {
             debounce: Rc::new(RefCell::new(None)),
             inflight: Rc::new(RefCell::new(None)),
             worker_busy: Rc::new(Cell::new(false)),
+            drag,
         }
     }
 
@@ -272,6 +280,7 @@ impl PreviewPanel {
         self.gen.set(self.gen.get().wrapping_add(1));
         *self.last_path.borrow_mut() = None;
         *self.inflight.borrow_mut() = None;
+        self.drag.set_path(None);
         self.picture.set_paintable(Option::<&gdk::Paintable>::None);
         self.stack.set_visible_child_name("icon");
         self.set_panel_visible(false);
@@ -311,6 +320,8 @@ impl PreviewPanel {
 
         let meta = file_meta(&path);
         self.set_panel_visible(true);
+        // Always offer the real file path for DnD from the preview.
+        self.drag.set_path(Some(path.clone()));
 
         if media == MediaKind::Image {
             self.queue_image_load(path, item.title.clone(), meta);

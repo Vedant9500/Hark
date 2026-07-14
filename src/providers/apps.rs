@@ -20,6 +20,8 @@ struct DesktopApp {
     icon: String,
     terminal: bool,
     no_display: bool,
+    /// Absolute path to the `.desktop` file (for drag-and-drop).
+    desktop_path: PathBuf,
 }
 
 pub struct AppProvider {
@@ -158,6 +160,7 @@ fn to_result(app: &DesktopApp, score: i64) -> SearchResult {
         action: Action::LaunchApp {
             exec: app.exec.clone(),
             terminal: app.terminal,
+            desktop_path: Some(app.desktop_path.clone()),
         },
         conversion: None,
     }
@@ -246,6 +249,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         icon,
         terminal,
         no_display,
+        desktop_path: path.to_path_buf(),
     })
 }
 

@@ -1,8 +1,13 @@
+use super::dnd::{attach_path_drag, DragSession};
 use crate::providers::{ResultKind, SearchResult};
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Label, ListBoxRow, Orientation};
 
-pub(crate) fn build_row(item: &SearchResult, _selected: bool) -> ListBoxRow {
+pub(crate) fn build_row(
+    item: &SearchResult,
+    _selected: bool,
+    drag_session: &DragSession,
+) -> ListBoxRow {
     let row = ListBoxRow::new();
     row.set_activatable(true);
 
@@ -10,6 +15,11 @@ pub(crate) fn build_row(item: &SearchResult, _selected: bool) -> ListBoxRow {
         row.add_css_class("blink-conv-row");
         row.set_child(Some(&build_conversion_card(conv, item.kind)));
         return row;
+    }
+
+    // Files, folders, and apps (via .desktop path) can be dragged out.
+    if let Some(path) = item.action.drag_path() {
+        attach_path_drag(&row, path, drag_session);
     }
 
     let hbox = GtkBox::new(Orientation::Horizontal, 10);

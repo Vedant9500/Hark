@@ -14,9 +14,10 @@ pub(crate) fn update_footer(
     let (label, show_term) = match item.as_ref().map(|i| i.kind) {
         Some(ResultKind::Calc) | Some(ResultKind::Conversion) => ("Copy Result", false),
         Some(ResultKind::Command) => ("Open", false),
-        Some(ResultKind::Folder) => ("Open", true),
-        Some(ResultKind::File) => ("Open", true),
-        Some(ResultKind::App) => ("Open", false),
+        // Files / folders / apps are also draggable (drag path out of the row).
+        Some(ResultKind::Folder) => ("Open · Drag", true),
+        Some(ResultKind::File) => ("Open · Drag", true),
+        Some(ResultKind::App) => ("Open · Drag", false),
         None => ("Open", false),
     };
     footer_action.set_text(label);

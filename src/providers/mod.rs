@@ -40,11 +40,27 @@ pub struct SearchResult {
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    LaunchApp { exec: String, terminal: bool },
+    /// Launch a `.desktop` app. `desktop_path` is the on-disk entry (for DnD).
+    LaunchApp {
+        exec: String,
+        terminal: bool,
+        desktop_path: Option<PathBuf>,
+    },
     OpenPath(PathBuf),
     OpenTerminal(PathBuf),
     Copy(String),
     OpenSettings,
+}
+
+impl Action {
+    /// Filesystem path that can be dragged to other apps, if any.
+    pub fn drag_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Action::OpenPath(p) | Action::OpenTerminal(p) => Some(p.as_path()),
+            Action::LaunchApp { desktop_path, .. } => desktop_path.as_deref(),
+            Action::Copy(_) | Action::OpenSettings => None,
+        }
+    }
 }
 
 pub trait Provider: Send + Sync {

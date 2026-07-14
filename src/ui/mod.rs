@@ -1,3 +1,4 @@
+mod dnd;
 mod footer;
 mod preview;
 mod rows;
@@ -6,6 +7,8 @@ mod settings;
 use crate::engine::{Engine, ExecuteOutcome};
 use crate::providers::{Action, ResultKind, SearchResult};
 use crate::theme::ThemeManager;
+use dnd::DragSession;
+use footer::{action_chip, action_chip_button, footer_divider, keycap_label, update_footer};
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
@@ -13,7 +16,6 @@ use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Entry, EventControllerKey, Label, ListBox,
     Orientation, PolicyType, ScrolledWindow, Stack,
 };
-use footer::{action_chip, action_chip_button, footer_divider, keycap_label, update_footer};
 use preview::PreviewPanel;
 use rows::build_row;
 use settings::SettingsPanel;
@@ -44,6 +46,7 @@ pub struct Launcher {
     footer_term: GtkBox,
     preview: Rc<PreviewPanel>,
     deep_gen: Rc<Cell<u64>>,
+    drag_session: DragSession,
     _theme: Rc<ThemeManager>,
 }
 
@@ -135,7 +138,11 @@ impl Launcher {
         list_col.append(&scroll);
         list_col.append(&empty);
 
-        let preview = Rc::new(PreviewPanel::new());
+        // Shared with rows + preview so focus-loss hide is suppressed mid-drag.
+        let ignore_focus_loss = Rc::new(Cell::new(false));
+        let drag_session = DragSession::new(ignore_focus_loss.clone());
+
+        let preview = Rc::new(PreviewPanel::new(drag_session.clone()));
         // Preview pane only appears for media (images / video / audio).
 
         body.append(&list_col);
@@ -209,7 +216,6 @@ impl Launcher {
 
         let results: Rc<RefCell<Vec<SearchResult>>> = Rc::new(RefCell::new(Vec::new()));
         let selected: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let ignore_focus_loss = Rc::new(Cell::new(false));
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
@@ -227,6 +233,7 @@ impl Launcher {
             let shell = shell.clone();
             let deep_gen = deep_gen.clone();
             let search_for_deep = search.clone();
+            let drag_session = drag_session.clone();
             search.connect_changed(move |entry| {
                 let q = entry.text().to_string();
                 refresh_results(
@@ -243,6 +250,7 @@ impl Launcher {
                     &shell,
                     &deep_gen,
                     &search_for_deep,
+                    &drag_session,
                 );
             });
         }
@@ -279,6 +287,7 @@ impl Launcher {
             let window = window.clone();
             let shell = shell.clone();
             let deep_gen = deep_gen.clone();
+            let drag_session = drag_session.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
@@ -297,6 +306,7 @@ impl Launcher {
                     &shell,
                     &deep_gen,
                     &search,
+                    &drag_session,
                 );
             })
         };
@@ -526,6 +536,7 @@ impl Launcher {
             footer_term,
             preview,
             deep_gen,
+            drag_session,
             _theme: theme,
         }
     }
@@ -557,6 +568,7 @@ impl Launcher {
             &self.shell,
             &self.deep_gen,
             &self.search,
+            &self.drag_session,
         );
         self.settings.refresh_status();
         // Always open compact; preview may expand after selection.
@@ -617,7 +629,13 @@ fn refresh_results(
     shell: &GtkBox,
     deep_gen: &Rc<Cell<u64>>,
     search_entry: &Entry,
+    drag_session: &DragSession,
 ) {
+    // Never tear down rows mid-drag — that cancels the DnD session.
+    if drag_session.is_active() {
+        return;
+    }
+
     // Invalidate any in-flight async deep walk for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
     deep_gen.set(gen);
@@ -631,7 +649,7 @@ fn refresh_results(
     list.set_visible(!found.is_empty());
 
     for (i, item) in found.iter().enumerate() {
-        let row = build_row(item, i == 0);
+        let row = build_row(item, i == 0, drag_session);
         list.append(&row);
     }
 
@@ -672,6 +690,7 @@ fn refresh_results(
     let shell = shell.clone();
     let deep_gen = deep_gen.clone();
     let search_entry = search_entry.clone();
+    let drag_session = drag_session.clone();
 
     // Channel: worker → main thread.
     let (tx, rx) = std::sync::mpsc::channel::<Vec<SearchResult>>();
@@ -705,6 +724,7 @@ fn refresh_results(
                     &preview,
                     &window,
                     &shell,
+                    &drag_session,
                 );
                 glib::ControlFlow::Break
             }
@@ -727,7 +747,13 @@ fn apply_deep_hits(
     preview: &Rc<PreviewPanel>,
     window: &ApplicationWindow,
     shell: &GtkBox,
+    drag_session: &DragSession,
 ) {
+    // Rebuilding rows would cancel an active drag.
+    if drag_session.is_active() {
+        return;
+    }
+
     let prev_id = results
         .borrow()
         .get(selected.get())
@@ -763,7 +789,7 @@ fn apply_deep_hits(
     empty.set_visible(merged.is_empty());
     list.set_visible(!merged.is_empty());
     for item in merged.iter() {
-        let row = build_row(item, false);
+        let row = build_row(item, false, drag_session);
         list.append(&row);
     }
 
