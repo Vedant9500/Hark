@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Blink
+GenericName=Launcher
+Comment=Raycast-style launcher for Linux (Hyprland/Wayland)
+Exec=blink
+Icon=blink
+Terminal=false
+Categories=Utility;Core;
+Keywords=launcher;search;raycast;rofi;spotlight;
+StartupNotify=false
+X-GNOME-Autostart-enabled=false

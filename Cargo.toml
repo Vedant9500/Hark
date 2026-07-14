@@ -5,6 +5,11 @@ edition = "2021"
 description = "Raycast-style launcher for Linux (Hyprland/Wayland)"
 license = "MIT"
 readme = "README.md"
+authors = ["Vedant Deshmukh <deshmukhvedant95@gmail.com>"]
+repository = "https://github.com/YOUR_GITHUB_USER/blink"
+homepage = "https://github.com/YOUR_GITHUB_USER/blink"
+keywords = ["launcher", "wayland", "hyprland", "gtk4", "raycast"]
+categories = ["gui"]
 
 [features]
 default = []
@@ -33,3 +38,22 @@ codegen-units = 1
 opt-level = 3
 strip = true
 panic = "abort"
+
+# Optional: `cargo install cargo-deb && cargo deb --release --features layer-shell`
+[package.metadata.deb]
+name = "blink"
+maintainer = "Vedant Deshmukh <deshmukhvedant95@gmail.com>"
+copyright = "2026 Vedant Deshmukh"
+license-file = ["LICENSE", "0"]
+section = "utils"
+priority = "optional"
+extended-description = """\
+Blink is a Raycast-style launcher for Linux, built for Hyprland/Wayland.
+Search apps, files, do math and unit conversions from a single overlay."""
+depends = "$auto"
+assets = [
+  ["target/release/blink", "usr/bin/", "755"],
+  ["packaging/blink.desktop", "usr/share/applications/", "644"],
+  ["assets/blink.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+  ["README.md", "usr/share/doc/blink/", "644"],
+]

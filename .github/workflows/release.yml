@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.1.0). Empty = Cargo.toml version."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux packages
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libgtk-4-dev libglib2.0-dev \
+            libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgraphene-1.0-dev libwayland-dev
+
+      # layer-shell may not be in default Ubuntu repos for every version —
+      # build without it if missing; package script handles detection.
+      - name: Try install gtk4-layer-shell
+        run: |
+          sudo apt-get install -y libgtk4-layer-shell-dev \
+            || sudo apt-get install -y gtk4-layer-shell \
+            || echo "layer-shell package not available on this runner"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Package release
+        env:
+          BLINK_GITHUB_REPO: ${{ github.repository }}
+        run: |
+          chmod +x scripts/package-release.sh packaging/install-user.sh packaging/uninstall-user.sh
+          ./scripts/package-release.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: blink-linux
+          path: dist/*
+
+      - name: Create / update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/install.sh
+            dist/SHA256SUMS
+            dist/*.deb
+          generate_release_notes: true
+          fail_on_unmatched_files: false

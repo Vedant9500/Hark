@@ -60,9 +60,15 @@ todo.txt
 lcov.info
 *.lcov
 
-# Packaging leftovers
+# Packaging leftovers / local release output
 *.deb
 *.rpm
 *.AppImage
-*.tar.gz
-dist/
+# keep source/release archives under dist/ only (ignore accidental root tarballs)
+/*.tar.gz
+/*.zip
+/dist/
+/packaging/aur/pkg/
+/packaging/aur/src/
+/packaging/aur/*.tar.gz
+/packaging/aur/*.pkg.tar*

@@ -1,0 +1,51 @@
+# Maintainer: Vedant Deshmukh <deshmukhvedant95@gmail.com>
+# shellcheck disable=SC2034
+pkgname=blink-launcher
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/YOUR_GITHUB_USER/blink"
+license=('MIT')
+depends=('gtk4' 'glib2')
+optdepends=(
+  'gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors'
+)
+makedepends=('cargo' 'pkgconf')
+provides=('blink')
+conflicts=('blink')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/YOUR_GITHUB_USER/blink/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+options=('!lto') # Cargo sets LTO in profile.release
+
+prepare() {
+  cd "blink-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  cd "blink-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  local features=()
+  if pkg-config --exists gtk4-layer-shell-0; then
+    features=(--features layer-shell)
+  fi
+  cargo build --frozen --release "${features[@]}"
+}
+
+check() {
+  cd "blink-$pkgver"
+  cargo test --frozen --release --features layer-shell || \
+    cargo test --frozen --release
+}
+
+package() {
+  cd "blink-$pkgver"
+  install -Dm755 "target/release/blink" "$pkgdir/usr/bin/blink"
+  install -Dm644 "packaging/blink.desktop" "$pkgdir/usr/share/applications/blink.desktop"
+  install -Dm644 "assets/blink.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/blink.svg"
+  install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
