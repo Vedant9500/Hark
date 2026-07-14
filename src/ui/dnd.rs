@@ -1,11 +1,12 @@
 //! Drag-and-drop source helpers for result rows and the media preview.
 //!
-//! Offers real filesystem paths (`GdkFileList` / `file://`) so Telegram,
-//! Nautilus, browsers, etc. receive a file — not pixels.
+//! Offers real filesystem paths (`GdkFileList` / `GFile` / `text/uri-list`) so
+//! Telegram, Nautilus, browsers, etc. receive a file — not pixels.
 //!
-//! Critical Wayland/layer-shell detail: while a drag is active we must
-//! suppress Blink's auto-hide-on-focus-loss, otherwise the window dies
-//! mid-drag and the session is cancelled.
+//! Critical Wayland/layer-shell details:
+//! - suppress Blink's auto-hide-on-focus-loss while a drag is active
+//! - release exclusive keyboard grab during drag so drop targets can focus
+//! - offer COPY|MOVE|ASK (Hyprland often prefers MOVE; we never delete)
 
 use gtk::gdk::{self, ContentProvider, DragAction, FileList};
 use gtk::gio;
@@ -23,6 +24,8 @@ pub struct DragSession {
     pub ignore_focus_loss: Rc<Cell<bool>>,
     /// True between drag-begin and drag-end/cancel — skip list rebuilds.
     pub active: Rc<Cell<bool>>,
+    /// Layer-shell window that needs keyboard-mode toggled during drag.
+    window: Rc<RefCell<Option<gtk::ApplicationWindow>>>,
 }
 
 impl DragSession {
@@ -30,7 +33,12 @@ impl DragSession {
         Self {
             ignore_focus_loss,
             active: Rc::new(Cell::new(false)),
+            window: Rc::new(RefCell::new(None)),
         }
+    }
+
+    pub fn bind_window(&self, window: &gtk::ApplicationWindow) {
+        *self.window.borrow_mut() = Some(window.clone());
     }
 
     pub fn is_active(&self) -> bool {
@@ -49,7 +57,9 @@ pub fn attach_path_drag(widget: &impl IsA<Widget>, path: &Path, session: &DragSe
 
     let path = path.to_path_buf();
     let source = DragSource::new();
-    source.set_actions(DragAction::COPY);
+    // Hyprland often advertises MOVE as preferred; COPY-only sources get
+    // rejected by some targets. We never delete on MOVE.
+    source.set_actions(DragAction::COPY | DragAction::MOVE | DragAction::ASK);
     // Capture so the drag gesture wins over ListBox single-click activate
     // once the pointer moves past the drag threshold.
     source.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -63,8 +73,7 @@ pub fn attach_path_drag(widget: &impl IsA<Widget>, path: &Path, session: &DragSe
         let session = session.clone();
         let path = path.clone();
         source.connect_drag_begin(move |src, _drag| {
-            session.active.set(true);
-            session.ignore_focus_loss.set(true);
+            begin_session(&session);
             set_drag_icon(src, &path);
         });
     }
@@ -72,6 +81,7 @@ pub fn attach_path_drag(widget: &impl IsA<Widget>, path: &Path, session: &DragSe
     {
         let session = session.clone();
         source.connect_drag_end(move |_src, _drag, _delete| {
+            // Never honor delete_data — we only ever copy paths out.
             end_session(&session);
         });
     }
@@ -114,7 +124,7 @@ impl PathDragBinding {
         self.attached.set(true);
 
         let source = DragSource::new();
-        source.set_actions(DragAction::COPY);
+        source.set_actions(DragAction::COPY | DragAction::MOVE | DragAction::ASK);
         source.set_propagation_phase(gtk::PropagationPhase::Capture);
 
         {
@@ -129,8 +139,7 @@ impl PathDragBinding {
             let session = self.session.clone();
             let path = self.path.clone();
             source.connect_drag_begin(move |src, _drag| {
-                session.active.set(true);
-                session.ignore_focus_loss.set(true);
+                begin_session(&session);
                 if let Some(p) = path.borrow().as_ref() {
                     set_drag_icon(src, p);
                 }
@@ -163,16 +172,25 @@ impl PathDragBinding {
     }
 }
 
+fn begin_session(session: &DragSession) {
+    session.active.set(true);
+    session.ignore_focus_loss.set(true);
+    // Exclusive keyboard mode can starve drop targets under layer-shell.
+    // OnDemand keeps Blink usable for Escape but lets other surfaces focus.
+    set_layer_keyboard_ondemand(session);
+}
+
 fn end_session(session: &DragSession) {
     session.active.set(false);
-    // Keep ignore_focus_loss a beat longer so any already-queued 80ms hide
-    // timer still sees the guard, and so focus settling after drop does not
-    // instantly kill the window. Then clear the guard; if Blink is no longer
-    // the active window (user dropped into another app), hide like a normal
-    // focus-loss would have.
+    // Keep ignore_focus_loss a beat longer so any already-queued hide timer
+    // still sees the guard, and so focus settling after drop does not
+    // instantly kill the window / cancel a late data transfer.
     let ignore = session.ignore_focus_loss.clone();
     ignore.set(true);
-    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+    set_layer_keyboard_exclusive(session);
+
+    let session = session.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
         ignore.set(false);
         // gio::Application::default is the running app (not gtk::Application::default,
         // which would construct a brand-new empty Application).
@@ -192,14 +210,61 @@ fn end_session(session: &DragSession) {
                 w.set_visible(false);
             }
         }
+        let _ = session;
     });
 }
 
+fn set_layer_keyboard_ondemand(session: &DragSession) {
+    #[cfg(feature = "layer-shell")]
+    {
+        use gtk4_layer_shell::{KeyboardMode, LayerShell};
+        if let Some(window) = session.window.borrow().as_ref() {
+            if gtk4_layer_shell::is_supported() && window.is_layer_window() {
+                window.set_keyboard_mode(KeyboardMode::OnDemand);
+            }
+        }
+    }
+    #[cfg(not(feature = "layer-shell"))]
+    {
+        let _ = session;
+    }
+}
+
+fn set_layer_keyboard_exclusive(session: &DragSession) {
+    #[cfg(feature = "layer-shell")]
+    {
+        use gtk4_layer_shell::{KeyboardMode, LayerShell};
+        if let Some(window) = session.window.borrow().as_ref() {
+            if gtk4_layer_shell::is_supported() && window.is_layer_window() {
+                window.set_keyboard_mode(KeyboardMode::Exclusive);
+            }
+        }
+    }
+    #[cfg(not(feature = "layer-shell"))]
+    {
+        let _ = session;
+    }
+}
+
+/// Offer the formats most drop targets expect on Wayland:
+/// - `GdkFileList` (GTK4 native + portals)
+/// - single `GFile`
+/// - classic `text/uri-list` (Qt / browsers / many non-GTK apps)
 fn content_for_path(path: &Path) -> ContentProvider {
     let file = gio::File::for_path(path);
-    // GdkFileList is the modern, multi-app-friendly payload on Wayland.
-    let list = FileList::from_array(&[file]);
-    ContentProvider::for_value(&list.to_value())
+    let uri = file.uri();
+
+    // RFC 2483: one URI per line, CRLF-terminated, including a trailing blank line.
+    let uri_list = format!("{uri}\r\n");
+    let uri_bytes = glib::Bytes::from_owned(uri_list.into_bytes());
+
+    let list = FileList::from_array(&[file.clone()]);
+
+    ContentProvider::new_union(&[
+        ContentProvider::for_value(&list.to_value()),
+        ContentProvider::for_value(&file.to_value()),
+        ContentProvider::for_bytes("text/uri-list", &uri_bytes),
+    ])
 }
 
 fn set_drag_icon(source: &DragSource, path: &Path) {

@@ -141,6 +141,8 @@ impl Launcher {
         // Shared with rows + preview so focus-loss hide is suppressed mid-drag.
         let ignore_focus_loss = Rc::new(Cell::new(false));
         let drag_session = DragSession::new(ignore_focus_loss.clone());
+        // Needed so DnD can release exclusive keyboard grab under layer-shell.
+        drag_session.bind_window(&window);
 
         let preview = Rc::new(PreviewPanel::new(drag_session.clone()));
         // Preview pane only appears for media (images / video / audio).
