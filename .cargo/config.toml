@@ -1,0 +1,4 @@
+# Shrink chrono-tz: only IANA zones Blink resolves (see calc/timezone.rs).
+# Liberal filter — dependencies of matched zones are kept by chrono-tz-build.
+[env]
+CHRONO_TZ_TIMEZONE_FILTER = { value = "(UTC|GMT|Etc/|Europe/|America/|Asia/|Australia/|Pacific/|Africa/)", force = true }

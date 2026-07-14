@@ -1,0 +1,29 @@
+# Normalize text files to LF in the repo
+* text=auto eol=lf
+
+# Explicit source / config types
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.sh text eol=lf
+*.desktop text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Scripts should stay executable when checked out
+scripts/**/*.sh text eol=lf
+
+# Binary / generated — never treat as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+Cargo.lock text eol=lf linguist-generated=false

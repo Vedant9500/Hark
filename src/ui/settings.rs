@@ -1,0 +1,983 @@
+use crate::config::{discover_mounts, PathStyle};
+use crate::engine::Engine;
+use gtk::gdk::Key;
+use gtk::glib;
+use gtk::prelude::*;
+use gtk::{
+    Box as GtkBox, Button, CheckButton, Entry, EventControllerKey, Image, Label, ListBox,
+    ListBoxRow, Orientation, ScrolledWindow, Separator,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+struct Category {
+    id: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    icon: &'static str,
+}
+
+const CATEGORIES: &[Category] = &[
+    Category {
+        id: "indexing",
+        title: "Indexing",
+        subtitle: "Sources, depth & rebuild",
+        icon: "folder-saved-search-symbolic",
+    },
+    Category {
+        id: "folders",
+        title: "Extra folders",
+        subtitle: "Additional search roots",
+        icon: "folder-symbolic",
+    },
+    Category {
+        id: "exclusions",
+        title: "Exclusions",
+        subtitle: "Names always skipped",
+        icon: "edit-delete-symbolic",
+    },
+    Category {
+        id: "display",
+        title: "Display",
+        subtitle: "How paths are shown",
+        icon: "preferences-desktop-display-symbolic",
+    },
+];
+
+pub struct SettingsPanel {
+    pub root: GtkBox,
+    status: Label,
+    pub nav: ListBox,
+    engine: Arc<Engine>,
+    on_done: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+}
+
+impl SettingsPanel {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        let root = GtkBox::new(Orientation::Vertical, 0);
+        root.add_css_class("blink-settings");
+        root.set_hexpand(true);
+        root.set_vexpand(true);
+
+        // Dual panel body (no bulky top chrome — Esc closes)
+        let split = GtkBox::new(Orientation::Horizontal, 0);
+        split.add_css_class("blink-settings-split");
+        split.set_hexpand(true);
+        split.set_vexpand(true);
+
+        // --- Left nav ---
+        let nav_col = GtkBox::new(Orientation::Vertical, 0);
+        nav_col.add_css_class("blink-settings-nav-col");
+        nav_col.set_hexpand(false);
+        nav_col.set_vexpand(true);
+
+        let search = Entry::builder()
+            .placeholder_text("Search…")
+            .hexpand(true)
+            .build();
+        search.add_css_class("blink-settings-search");
+        search.set_primary_icon_name(Some("system-search-symbolic"));
+        search.set_margin_start(10);
+        search.set_margin_end(10);
+        search.set_margin_top(12);
+        search.set_margin_bottom(8);
+        nav_col.append(&search);
+
+        let nav_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_width(196)
+            .max_content_width(220)
+            .hexpand(false)
+            .vexpand(true)
+            .build();
+        nav_scroll.add_css_class("blink-settings-nav-scroll");
+
+        let nav = ListBox::new();
+        nav.add_css_class("blink-settings-nav");
+        nav.set_selection_mode(gtk::SelectionMode::Single);
+        nav.set_hexpand(false);
+
+        for (i, cat) in CATEGORIES.iter().enumerate() {
+            let row = ListBoxRow::new();
+            row.add_css_class("blink-settings-nav-row");
+            row.set_selectable(true);
+
+            let item = GtkBox::new(Orientation::Horizontal, 10);
+            item.add_css_class("blink-settings-nav-item");
+            item.set_margin_start(10);
+            item.set_margin_end(10);
+            item.set_margin_top(7);
+            item.set_margin_bottom(7);
+            item.set_valign(gtk::Align::Center);
+
+            let icon = Image::from_icon_name(cat.icon);
+            icon.add_css_class("blink-settings-nav-icon");
+            icon.set_pixel_size(16);
+            icon.set_valign(gtk::Align::Center);
+
+            let name = Label::new(Some(cat.title));
+            name.add_css_class("blink-settings-nav-title");
+            name.set_halign(gtk::Align::Start);
+            name.set_hexpand(true);
+            name.set_xalign(0.0);
+
+            item.append(&icon);
+            item.append(&name);
+            row.set_child(Some(&item));
+            row.set_widget_name(cat.id);
+            // Keep subtitle searchable via data attribute-ish name on row
+            row.set_tooltip_text(Some(cat.subtitle));
+            nav.append(&row);
+            if i == 0 {
+                nav.select_row(Some(&row));
+            }
+        }
+
+        // Filter nav by search text
+        {
+            let nav = nav.clone();
+            search.connect_changed(move |entry| {
+                let q = entry.text().to_lowercase();
+                let mut child = nav.first_child();
+                while let Some(w) = child {
+                    let next = w.next_sibling();
+                    if let Ok(row) = w.downcast::<ListBoxRow>() {
+                        let id = row.widget_name().to_string();
+                        let title = CATEGORIES
+                            .iter()
+                            .find(|c| c.id == id)
+                            .map(|c| c.title.to_lowercase())
+                            .unwrap_or_default();
+                        let sub = CATEGORIES
+                            .iter()
+                            .find(|c| c.id == id)
+                            .map(|c| c.subtitle.to_lowercase())
+                            .unwrap_or_default();
+                        let visible =
+                            q.is_empty() || title.contains(&q) || sub.contains(&q) || id.contains(&q);
+                        row.set_visible(visible);
+                    }
+                    child = next;
+                }
+            });
+        }
+
+        nav_scroll.set_child(Some(&nav));
+        nav_col.append(&nav_scroll);
+
+        // Bottom close hint in nav
+        let nav_footer = GtkBox::new(Orientation::Horizontal, 6);
+        nav_footer.add_css_class("blink-settings-nav-footer");
+        nav_footer.set_margin_start(12);
+        nav_footer.set_margin_end(12);
+        nav_footer.set_margin_top(6);
+        nav_footer.set_margin_bottom(10);
+
+        let esc = Label::new(Some("esc"));
+        esc.add_css_class("blink-keycap");
+        let close_hint = Label::new(Some("Close"));
+        close_hint.add_css_class("blink-settings-nav-footer-label");
+        close_hint.set_halign(gtk::Align::Start);
+        close_hint.set_hexpand(true);
+
+        let done = Button::with_label("Done");
+        done.add_css_class("blink-settings-btn");
+        done.add_css_class("blink-settings-done");
+        done.set_halign(gtk::Align::End);
+
+        nav_footer.append(&esc);
+        nav_footer.append(&close_hint);
+        nav_footer.append(&done);
+        nav_col.append(&nav_footer);
+
+        split.append(&nav_col);
+        split.append(&Separator::new(Orientation::Vertical));
+
+        // --- Right content stack ---
+        let content_stack = gtk::Stack::new();
+        content_stack.add_css_class("blink-settings-content-stack");
+        content_stack.set_hexpand(true);
+        content_stack.set_vexpand(true);
+        content_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        content_stack.set_transition_duration(100);
+
+        let cfg = engine.config().get();
+
+        let (indexing_page, status) = build_indexing_page(&engine, &cfg);
+        content_stack.add_named(&indexing_page, Some("indexing"));
+
+        let folders_page = build_folders_page(&engine);
+        content_stack.add_named(&folders_page, Some("folders"));
+
+        let exclusions_page = build_exclusions_page(&engine);
+        content_stack.add_named(&exclusions_page, Some("exclusions"));
+
+        let display_page = build_display_page(&engine, &cfg);
+        content_stack.add_named(&display_page, Some("display"));
+
+        content_stack.set_visible_child_name("indexing");
+        split.append(&content_stack);
+        root.append(&split);
+
+        {
+            let content_stack = content_stack.clone();
+            nav.connect_row_selected(move |_, row| {
+                if let Some(row) = row {
+                    let id = row.widget_name();
+                    if !id.is_empty() {
+                        content_stack.set_visible_child_name(&id);
+                    }
+                }
+            });
+        }
+
+        // Keyboard: ↑/↓ or j/k cycle categories; Home/End jump
+        {
+            let nav = nav.clone();
+            let key = EventControllerKey::new();
+            key.set_propagation_phase(gtk::PropagationPhase::Capture);
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                let n = CATEGORIES.len() as i32;
+                if n == 0 {
+                    return glib::Propagation::Proceed;
+                }
+                let cur = nav
+                    .selected_row()
+                    .map(|r| r.index())
+                    .unwrap_or(0)
+                    .max(0);
+                let next = match keyval {
+                    Key::Down | Key::j | Key::J => Some((cur + 1) % n),
+                    Key::Up | Key::k | Key::K => Some(if cur == 0 { n - 1 } else { cur - 1 }),
+                    Key::Home => Some(0),
+                    Key::End => Some(n - 1),
+                    Key::Page_Down => Some((cur + 1).min(n - 1)),
+                    Key::Page_Up => Some((cur - 1).max(0)),
+                    _ => None,
+                };
+                if let Some(idx) = next {
+                    if let Some(row) = nav.row_at_index(idx) {
+                        if row.is_visible() {
+                            nav.select_row(Some(&row));
+                            row.grab_focus();
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            root.add_controller(key);
+        }
+
+        let on_done: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        {
+            let on_done = on_done.clone();
+            done.connect_clicked(move |_| {
+                if let Some(cb) = on_done.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
+
+        Self {
+            root,
+            status,
+            nav,
+            engine,
+            on_done,
+        }
+    }
+
+    pub fn set_on_done<F: Fn() + 'static>(&self, f: F) {
+        *self.on_done.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn refresh_status(&self) {
+        self.status
+            .set_text(&self.engine.format_index_status());
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.root
+    }
+}
+
+fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
+    let outer = GtkBox::new(Orientation::Vertical, 0);
+    outer.add_css_class("blink-settings-page");
+    outer.set_hexpand(true);
+    outer.set_vexpand(true);
+
+    // Sticky page header
+    let header = GtkBox::new(Orientation::Horizontal, 10);
+    header.add_css_class("blink-settings-page-header");
+    header.set_margin_start(20);
+    header.set_margin_end(20);
+    header.set_margin_top(16);
+    header.set_margin_bottom(4);
+
+    let icon_w = Image::from_icon_name(icon);
+    icon_w.add_css_class("blink-settings-page-icon");
+    icon_w.set_pixel_size(18);
+    icon_w.set_valign(gtk::Align::Center);
+
+    let head_text = GtkBox::new(Orientation::Vertical, 2);
+    head_text.set_hexpand(true);
+
+    let t = Label::new(Some(title));
+    t.add_css_class("blink-settings-page-title");
+    t.set_halign(gtk::Align::Start);
+    t.set_xalign(0.0);
+
+    let s = Label::new(Some(subtitle));
+    s.add_css_class("blink-settings-page-sub");
+    s.set_halign(gtk::Align::Start);
+    s.set_xalign(0.0);
+    s.set_wrap(true);
+
+    head_text.append(&t);
+    head_text.append(&s);
+    header.append(&icon_w);
+    header.append(&head_text);
+    outer.append(&header);
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(280)
+        .max_content_height(420)
+        .propagate_natural_height(true)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+
+    let body = GtkBox::new(Orientation::Vertical, 14);
+    body.add_css_class("blink-settings-body");
+    body.set_margin_start(20);
+    body.set_margin_end(20);
+    body.set_margin_top(12);
+    body.set_margin_bottom(18);
+
+    scroll.set_child(Some(&body));
+    outer.append(&scroll);
+    (outer, body)
+}
+
+fn build_indexing_page(
+    engine: &Arc<Engine>,
+    cfg: &crate::config::BlinkConfig,
+) -> (GtkBox, Label) {
+    let (outer, body) = page_shell(
+        "folder-saved-search-symbolic",
+        "Indexing",
+        "Choose which locations Blink searches and rebuild the file index.",
+    );
+
+    body.append(&group_label("Scan depth"));
+
+    let depth_card = GtkBox::new(Orientation::Vertical, 0);
+    depth_card.add_css_class("blink-settings-card");
+
+    let depth_row = setting_row(
+        "Levels from each root",
+        Some(&depth_help_text(cfg.index.max_depth.clamp(1, 6))),
+    );
+
+    let stepper = GtkBox::new(Orientation::Horizontal, 4);
+    stepper.set_valign(gtk::Align::Center);
+
+    let depth_dec = Button::with_label("−");
+    depth_dec.add_css_class("blink-settings-btn");
+    depth_dec.add_css_class("blink-settings-icon-btn");
+    depth_dec.set_tooltip_text(Some("Shallower (faster, fewer files)"));
+
+    let depth_val = Label::new(Some(&format!("{}", cfg.index.max_depth.clamp(1, 6))));
+    depth_val.add_css_class("blink-settings-stepper-val");
+    depth_val.set_width_chars(2);
+    depth_val.set_halign(gtk::Align::Center);
+
+    let depth_inc = Button::with_label("+");
+    depth_inc.add_css_class("blink-settings-btn");
+    depth_inc.add_css_class("blink-settings-icon-btn");
+    depth_inc.set_tooltip_text(Some("Deeper (slower, more files)"));
+
+    stepper.append(&depth_dec);
+    stepper.append(&depth_val);
+    stepper.append(&depth_inc);
+    depth_row.append(&stepper);
+    depth_card.append(&depth_row);
+
+    let caps = Label::new(Some(&format!(
+        "Cap {} items · rebuild TTL 30m · skips .git, .venv, node_modules, …",
+        crate::providers::files::MAX_INDEX
+    )));
+    caps.add_css_class("blink-hint");
+    caps.add_css_class("blink-settings-card-footer");
+    caps.set_halign(gtk::Align::Start);
+    caps.set_wrap(true);
+    depth_card.append(&Separator::new(Orientation::Horizontal));
+    depth_card.append(&caps);
+    body.append(&depth_card);
+
+    // Wire depth buttons — update the row subtitle label
+    let depth_hint = depth_row
+        .first_child() // text col
+        .and_then(|c| c.last_child()) // subtitle
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let depth_val = depth_val.clone();
+        let depth_hint = depth_hint.clone();
+        depth_dec.connect_clicked(move |_| {
+            let mut next = 2usize;
+            engine.config().update(|c| {
+                let d = c.index.max_depth.clamp(1, 6);
+                next = d.saturating_sub(1).max(1);
+                c.index.max_depth = next;
+            });
+            depth_val.set_text(&format!("{next}"));
+            if let Some(h) = &depth_hint {
+                h.set_text(&depth_help_text(next));
+            }
+            engine.force_reindex();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let depth_val = depth_val.clone();
+        let depth_hint = depth_hint.clone();
+        depth_inc.connect_clicked(move |_| {
+            let mut next = 2usize;
+            engine.config().update(|c| {
+                let d = c.index.max_depth.clamp(1, 6);
+                next = (d + 1).min(6);
+                c.index.max_depth = next;
+            });
+            depth_val.set_text(&format!("{next}"));
+            if let Some(h) = &depth_hint {
+                h.set_text(&depth_help_text(next));
+            }
+            engine.force_reindex();
+        });
+    }
+
+    body.append(&group_label("Sources"));
+
+    let sources = GtkBox::new(Orientation::Vertical, 0);
+    sources.add_css_class("blink-settings-card");
+
+    let home_row = check_setting_row(
+        "Home directory (~)",
+        None,
+        cfg.index.include_home,
+    );
+    {
+        let engine = engine.clone();
+        let cb = home_row.1.clone();
+        cb.connect_toggled(move |btn| {
+            engine.config().update(|c| {
+                c.index.include_home = btn.is_active();
+            });
+        });
+    }
+    sources.append(&home_row.0);
+
+    let mounts = discover_mounts();
+    for (i, m) in mounts.iter().enumerate() {
+        sources.append(&Separator::new(Orientation::Horizontal));
+        let key = m.target.to_string_lossy().to_string();
+        let label = if m.label.is_empty() {
+            key.clone()
+        } else {
+            format!("{}  ({})", m.label, key)
+        };
+        let enabled = cfg
+            .index
+            .include_mounts
+            .get(&key)
+            .copied()
+            .unwrap_or(true);
+        let (row, cb) = check_setting_row(&label, None, enabled);
+        {
+            let engine = engine.clone();
+            let key = key.clone();
+            cb.connect_toggled(move |btn| {
+                engine.config().update(|c| {
+                    c.index
+                        .include_mounts
+                        .insert(key.clone(), btn.is_active());
+                });
+            });
+        }
+        let _ = i;
+        sources.append(&row);
+    }
+    body.append(&sources);
+
+    body.append(&group_label("Index"));
+
+    let rebuild_row = GtkBox::new(Orientation::Vertical, 10);
+    rebuild_row.add_css_class("blink-settings-card");
+
+    let rebuild_head = setting_row(
+        "Rebuild index now",
+        Some("Force a full re-scan of all enabled sources."),
+    );
+    let rebuild = Button::with_label("Rebuild");
+    rebuild.add_css_class("blink-settings-btn");
+    rebuild.add_css_class("blink-settings-primary");
+    rebuild.set_valign(gtk::Align::Center);
+    rebuild_head.append(&rebuild);
+    rebuild_row.append(&rebuild_head);
+
+    let status = Label::new(Some(&engine.format_index_status()));
+    status.add_css_class("blink-hint");
+    status.add_css_class("blink-settings-card-footer");
+    status.set_halign(gtk::Align::Start);
+    status.set_wrap(true);
+    rebuild_row.append(&Separator::new(Orientation::Horizontal));
+    rebuild_row.append(&status);
+
+    {
+        let engine = engine.clone();
+        let status = status.clone();
+        rebuild.connect_clicked(move |_| {
+            status.set_text("Indexing… 0 files");
+            engine.force_reindex();
+            let status = status.clone();
+            let engine = engine.clone();
+            glib_timeout_poll_index(engine, status, 0);
+        });
+    }
+
+    body.append(&rebuild_row);
+
+    (outer, status)
+}
+
+fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
+    let (outer, body) = page_shell(
+        "folder-symbolic",
+        "Extra folders",
+        "Add folders outside home/mounts. They are indexed at the same depth.",
+    );
+
+    let list = GtkBox::new(Orientation::Vertical, 0);
+    list.add_css_class("blink-settings-card");
+    list.add_css_class("blink-settings-list");
+    refill_extra_list(&list, engine);
+
+    let add_row = GtkBox::new(Orientation::Horizontal, 8);
+    add_row.set_margin_top(2);
+    let entry = Entry::builder()
+        .placeholder_text("/path/to/folder")
+        .hexpand(true)
+        .build();
+    entry.add_css_class("blink-settings-entry");
+    let add = Button::with_label("Add");
+    add.add_css_class("blink-settings-btn");
+    add.add_css_class("blink-settings-primary");
+    {
+        let engine = engine.clone();
+        let entry = entry.clone();
+        let list = list.clone();
+        add.connect_clicked(move |_| {
+            let p = entry.text().to_string().trim().to_string();
+            if p.is_empty() {
+                return;
+            }
+            engine.config().update(|c| {
+                if !c.index.extra_roots.contains(&p) {
+                    c.index.extra_roots.push(p);
+                }
+            });
+            entry.set_text("");
+            refill_extra_list(&list, &engine);
+        });
+    }
+    add_row.append(&entry);
+    add_row.append(&add);
+
+    body.append(&list);
+    body.append(&add_row);
+
+    // Deep roots — always indexed to depth 6, preferred by live deep search.
+    body.append(&group_label("Deep roots"));
+    let deep_hint = Label::new(Some(
+        "Pinned folders always get depth 6 in the index and are preferred for live deep search. \
+         Opening a deep file can auto-promote its parent project folder.",
+    ));
+    deep_hint.add_css_class("blink-hint");
+    deep_hint.set_wrap(true);
+    deep_hint.set_halign(gtk::Align::Start);
+    deep_hint.set_margin_bottom(6);
+    body.append(&deep_hint);
+
+    let deep_list = GtkBox::new(Orientation::Vertical, 0);
+    deep_list.add_css_class("blink-settings-card");
+    deep_list.add_css_class("blink-settings-list");
+    refill_deep_list(&deep_list, engine);
+
+    let deep_add_row = GtkBox::new(Orientation::Horizontal, 8);
+    deep_add_row.set_margin_top(2);
+    let deep_entry = Entry::builder()
+        .placeholder_text("~/projects/my-app")
+        .hexpand(true)
+        .build();
+    deep_entry.add_css_class("blink-settings-entry");
+    let deep_add = Button::with_label("Pin");
+    deep_add.add_css_class("blink-settings-btn");
+    deep_add.add_css_class("blink-settings-primary");
+    {
+        let engine = engine.clone();
+        let deep_entry = deep_entry.clone();
+        let deep_list = deep_list.clone();
+        deep_add.connect_clicked(move |_| {
+            let p = deep_entry.text().to_string().trim().to_string();
+            if p.is_empty() {
+                return;
+            }
+            let path = crate::providers::files::expand_user_path(&p);
+            engine.promote_deep_root(&path);
+            deep_entry.set_text("");
+            refill_deep_list(&deep_list, &engine);
+        });
+    }
+    deep_add_row.append(&deep_entry);
+    deep_add_row.append(&deep_add);
+
+    body.append(&deep_list);
+    body.append(&deep_add_row);
+    outer
+}
+
+fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
+    let (outer, body) = page_shell(
+        "edit-delete-symbolic",
+        "Exclusions",
+        "Folder or path fragments that are never indexed (e.g. node_modules, .git).",
+    );
+
+    let list = GtkBox::new(Orientation::Vertical, 0);
+    list.add_css_class("blink-settings-card");
+    list.add_css_class("blink-settings-list");
+    refill_exclude_list(&list, engine);
+
+    let add_row = GtkBox::new(Orientation::Horizontal, 8);
+    add_row.set_margin_top(2);
+    let entry = Entry::builder()
+        .placeholder_text("name or path fragment")
+        .hexpand(true)
+        .build();
+    entry.add_css_class("blink-settings-entry");
+    let add = Button::with_label("Add");
+    add.add_css_class("blink-settings-btn");
+    add.add_css_class("blink-settings-primary");
+    {
+        let engine = engine.clone();
+        let entry = entry.clone();
+        let list = list.clone();
+        add.connect_clicked(move |_| {
+            let p = entry.text().to_string().trim().to_string();
+            if p.is_empty() {
+                return;
+            }
+            engine.config().update(|c| {
+                if !c.index.exclude.contains(&p) {
+                    c.index.exclude.push(p);
+                }
+            });
+            entry.set_text("");
+            refill_exclude_list(&list, &engine);
+        });
+    }
+    add_row.append(&entry);
+    add_row.append(&add);
+
+    body.append(&list);
+    body.append(&add_row);
+    outer
+}
+
+fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {
+    let (outer, body) = page_shell(
+        "preferences-desktop-display-symbolic",
+        "Display",
+        "Control how indexed paths appear in search results.",
+    );
+
+    body.append(&group_label("Path format"));
+
+    let style_card = GtkBox::new(Orientation::Vertical, 0);
+    style_card.add_css_class("blink-settings-card");
+
+    let label_style = CheckButton::with_label("Label  ·  Projects:/path");
+    let drive_style = CheckButton::with_label("Drive  ·  D:/path");
+    label_style.add_css_class("blink-settings-radio");
+    drive_style.add_css_class("blink-settings-radio");
+    drive_style.set_group(Some(&label_style));
+    match cfg.index.path_style {
+        PathStyle::Label => label_style.set_active(true),
+        PathStyle::Drive => drive_style.set_active(true),
+    }
+    {
+        let engine = engine.clone();
+        label_style.connect_toggled(move |btn| {
+            if btn.is_active() {
+                engine
+                    .config()
+                    .update(|c| c.index.path_style = PathStyle::Label);
+            }
+        });
+    }
+    {
+        let engine = engine.clone();
+        drive_style.connect_toggled(move |btn| {
+            if btn.is_active() {
+                engine
+                    .config()
+                    .update(|c| c.index.path_style = PathStyle::Drive);
+            }
+        });
+    }
+
+    let label_box = GtkBox::new(Orientation::Vertical, 2);
+    label_box.add_css_class("blink-settings-list-row");
+    label_box.append(&label_style);
+
+    let drive_box = GtkBox::new(Orientation::Vertical, 2);
+    drive_box.add_css_class("blink-settings-list-row");
+    drive_box.append(&drive_style);
+
+    style_card.append(&label_box);
+    style_card.append(&Separator::new(Orientation::Horizontal));
+    style_card.append(&drive_box);
+    body.append(&style_card);
+
+    let hint = Label::new(Some(
+        "Label uses friendly mount names. Drive uses letter-style prefixes when available.",
+    ));
+    hint.add_css_class("blink-hint");
+    hint.set_halign(gtk::Align::Start);
+    hint.set_wrap(true);
+    body.append(&hint);
+
+    outer
+}
+
+/// Horizontal setting row: title (+ optional subtitle) on the left, control on the right.
+fn setting_row(title: &str, subtitle: Option<&str>) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.add_css_class("blink-settings-list-row");
+    row.set_hexpand(true);
+
+    let text = GtkBox::new(Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    text.set_halign(gtk::Align::Start);
+    text.set_valign(gtk::Align::Center);
+
+    let t = Label::new(Some(title));
+    t.add_css_class("blink-settings-list-label");
+    t.set_halign(gtk::Align::Start);
+    t.set_xalign(0.0);
+    text.append(&t);
+
+    if let Some(sub) = subtitle {
+        let s = Label::new(Some(sub));
+        s.add_css_class("blink-settings-list-sub");
+        s.set_halign(gtk::Align::Start);
+        s.set_xalign(0.0);
+        s.set_wrap(true);
+        s.set_max_width_chars(48);
+        text.append(&s);
+    }
+
+    row.append(&text);
+    row
+}
+
+fn check_setting_row(title: &str, subtitle: Option<&str>, active: bool) -> (GtkBox, CheckButton) {
+    let row = setting_row(title, subtitle);
+    let cb = CheckButton::new();
+    cb.set_active(active);
+    cb.set_valign(gtk::Align::Center);
+    cb.add_css_class("blink-settings-check");
+    row.append(&cb);
+    (row, cb)
+}
+
+fn group_label(text: &str) -> Label {
+    let l = Label::new(Some(text));
+    l.add_css_class("blink-settings-section");
+    l.set_halign(gtk::Align::Start);
+    l.set_xalign(0.0);
+    l
+}
+
+fn depth_help_text(depth: usize) -> String {
+    let example = match depth {
+        1 => "e.g. ~/Projects only (very fast)",
+        2 => "e.g. ~/Projects/foo  ·  default (recommended)",
+        3 => "e.g. ~/Projects/foo/src  ·  ~4× more files",
+        4 => "e.g. one level deeper  ·  ~8× more files",
+        5 => "deep trees  ·  slower index & search",
+        _ => "maximum  ·  large indexes, use only if needed",
+    };
+    format!(
+        "{depth} level{} from each root · {example}",
+        if depth == 1 { "" } else { "s" }
+    )
+}
+
+fn refill_extra_list(list: &GtkBox, engine: &Arc<Engine>) {
+    while let Some(c) = list.first_child() {
+        list.remove(&c);
+    }
+    let roots = engine.config().get().index.extra_roots;
+    if roots.is_empty() {
+        let empty = Label::new(Some("No extra folders yet"));
+        empty.add_css_class("blink-hint");
+        empty.add_css_class("blink-settings-list-row");
+        empty.set_halign(gtk::Align::Start);
+        list.append(&empty);
+        return;
+    }
+    for (i, p) in roots.iter().enumerate() {
+        if i > 0 {
+            list.append(&Separator::new(Orientation::Horizontal));
+        }
+        list.append(&removable_row(p, engine, ListKind::Extra));
+    }
+}
+
+fn refill_deep_list(list: &GtkBox, engine: &Arc<Engine>) {
+    while let Some(c) = list.first_child() {
+        list.remove(&c);
+    }
+    let roots = engine.config().get().index.deep_roots;
+    if roots.is_empty() {
+        let empty = Label::new(Some("No deep roots yet — pin a project folder"));
+        empty.add_css_class("blink-hint");
+        empty.add_css_class("blink-settings-list-row");
+        empty.set_halign(gtk::Align::Start);
+        list.append(&empty);
+        return;
+    }
+    for (i, p) in roots.iter().enumerate() {
+        if i > 0 {
+            list.append(&Separator::new(Orientation::Horizontal));
+        }
+        list.append(&removable_row(p, engine, ListKind::Deep));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ListKind {
+    Extra,
+    Exclude,
+    Deep,
+}
+
+fn refill_exclude_list(list: &GtkBox, engine: &Arc<Engine>) {
+    while let Some(c) = list.first_child() {
+        list.remove(&c);
+    }
+    let items = engine.config().get().index.exclude;
+    if items.is_empty() {
+        let empty = Label::new(Some("No exclusions"));
+        empty.add_css_class("blink-hint");
+        empty.add_css_class("blink-settings-list-row");
+        empty.set_halign(gtk::Align::Start);
+        list.append(&empty);
+        return;
+    }
+    for (i, p) in items.iter().enumerate() {
+        if i > 0 {
+            list.append(&Separator::new(Orientation::Horizontal));
+        }
+        list.append(&removable_row(p, engine, ListKind::Exclude));
+    }
+}
+
+fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.add_css_class("blink-settings-list-row");
+    let lab = Label::new(Some(text));
+    lab.set_halign(gtk::Align::Start);
+    lab.set_hexpand(true);
+    lab.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    lab.add_css_class("blink-settings-list-label");
+    let rm = Button::with_label("×");
+    rm.add_css_class("blink-settings-btn");
+    rm.add_css_class("blink-settings-icon-btn");
+    {
+        let engine = engine.clone();
+        let text = text.to_string();
+        let row = row.clone();
+        rm.connect_clicked(move |_| {
+            match kind {
+                ListKind::Extra => {
+                    engine.config().update(|c| {
+                        c.index.extra_roots.retain(|x| x != &text);
+                    });
+                }
+                ListKind::Exclude => {
+                    engine.config().update(|c| {
+                        c.index.exclude.retain(|x| x != &text);
+                    });
+                }
+                ListKind::Deep => {
+                    engine.remove_deep_root(&text);
+                }
+            }
+            if let Some(parent) = row.parent() {
+                if let Ok(box_) = parent.downcast::<GtkBox>() {
+                    // Remove preceding separator if present
+                    if let Some(prev) = row.prev_sibling() {
+                        if prev.css_classes().iter().any(|c| c == "horizontal")
+                            || prev.type_().name() == "GtkSeparator"
+                        {
+                            box_.remove(&prev);
+                        }
+                    } else if let Some(next) = row.next_sibling() {
+                        if next.type_().name() == "GtkSeparator" {
+                            box_.remove(&next);
+                        }
+                    }
+                    box_.remove(&row);
+                    if box_.first_child().is_none() {
+                        let empty = Label::new(Some(match kind {
+                            ListKind::Extra => "No extra folders yet",
+                            ListKind::Exclude => "No exclusions",
+                            ListKind::Deep => "No deep roots yet — pin a project folder",
+                        }));
+                        empty.add_css_class("blink-hint");
+                        empty.add_css_class("blink-settings-list-row");
+                        empty.set_halign(gtk::Align::Start);
+                        box_.append(&empty);
+                    }
+                }
+            }
+        });
+    }
+    row.append(&lab);
+    row.append(&rm);
+    row
+}
+
+fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
+    if n > 300 {
+        status.set_text(&engine.format_index_status());
+        return;
+    }
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        let p = engine.index_progress();
+        status.set_text(&engine.format_index_status());
+        if p.running {
+            glib_timeout_poll_index(engine, status, n + 1);
+        }
+    });
+}

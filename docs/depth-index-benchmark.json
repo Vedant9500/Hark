@@ -1,0 +1,109 @@
+{
+  "title": "Blink index depth benchmark",
+  "date": "2026-07-14",
+  "machine": {
+    "host_mem_kb": 15523144,
+    "cpus": 16,
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "notes": "Hyprland/Linux; home + /mnt/windows_d enabled; cache format v6"
+  },
+  "method": {
+    "binary": "release + features layer-shell",
+    "command": "blink --bench",
+    "procedure": [
+      "Set config index.max_depth to N",
+      "Delete ~/.cache/blink/file-index.json (+ meta)",
+      "Run blink --bench (cold load + blocking rebuild section)",
+      "Record items, rebuild_ms, cache_bytes, search medians"
+    ],
+    "config_note": "Earlier max_depth>3 was incorrectly clamped to 2 in ConfigStore::load; fixed to allow 1..=6 before depth-4 run"
+  },
+  "defaults": {
+    "max_depth": 2,
+    "max_index_items": 100000,
+    "index_ttl_secs": 1800,
+    "cache_version": 6
+  },
+  "results": [
+    {
+      "depth": 2,
+      "items": 1798,
+      "rebuild_ms": 15,
+      "warm_ms": 53,
+      "cache_bytes": 117170,
+      "cache_KB": 114.4,
+      "max_entry_depth": 2,
+      "capped": false,
+      "search_median_us": {
+        "math": 2,
+        "app_fire_merged": 68,
+        "file_doc_merged": 34,
+        "file_force_doc": 52,
+        "iso_apps_fire": 34,
+        "iso_files_doc": 49
+      },
+      "relative_to_depth_2": {
+        "items": 1.0,
+        "rebuild": 1.0,
+        "cache": 1.0
+      }
+    },
+    {
+      "depth": 3,
+      "items": 7220,
+      "rebuild_ms": 48,
+      "warm_ms": 53,
+      "cache_bytes": 573857,
+      "cache_KB": 560.4,
+      "max_entry_depth": 3,
+      "capped": false,
+      "search_median_us": {
+        "math": 2,
+        "app_fire_merged": 150,
+        "file_doc_merged": 34,
+        "file_force_doc": 130,
+        "iso_apps_fire": 34,
+        "iso_files_doc": 128
+      },
+      "relative_to_depth_2": {
+        "items": 4.02,
+        "rebuild": 3.2,
+        "cache": 4.9
+      }
+    },
+    {
+      "depth": 4,
+      "items": 14831,
+      "rebuild_ms": 106,
+      "warm_ms": 353,
+      "cache_bytes": 1233712,
+      "cache_KB": 1204.8,
+      "max_entry_depth": 4,
+      "capped": false,
+      "search_median_us": {
+        "math": 2,
+        "app_fire_merged": 347,
+        "file_doc_merged": 43,
+        "file_force_doc": 327,
+        "iso_apps_fire": 34,
+        "iso_files_doc": 352
+      },
+      "relative_to_depth_2": {
+        "items": 8.25,
+        "rebuild": 7.07,
+        "cache": 10.53
+      }
+    }
+  ],
+  "recommendation": {
+    "default": 2,
+    "balanced": 3,
+    "deep": 4,
+    "notes": [
+      "Items roughly double+ each depth step on this tree",
+      "Math/calc stays ~2µs at all depths (short-circuit)",
+      "iso_apps stays ~34µs; merged app slows when more file work runs",
+      "Change depth in Settings → Indexing (−/+); auto-rebuilds"
+    ]
+  }
+}

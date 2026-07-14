@@ -1,0 +1,68 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.toml.orig
+
+# Debug / profiling
+*.pdb
+perf.data
+perf.data.old
+flamegraph.svg
+*.profraw
+*.profdata
+callgrind.out.*
+cachegrind.out.*
+
+# Editor / IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.code-workspace
+
+# OS junk
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# Logs & local runtime
+*.log
+*.tmp
+*.temp
+.cache/
+
+# Env / secrets (if added later)
+.env
+.env.*
+!.env.example
+
+# Local personal scratch (not project docs)
+todo.txt
+*.local.md
+
+# Optional local override configs
+/config.local.toml
+/blink.local.toml
+
+# Test / coverage artifacts
+/coverage/
+/tarpaulin-report.html
+lcov.info
+*.lcov
+
+# Packaging leftovers
+*.deb
+*.rpm
+*.AppImage
+*.tar.gz
+dist/
