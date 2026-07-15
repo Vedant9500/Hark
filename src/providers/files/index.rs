@@ -74,7 +74,29 @@ impl IndexState {
 
     /// Load cache if valid; rebuild only when stale, fingerprint mismatch, or missing.
     /// Must run off the GTK UI thread (startup / periodic / force_reindex bg threads).
+    ///
+    /// Battery path: if RAM already holds a fresh index (TTL + fingerprint), skip
+    /// disk re-read and mount rediscovery. Periodic timer hits this every 45m.
     pub fn ensure_fresh(&self) {
+        // Fast path: in-memory index still valid — no I/O.
+        {
+            let n = self.index.read().unwrap().len();
+            if n > 0 && !cache_ttl_stale() {
+                let fp = {
+                    // Mount list only when we need a fingerprint check.
+                    *self.mounts.write().unwrap() = discover_mounts();
+                    self.compute_fingerprint()
+                };
+                let mem_fp = self.fingerprint.read().unwrap().clone();
+                if !mem_fp.is_empty() && mem_fp == fp {
+                    return;
+                }
+                // Fingerprint changed (roots/depth/excludes) — fall through to rebuild.
+                self.run_build(fp);
+                return;
+            }
+        }
+
         *self.mounts.write().unwrap() = discover_mounts();
         let fp = self.compute_fingerprint();
 

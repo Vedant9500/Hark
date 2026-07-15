@@ -27,9 +27,12 @@ use std::sync::Arc;
 /// horizontal space from the list column instead.
 const WINDOW_WIDTH: i32 = 720;
 const WINDOW_MAX_HEIGHT: i32 = 520;
-/// Transparent inset around the rounded shell so corners/shadow aren't clipped
-/// by the square window surface (looks like square corners / padding glitch).
-const SHELL_INSET: i32 = 12;
+/// Extra transparent margin around the rounded shell (for soft drop-shadow).
+/// Keep at 0 — a non-zero square inset reads as "padding" on Sway/Hyprland
+/// because the layer surface is rectangular while the card is rounded.
+const SHELL_INSET: i32 = 0;
+/// Debounce keystrokes before search + async deep (cuts typing CPU spikes).
+const SEARCH_DEBOUNCE_MS: u64 = 40;
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -47,6 +50,8 @@ pub struct Launcher {
     footer_term: GtkBox,
     preview: Rc<PreviewPanel>,
     deep_gen: Rc<Cell<u64>>,
+    /// Pending search debounce timer (cancelled on each keystroke / hide).
+    search_debounce: Rc<RefCell<Option<glib::SourceId>>>,
     drag_session: DragSession,
     _theme: Rc<ThemeManager>,
 }
@@ -235,6 +240,8 @@ impl Launcher {
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+        let search_debounce: Rc<RefCell<Option<glib::SourceId>>> =
+            Rc::new(RefCell::new(None));
 
         {
             let engine = engine.clone();
@@ -248,22 +255,46 @@ impl Launcher {
             let deep_gen = deep_gen.clone();
             let search_for_deep = search.clone();
             let drag_session = drag_session.clone();
+            let search_debounce = search_debounce.clone();
             search.connect_changed(move |entry| {
+                if let Some(id) = search_debounce.borrow_mut().take() {
+                    id.remove();
+                }
                 let q = entry.text().to_string();
-                refresh_results(
-                    &engine,
-                    &q,
-                    &list,
-                    &empty,
-                    &results,
-                    &selected,
-                    &footer_action,
-                    &footer_term,
-                    &preview,
-                    &deep_gen,
-                    &search_for_deep,
-                    &drag_session,
+                let engine = engine.clone();
+                let list = list.clone();
+                let empty = empty.clone();
+                let results = results.clone();
+                let selected = selected.clone();
+                let footer_action = footer_action.clone();
+                let footer_term = footer_term.clone();
+                let preview = preview.clone();
+                let deep_gen = deep_gen.clone();
+                let search_for_deep = search_for_deep.clone();
+                let drag_session = drag_session.clone();
+                let debounce_slot = search_debounce.clone();
+                let id = glib::timeout_add_local(
+                    std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                    move || {
+                        *debounce_slot.borrow_mut() = None;
+                        refresh_results(
+                            &engine,
+                            &q,
+                            &list,
+                            &empty,
+                            &results,
+                            &selected,
+                            &footer_action,
+                            &footer_term,
+                            &preview,
+                            &deep_gen,
+                            &search_for_deep,
+                            &drag_session,
+                        );
+                        glib::ControlFlow::Break
+                    },
                 );
+                *search_debounce.borrow_mut() = Some(id);
             });
         }
 
@@ -548,6 +579,7 @@ impl Launcher {
             footer_term,
             preview,
             deep_gen,
+            search_debounce,
             drag_session,
             _theme: theme,
         }
@@ -594,6 +626,12 @@ impl Launcher {
 
     pub fn hide(&self) {
         self.window.set_visible(false);
+        // Drop pending search / deep-walk work while hidden.
+        if let Some(id) = self.search_debounce.borrow_mut().take() {
+            id.remove();
+        }
+        self.deep_gen.set(self.deep_gen.get().wrapping_add(1));
+        self.preview.clear();
     }
 }
 
@@ -695,43 +733,39 @@ fn refresh_results(
     let search_entry = search_entry.clone();
     let drag_session = drag_session.clone();
 
-    // Channel: worker → main thread.
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<SearchResult>>();
+    // Worker → main thread (event-driven; no 16 ms poll waking the UI loop).
+    let (tx, rx) = async_channel::bounded::<Vec<SearchResult>>(1);
     let q_worker = q.clone();
     std::thread::spawn(move || {
         let deep = engine.search_files_deep(&q_worker);
-        let _ = tx.send(deep);
+        let _ = tx.send_blocking(deep);
     });
 
-    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-        match rx.try_recv() {
-            Ok(deep_hits) => {
-                // Stale generation or user already typed something else.
-                if deep_gen.get() != gen {
-                    return glib::ControlFlow::Break;
-                }
-                if search_entry.text().as_str() != q.as_str() {
-                    return glib::ControlFlow::Break;
-                }
-                if deep_hits.is_empty() {
-                    return glib::ControlFlow::Break;
-                }
-                apply_deep_hits(
-                    &deep_hits,
-                    &list,
-                    &empty,
-                    &results,
-                    &selected,
-                    &footer_action,
-                    &footer_term,
-                    &preview,
-                    &drag_session,
-                );
-                glib::ControlFlow::Break
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+    glib::spawn_future_local(async move {
+        let Ok(deep_hits) = rx.recv().await else {
+            return;
+        };
+        // Stale generation or user already typed something else.
+        if deep_gen.get() != gen {
+            return;
         }
+        if search_entry.text().as_str() != q.as_str() {
+            return;
+        }
+        if deep_hits.is_empty() {
+            return;
+        }
+        apply_deep_hits(
+            &deep_hits,
+            &list,
+            &empty,
+            &results,
+            &selected,
+            &footer_action,
+            &footer_term,
+            &preview,
+            &drag_session,
+        );
     });
 }
 

@@ -25,6 +25,7 @@ impl Engine {
         let files = Arc::new(FileProvider::new_empty(config.clone()));
         let calc = Arc::new(CalcProvider::new());
 
+        // Warm apps + file index off the UI thread (disk only; no network).
         let apps_bg = apps.clone();
         let files_bg = files.clone();
         thread::spawn(move || {
@@ -32,16 +33,17 @@ impl Engine {
             files_bg.rebuild_index();
         });
 
-        // Warm currency rates in background
-        let fx = calc.fx_store();
-        thread::spawn(move || {
-            fx.ensure_fresh();
-        });
+        // Currency rates: use on-disk cache only at boot. Network fetch is deferred
+        // until an FX conversion is actually requested (see FxStore::convert) so
+        // idle daemons do not wake radios / burn CPU on curl.
 
+        // Periodic refresh: apps always light-scan; files only rebuild when
+        // TTL/fingerprint say so (ensure_fresh). Interval is long to limit
+        // battery cost — freshness still happens on Settings → Rebuild.
         let files_periodic = files.clone();
         let apps_periodic = apps.clone();
         thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(30 * 60));
+            thread::sleep(Duration::from_secs(45 * 60));
             apps_periodic.reload();
             files_periodic.rebuild_index();
         });

@@ -28,6 +28,9 @@ impl FxStore {
         store
     }
 
+    /// Force-check rates (network if stale). Not called at daemon boot —
+    /// `convert` refreshes lazily for battery life.
+    #[allow(dead_code)]
     pub fn ensure_fresh(&self) {
         if self.is_stale() {
             if let Some(c) = fetch_rates() {

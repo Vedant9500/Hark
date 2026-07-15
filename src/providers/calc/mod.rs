@@ -28,6 +28,7 @@ impl CalcProvider {
         }
     }
 
+    #[allow(dead_code)] // was used for boot-time warm; FX now lazy on convert
     pub fn fx_store(&self) -> Arc<FxStore> {
         self.fx.clone()
     }

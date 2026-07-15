@@ -110,12 +110,10 @@ impl ThemeManager {
         let file = gio::File::for_path(&watch_path);
         let Ok(monitor) = file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
         else {
-            // Fallback: poll every 2s
-            let this = self.clone();
-            glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
-                this.apply();
-                glib::ControlFlow::Continue
-            });
+            // Fallback when FileMonitor fails: apply once now. Do **not** poll every
+            // few seconds — that keeps the CPU awake for battery life. User can
+            // restart Blink or toggle the panel to pick up a new scheme.json.
+            self.apply();
             return;
         };
 

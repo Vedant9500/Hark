@@ -38,14 +38,13 @@ window.blink-window {{
   margin: 0;
 }}
 
-/* Transparent air around the card — keeps rounded corners + shadow inside
-   the square window surface (equal inset on all 4 sides). */
+/* Frame is flush with the window — no square transparent "padding". */
 window.blink-window .blink-frame {{
   background-color: transparent;
   background-image: none;
   border: none;
   box-shadow: none;
-  padding: 12px;
+  padding: 0;
   margin: 0;
 }}
 
@@ -65,7 +64,8 @@ window.blink-window .blink-shell {{
   background-image: none;
   border: 1px solid {border};
   border-radius: 16px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.50);
+  /* Soft shadow; keep modest so 0-inset window doesn't show square clip. */
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.40);
   padding: 0;
   margin: 0;
   /* Compact list width; Rust grows the window only when preview opens. */
