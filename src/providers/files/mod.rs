@@ -138,6 +138,13 @@ impl FileProvider {
             // Cache already has live hits; no need to re-walk.
             return false;
         }
+        // Soft folder hints after ` in ` — never schedule a deep walk.
+        if index_results
+            .iter()
+            .any(|r| r.id.starts_with("scope-hint:"))
+        {
+            return false;
+        }
         // Index-aware scoped `in` queries (folder-name scopes need the index).
         if self.is_scoped_query(query) {
             return !search::index_results_are_strong(index_results);

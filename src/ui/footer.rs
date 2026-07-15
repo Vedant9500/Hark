@@ -11,13 +11,18 @@ pub(crate) fn update_footer(
     footer_term: &GtkBox,
 ) {
     let item = results.borrow().get(idx).cloned();
-    let (label, show_term) = match item.as_ref().map(|i| i.kind) {
-        Some(ResultKind::Calc) | Some(ResultKind::Conversion) => ("Copy Result", false),
-        Some(ResultKind::Command) => ("Open", false),
-        // Files / folders / apps are also draggable (drag path out of the row).
-        Some(ResultKind::Folder) => ("Open · Drag", true),
-        Some(ResultKind::File) => ("Open · Drag", true),
-        Some(ResultKind::App) => ("Open · Drag", false),
+    let (label, show_term) = match item.as_ref() {
+        Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => {
+            ("Use Scope", false)
+        }
+        Some(i) => match i.kind {
+            ResultKind::Calc | ResultKind::Conversion => ("Copy Result", false),
+            ResultKind::Command => ("Open", false),
+            // Files / folders / apps are also draggable (drag path out of the row).
+            ResultKind::Folder => ("Open · Drag", true),
+            ResultKind::File => ("Open · Drag", true),
+            ResultKind::App => ("Open · Drag", false),
+        },
         None => ("Open", false),
     };
     footer_action.set_text(label);

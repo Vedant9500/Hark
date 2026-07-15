@@ -49,6 +49,8 @@ pub enum Action {
     OpenPath(PathBuf),
     OpenTerminal(PathBuf),
     Copy(String),
+    /// Replace the launcher search text (scope folder completions after ` in `).
+    SetQuery(String),
     OpenSettings,
 }
 
@@ -58,7 +60,7 @@ impl Action {
         match self {
             Action::OpenPath(p) | Action::OpenTerminal(p) => Some(p.as_path()),
             Action::LaunchApp { desktop_path, .. } => desktop_path.as_deref(),
-            Action::Copy(_) | Action::OpenSettings => None,
+            Action::Copy(_) | Action::SetQuery(_) | Action::OpenSettings => None,
         }
     }
 }

@@ -367,11 +367,12 @@ impl Launcher {
             let window = window.clone();
             let results = results.clone();
             let selected = selected.clone();
+            let search = search.clone();
             let open_settings = open_settings.clone();
             list.connect_row_activated(move |_, row| {
                 let idx = row.index() as usize;
                 selected.set(idx);
-                activate_result(&engine, &results, idx, &window, &open_settings);
+                activate_result(&engine, &results, idx, &window, &search, &open_settings);
             });
         }
 
@@ -397,9 +398,17 @@ impl Launcher {
             let window = window.clone();
             let results = results.clone();
             let selected = selected.clone();
+            let search_for_activate = search.clone();
             let open_settings = open_settings.clone();
             search.connect_activate(move |_| {
-                activate_result(&engine, &results, selected.get(), &window, &open_settings);
+                activate_result(
+                    &engine,
+                    &results,
+                    selected.get(),
+                    &window,
+                    &search_for_activate,
+                    &open_settings,
+                );
             });
         }
 
@@ -490,6 +499,7 @@ impl Launcher {
                             &results,
                             selected.get(),
                             &window,
+                            &search,
                             &open_settings,
                         );
                         glib::Propagation::Stop
@@ -642,6 +652,7 @@ fn activate_result<F: Fn()>(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     idx: usize,
     window: &ApplicationWindow,
+    search: &Entry,
     open_settings: &Rc<F>,
 ) {
     let item = results.borrow().get(idx).cloned();
@@ -649,6 +660,12 @@ fn activate_result<F: Fn()>(
         match engine.execute(&item.action) {
             ExecuteOutcome::OpenSettings => {
                 open_settings();
+            }
+            ExecuteOutcome::SetQuery(q) => {
+                // Soft completion: keep launcher open, fill the scoped query.
+                search.set_text(&q);
+                search.set_position(-1);
+                search.grab_focus_without_selecting();
             }
             ExecuteOutcome::Launched => {
                 if !matches!(

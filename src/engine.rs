@@ -275,6 +275,7 @@ impl Engine {
                 copy_to_clipboard(text);
                 ExecuteOutcome::Launched
             }
+            Action::SetQuery(q) => ExecuteOutcome::SetQuery(q.clone()),
             Action::OpenSettings => ExecuteOutcome::OpenSettings,
         }
     }
@@ -375,10 +376,12 @@ impl Engine {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecuteOutcome {
     Launched,
     OpenSettings,
+    /// Soft completion — keep window open and replace the search query.
+    SetQuery(String),
 }
 
 /// When the user opens a file deeper than the global index depth, promote a

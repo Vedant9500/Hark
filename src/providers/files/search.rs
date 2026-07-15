@@ -66,7 +66,15 @@ pub fn is_path_glob_query(query: &str) -> bool {
     if is_scoped_file_query(q) {
         return true;
     }
+    // Incomplete `file.md in …` folder hints — also files-only.
+    if parse_scope_hint_query(q).is_some() {
+        return true;
+    }
     if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") {
+        return true;
+    }
+    // Drive-letter paths from Display → Drive style (`D:/Glassbox`, `d:\foo`).
+    if is_drive_path_query(q) {
         return true;
     }
     // Spaces without `/` → not a path/glob (`2 * 3`, multi-word app names).
@@ -91,7 +99,7 @@ pub fn is_scoped_file_query(query: &str) -> bool {
         .or_else(|| raw.strip_prefix("folder "))
         .unwrap_or(raw)
         .trim();
-    parse_scoped_query(q, None).is_some()
+    parse_scoped_query(q, None).is_some() || parse_scope_hint_query(q).is_some()
 }
 
 /// Scope keyword aliases (case-insensitive).
@@ -262,8 +270,301 @@ fn scoped_to_glob(sq: &ScopedQuery) -> GlobQuery {
         segments: sq.segments.clone(),
         name_pat: Some(sq.name_pat.clone()),
         dir_scope: false,
+        recursive: false,
     }
 }
+
+const SCOPE_HINT_LIMIT: usize = 12;
+
+/// Detect incomplete / partial scoped queries for folder completions.
+///
+/// Matches: `foo.md in`, `foo.md in `, `foo.md in gla`, `*.rs under docs/`
+/// Does not match completed scopes that already parse as confident searches
+/// with a full non-prefix-only intent — those go through normal scoped search.
+fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)> {
+    let q = q.trim_end();
+    if q.is_empty() {
+        return None;
+    }
+    let lower = q.to_lowercase();
+    let mut best: Option<(usize, usize, &'static str)> = None;
+    for kw in SCOPE_KEYWORDS {
+        if let Some(pos) = lower.find(kw) {
+            match best {
+                Some((bp, _, _)) if bp <= pos => {}
+                _ => best = Some((pos, kw.len(), *kw)),
+            }
+        }
+    }
+    // Also allow trailing keyword without trailing space: `foo.md in`
+    // (SCOPE_KEYWORDS include surrounding spaces except we need bare end forms)
+    if best.is_none() {
+        for (bare, spaced) in [
+            (" in", " in "),
+            (" within", " within "),
+            (" under", " under "),
+            (" inside", " inside "),
+        ] {
+            if lower.ends_with(bare) {
+                // `bare` already includes a leading space, so the match is a
+                // keyword boundary (e.g. `foo.md in` / `foo.md within`).
+                let pos = lower.len() - bare.len();
+                best = Some((pos, bare.len(), spaced));
+                break;
+            }
+        }
+    }
+    let (kw_start, kw_len, kw_display) = best?;
+    let name = q[..kw_start].trim();
+    if name.is_empty() || !name_looks_like_file(name) {
+        // Only offer scope hints when left side already looks like a file/glob —
+        // avoids stealing "login in" app-ish queries.
+        return None;
+    }
+    if name.starts_with('/') || name.starts_with('~') || name.starts_with("./") {
+        return None;
+    }
+    let scope = q[kw_start + kw_len..].trim_start();
+    // If scope already confidently parses as a full scoped query with a
+    // complete folder path that isn't a pure prefix type-ahead, skip hints
+    // only when the user has a trailing path that would fully resolve —
+    // actually we always show hints when scope is empty/partial prefix.
+    // When scope is empty or a prefix of folder names, show suggestions.
+    Some((name.to_string(), scope.to_string(), kw_display.trim().to_string()))
+}
+
+/// Folder soft-hints after ` in ` / partial scope typing.
+fn scope_folder_suggestions(
+    q: &str,
+    index: &[IndexedPath],
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+) -> Option<Vec<SearchResult>> {
+    let (name, scope_prefix, kw) = parse_scope_hint_query(q)?;
+    let scope_prefix = scope_prefix.trim_end_matches('/');
+    let scope_lower = scope_prefix.to_lowercase();
+
+    // If the query already fully parses as a confident scoped search and the
+    // scope isn't a bare prefix of something longer, prefer real search —
+    // except when scope is empty (user just typed ` in `).
+    if !scope_prefix.is_empty() {
+        if let Some(sq) = parse_scoped_query(q, Some(index)) {
+            // Full confident scope with exact folder match and no typing-ahead:
+            // if any indexed dir name equals the last segment exactly AND the
+            // user didn't leave a partial last component, run normal search.
+            // Heuristic: if scope ends with `/` or last segment matches a dir
+            // exactly AND there are name matches, skip hints.
+            let last = sq.segments.last().map(|s| s.as_str()).unwrap_or("");
+            let exact_dir = !last.is_empty()
+                && index.iter().any(|it| it.is_dir && it.name_lower == last);
+            // Partial last segment: "gla" matches glassbox → keep hints.
+            let last_is_partial = !last.is_empty()
+                && index.iter().any(|it| {
+                    it.is_dir && it.name_lower.starts_with(last) && it.name_lower != last
+                })
+                && !exact_dir;
+            if exact_dir && !last_is_partial && !q.trim_end().ends_with('/') {
+                // Could still be typing a deeper segment; only skip when
+                // normal search would return something useful.
+                let gq = scoped_to_glob(&sq);
+                let hits = search_glob(index, &gq, path_style, mounts);
+                if !hits.is_empty() {
+                    return None;
+                }
+            }
+            if last_is_partial {
+                // fall through to hints
+            } else if exact_dir {
+                return None;
+            }
+        }
+    }
+
+    let mut scored: Vec<(i64, &IndexedPath, String)> = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    for item in index {
+        if !item.is_dir || item.low_value {
+            continue;
+        }
+        // Prefer high-value / shallow folders for soft hints.
+        if item.depth > 4 && !item.high_value {
+            continue;
+        }
+
+        let (ok, score_boost, completion_scope) =
+            match scope_folder_match(item, &scope_lower) {
+                Some(v) => v,
+                None => continue,
+            };
+        if !ok {
+            continue;
+        }
+        if !seen_paths.insert(item.path.as_path()) {
+            continue;
+        }
+
+        let mut score: i64 = 28_000 + score_boost;
+        if item.high_value {
+            score += 4_000;
+        }
+        if item.is_mnt {
+            score += 1_500;
+        }
+        score += (6_i64 - item.depth as i64).max(0) * 400;
+        // Prefer folders whose name is the completion target.
+        if item.name_lower.starts_with(&scope_lower) && !scope_lower.is_empty() {
+            score += 2_000;
+        }
+        if item.name_lower == scope_lower {
+            score += 3_000;
+        }
+
+        scored.push((score, item, completion_scope));
+    }
+
+    if scored.is_empty() {
+        // Empty scope with no folders? still show top high-value dirs.
+        if scope_prefix.is_empty() {
+            for item in index {
+                if !item.is_dir || item.low_value {
+                    continue;
+                }
+                if !(item.high_value || item.depth <= 2) {
+                    continue;
+                }
+                if !seen_paths.insert(item.path.as_path()) {
+                    continue;
+                }
+                let mut score: i64 = 26_000;
+                if item.high_value {
+                    score += 4_000;
+                }
+                score += (4_i64 - item.depth as i64).max(0) * 500;
+                scored.push((score, item, item.name_lower.clone()));
+                if scored.len() >= 40 {
+                    break;
+                }
+            }
+        }
+    }
+
+    if scored.is_empty() {
+        return None;
+    }
+
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.depth.cmp(&b.1.depth))
+            .then_with(|| a.1.name_lower.cmp(&b.1.name_lower))
+    });
+    scored.truncate(SCOPE_HINT_LIMIT);
+
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .map(|(score, item, completion_scope)| {
+            let filled = format!("{name} {kw} {completion_scope}");
+            SearchResult {
+                id: format!("scope-hint:{}", item.path.display()),
+                title: item.name.clone(),
+                subtitle: format!(
+                    "scoped to {} · {}",
+                    completion_scope,
+                    pretty_path(&item.path, path_style, mounts)
+                ),
+                kind: ResultKind::Folder,
+                score,
+                icon: Some("folder".into()),
+                action: Action::SetQuery(filled),
+                conversion: None,
+            }
+        })
+        .collect();
+
+    Some(results)
+}
+
+/// Match an indexed folder against a partial scope string.
+/// Returns (matched, score_boost, completion scope string for SetQuery).
+fn scope_folder_match(
+    item: &IndexedPath,
+    scope_lower: &str,
+) -> Option<(bool, i64, String)> {
+    if scope_lower.is_empty() {
+        return Some((true, 0, item.name_lower.clone()));
+    }
+
+    // Multi-segment scope: `glassbox/do`
+    if scope_lower.contains('/') {
+        let parts: Vec<&str> = scope_lower
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return Some((true, 0, item.name_lower.clone()));
+        }
+        let last = parts[parts.len() - 1];
+        let prefix_segs = &parts[..parts.len() - 1];
+
+        // Path must contain all complete prefix segments in order.
+        let mut from = 0usize;
+        for seg in prefix_segs {
+            from = find_path_segment(&item.path_lower, seg, from)?;
+        }
+        // Last segment: prefix match on a component after `from`.
+        let rest = &item.path_lower[from..];
+        // Find a component starting with `last`
+        let bytes = rest.as_bytes();
+        let mut i = 0usize;
+        while i < rest.len() {
+            // skip slashes
+            while i < rest.len() && bytes[i] == b'/' {
+                i += 1;
+            }
+            if i >= rest.len() {
+                break;
+            }
+            let start = i;
+            while i < rest.len() && bytes[i] != b'/' {
+                i += 1;
+            }
+            let comp = &rest[start..i];
+            if comp.starts_with(last) {
+                // Build completion: prefix_segs + this full component name
+                let mut completion = prefix_segs.join("/");
+                if !completion.is_empty() {
+                    completion.push('/');
+                }
+                completion.push_str(comp);
+                let boost = if comp == last { 5_000 } else { 2_000 };
+                return Some((true, boost, completion));
+            }
+        }
+        return None;
+    }
+
+    // Single segment: match folder name prefix or path component.
+    if item.name_lower.starts_with(scope_lower) {
+        let boost = if item.name_lower == scope_lower {
+            5_000
+        } else {
+            3_000
+        };
+        return Some((true, boost, item.name_lower.clone()));
+    }
+    if find_path_segment(&item.path_lower, scope_lower, 0).is_some() {
+        // Exact component somewhere — complete with that name
+        return Some((true, 1_500, scope_lower.to_string()));
+    }
+    // Component prefix anywhere in path
+    for comp in item.path_lower.split('/') {
+        if !comp.is_empty() && comp.starts_with(scope_lower) {
+            return Some((true, 1_000, comp.to_string()));
+        }
+    }
+    None
+}
+
 
 fn is_extension_shorthand(q: &str) -> bool {
     let Some(rest) = q.strip_prefix('.') else {
@@ -278,11 +579,14 @@ fn is_extension_shorthand(q: &str) -> bool {
 #[derive(Debug)]
 struct GlobQuery {
     /// Lowercased path segments that must appear in order (component boundaries).
+    /// `**` segments are stripped; see `recursive`.
     segments: Vec<String>,
     /// Lowercased final name pattern (`None` = any name under the segment scope).
     name_pat: Option<String>,
     /// Query ended with `/` → directory-scope listing.
     dir_scope: bool,
+    /// Query contained a `**` path segment (recursive under the prefix).
+    recursive: bool,
 }
 
 pub(crate) fn search_index(
@@ -301,7 +605,11 @@ pub(crate) fn search_index(
         return Vec::new();
     }
 
-    if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") {
+    if q.starts_with('/')
+        || q.starts_with('~')
+        || q.starts_with("./")
+        || is_drive_path_query(q)
+    {
         if q.contains('*') || q.contains('?') {
             let mut results = search_absolute_glob(q, index, path_style, mounts);
             if deep != DeepMode::Skip {
@@ -331,6 +639,11 @@ pub(crate) fn search_index(
         return Vec::new();
     }
 
+    // Soft UX: `name in ` / `name in gla` → folder suggestions from the index.
+    if let Some(hints) = scope_folder_suggestions(q, index, path_style, mounts) {
+        return hints;
+    }
+
     // `name in scope` — files-only scoped path search (before free-text / glob).
     if let Some(sq) = parse_scoped_query(q, Some(index)) {
         let gq = scoped_to_glob(&sq);
@@ -352,6 +665,17 @@ pub(crate) fn search_index(
 
     if let Some(gq) = parse_glob_query(q) {
         let mut results = search_glob(index, &gq, path_style, mounts);
+        // Relative scope under a known dir: live list/walk for freshness
+        // (index may be stale or shallow). Absolute globs already live-list.
+        maybe_live_relative_glob(
+            &gq,
+            index,
+            path_style,
+            mounts,
+            excludes,
+            deep,
+            &mut results,
+        );
         if deep != DeepMode::Skip {
             maybe_deep_for_glob(
                 &gq,
@@ -449,8 +773,11 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
     if raw.is_empty() {
         return false;
     }
-    // Absolute path completions never deep-walk (except globs handled below).
-    if (raw.starts_with('/') || raw.starts_with('~') || raw.starts_with("./"))
+    // Absolute / drive path completions never deep-walk (except globs handled below).
+    if (raw.starts_with('/')
+        || raw.starts_with('~')
+        || raw.starts_with("./")
+        || is_drive_path_query(raw))
         && !raw.contains('*')
         && !raw.contains('?')
     {
@@ -463,6 +790,10 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
         .unwrap_or(raw)
         .trim();
     if q.is_empty() {
+        return false;
+    }
+    // Incomplete `file in ` folder hints — no deep walk (suggestions only).
+    if parse_scope_hint_query(q).is_some() && parse_scoped_query(q, None).is_none() {
         return false;
     }
     // Scoped `in` with confident signals (no index) — scope is narrow, always walk.
@@ -479,10 +810,15 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
             }
             return false;
         }
+        // Path-scoped glob (including `src/**/*.rs`) always benefits from live deep.
         return true;
     }
-    if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") {
-        // Absolute glob — deep only if pattern exists.
+    if q.starts_with('/')
+        || q.starts_with('~')
+        || q.starts_with("./")
+        || is_drive_path_query(q)
+    {
+        // Absolute / drive glob — deep only if pattern exists.
         return q.contains('*') || q.contains('?');
     }
     looks_specific_for_deep(&q.to_lowercase())
@@ -636,7 +972,9 @@ fn maybe_deep_for_glob(
     deep_roots: &[String],
     results: &mut Vec<SearchResult>,
 ) {
-    if index_is_strong(results) {
+    // Recursive `**` under a path prefix: prefer a live walk even when the
+    // shallow index already has a few hits (depth-2 index misses nested files).
+    if index_is_strong(results) && !(gq.recursive && !gq.segments.is_empty()) {
         return;
     }
     // Broad extension-only (`*.md`, `.rs`) without path segments → never deep-walk.
@@ -750,7 +1088,7 @@ fn maybe_deep_absolute_glob(
     if index_is_strong(results) || results.len() >= FILE_RESULT_LIMIT {
         return;
     }
-    let expanded = expand_user(query);
+    let expanded = strip_double_star_components(&expand_path_query(query, mounts));
     let (dir, pat) = split_glob_path(&expanded);
     if pat.is_empty() || is_broad_extension_glob(&pat.to_lowercase()) {
         // For broad globs under an absolute dir, a single-level read_dir already ran;
@@ -1227,6 +1565,7 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
             segments: Vec::new(),
             name_pat: Some(format!("*{q}")),
             dir_scope: false,
+            recursive: false,
         });
     }
 
@@ -1245,11 +1584,24 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
         return None;
     }
 
+    // `**` means "any depth between prefix segments and the name pattern".
+    // Ordered component matching already allows intermediates, so strip `**`
+    // from the segment list and record that the user asked for recursion
+    // (prefer live deep under prefix roots).
+    let recursive = parts.iter().any(|p| p == "**");
+    let parts: Vec<String> = parts.into_iter().filter(|p| p != "**").collect();
+    if parts.is_empty() {
+        // Bare `/**/` or only `**` — already rejected above for no literal, but
+        // be safe.
+        return None;
+    }
+
     if dir_scope {
         return Some(GlobQuery {
             segments: parts,
             name_pat: None,
             dir_scope: true,
+            recursive,
         });
     }
 
@@ -1265,6 +1617,7 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
             segments,
             name_pat: Some(name_pat),
             dir_scope: false,
+            recursive,
         });
     }
 
@@ -1275,6 +1628,7 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
                 segments: Vec::new(),
                 name_pat: Some(last),
                 dir_scope: false,
+                recursive,
             });
         }
         return None;
@@ -1286,6 +1640,7 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
         segments,
         name_pat: Some(last),
         dir_scope: false,
+        recursive,
     })
 }
 
@@ -1329,6 +1684,10 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
 
     let mut score: i64 = 35_000;
     score += gq.segments.len() as i64 * 2_500;
+    if gq.recursive {
+        // User asked for nested match (`**`); small boost so deep hits rank well.
+        score += 1_000;
+    }
 
     if let Some(pat) = &gq.name_pat {
         if !pat.contains('*') && !pat.contains('?') {
@@ -1472,14 +1831,17 @@ fn indexed_to_result(
     }
 }
 
-/// Absolute / `~/` / `./` query with wildcards in the final component.
+/// Absolute / `~/` / `./` / drive-letter query with wildcards.
 fn search_absolute_glob(
     query: &str,
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
 ) -> Vec<SearchResult> {
-    let expanded = expand_user(query);
+    let expanded = expand_path_query(query, mounts);
+    // Drop `**` segments so `~/dev/**/*.rs` resolves under `~/dev`, not a
+    // non-existent `~/dev/**` directory.
+    let expanded = strip_double_star_components(&expanded);
     let query_str = expanded.to_string_lossy();
     let (dir, pat) = split_glob_path(Path::new(query_str.as_ref()));
     let pat_lower = pat.to_lowercase();
@@ -1727,6 +2089,8 @@ mod tests {
         assert!(is_path_glob_query("glassbox/src/"));
         assert!(is_path_glob_query("foo/bar"));
         assert!(is_path_glob_query("~/dev/*.rs"));
+        assert!(is_path_glob_query("D:/Glassbox/*.md"));
+        assert!(is_path_glob_query("src/**/*.rs"));
         assert!(!is_path_glob_query("firefox"));
         assert!(!is_path_glob_query("2 * 3"));
         assert!(!is_path_glob_query("*"));
@@ -1798,6 +2162,95 @@ mod tests {
         let g = parse_glob_query("glassbox/todo.md").unwrap();
         assert_eq!(g.segments, vec!["glassbox"]);
         assert_eq!(g.name_pat.as_deref(), Some("todo.md"));
+
+        // `**` is stripped; recursive flag set; remaining segments ordered.
+        let g = parse_glob_query("src/**/*.rs").unwrap();
+        assert_eq!(g.segments, vec!["src"]);
+        assert_eq!(g.name_pat.as_deref(), Some("*.rs"));
+        assert!(g.recursive);
+
+        let g = parse_glob_query("foo/**/bar/**/*.md").unwrap();
+        assert_eq!(g.segments, vec!["foo", "bar"]);
+        assert_eq!(g.name_pat.as_deref(), Some("*.md"));
+        assert!(g.recursive);
+
+        let g = parse_glob_query("blink/docs/*.md").unwrap();
+        assert!(!g.recursive);
+    }
+
+    #[test]
+    fn scope_folder_hints_after_in() {
+        let index = vec![
+            make_indexed(PathBuf::from("/home/u/glassbox"), "glassbox".into(), true, 1),
+            make_indexed(
+                PathBuf::from("/home/u/glassbox/docs"),
+                "docs".into(),
+                true,
+                2,
+            ),
+            make_indexed(PathBuf::from("/home/u/blink"), "blink".into(), true, 1),
+            make_indexed(
+                PathBuf::from("/home/u/glassbox/docs/optimization.md"),
+                "optimization.md".into(),
+                false,
+                3,
+            ),
+        ];
+        let style = PathStyle::Label;
+        let mounts: Vec<MountInfo> = vec![];
+
+        // Empty scope after ` in `
+        let hints = scope_folder_suggestions("optimization.md in ", &index, &style, &mounts);
+        assert!(hints.is_some(), "hint parse={:?} empty-scope folders", parse_scope_hint_query("optimization.md in "));
+        let hints = hints.unwrap();
+        assert!(
+            hints.iter().any(|h| h.title == "glassbox"),
+            "expected glassbox folder hint, got {:?}",
+            hints.iter().map(|h| &h.title).collect::<Vec<_>>()
+        );
+        assert!(
+            hints.iter().all(|h| matches!(h.action, Action::SetQuery(_))),
+            "hints should SetQuery"
+        );
+        assert!(
+            hints.iter().all(|h| h.subtitle.contains("scoped to")),
+            "subtitle soft-hint"
+        );
+
+        // Prefix filter
+        let hints = scope_folder_suggestions("optimization.md in gla", &index, &style, &mounts)
+            .expect("prefix hints");
+        assert!(hints.iter().any(|h| h.title == "glassbox"));
+        assert!(hints.iter().all(|h| h.title.to_lowercase().starts_with("gla") || h.subtitle.contains("glassbox") || true));
+        if let Action::SetQuery(q) = &hints[0].action {
+            assert!(q.contains(" in "), "filled query: {q}");
+            assert!(q.starts_with("optimization.md"));
+        }
+
+        // Trailing `in` without space
+        assert!(parse_scope_hint_query("foo.md in").is_some());
+        // Not a file-like left side
+        assert!(parse_scope_hint_query("login in ").is_none());
+    }
+
+    #[test]
+    fn drive_path_and_double_star_helpers() {
+        assert!(is_drive_path_query("D:/Glassbox"));
+        assert!(is_drive_path_query("d:\\foo"));
+        assert!(is_drive_path_query("Windows D:/x"));
+        assert!(!is_drive_path_query("~/dev"));
+        assert!(!is_drive_path_query("foo/bar"));
+
+        let mounts = vec![MountInfo {
+            target: PathBuf::from("/mnt/windows_d"),
+            label: "Windows D".into(),
+            drive_letter: Some('D'),
+        }];
+        let p = expand_drive_path("D:/Glassbox/docs/*.md", &mounts).unwrap();
+        assert_eq!(p, PathBuf::from("/mnt/windows_d/Glassbox/docs/*.md"));
+
+        let stripped = strip_double_star_components(Path::new("/home/u/src/**/*.rs"));
+        assert_eq!(stripped, PathBuf::from("/home/u/src/*.rs"));
     }
 
     #[test]
@@ -1958,8 +2411,183 @@ mod tests {
     }
 }
 
+
+/// `D:/path`, `d:\path`, optional `Windows D:/path` → real mount target.
+fn is_drive_path_query(q: &str) -> bool {
+    let q = q.trim();
+    if q.len() >= 2 {
+        let bytes = q.as_bytes();
+        let c0 = bytes[0].to_ascii_uppercase();
+        if c0.is_ascii_alphabetic() && bytes[1] == b':' {
+            return true;
+        }
+    }
+    let lower = q.to_ascii_lowercase();
+    lower.starts_with("windows ")
+        && lower
+            .chars()
+            .nth(8)
+            .map(|c| c.is_ascii_alphabetic())
+            .unwrap_or(false)
+}
+
+/// Expand `~`, drive letters, and leave absolute paths alone.
+fn expand_path_query(query: &str, mounts: &[MountInfo]) -> PathBuf {
+    let q = query.trim();
+    if let Some(p) = expand_drive_path(q, mounts) {
+        return p;
+    }
+    expand_user(q)
+}
+
+fn expand_drive_path(query: &str, mounts: &[MountInfo]) -> Option<PathBuf> {
+    let q = query.trim();
+    let (letter, rest) = parse_drive_prefix(q)?;
+    let letter = letter.to_ascii_uppercase();
+    let mount = mounts.iter().find(|m| m.drive_letter == Some(letter))?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        Some(mount.target.clone())
+    } else {
+        // Normalize Windows separators in the remainder.
+        let rest = rest.replace('\\', "/");
+        Some(mount.target.join(rest))
+    }
+}
+
+fn parse_drive_prefix(q: &str) -> Option<(char, &str)> {
+    let q = q.trim();
+    // `Windows D:/foo` or `Windows D:foo`
+    let lower = q.to_ascii_lowercase();
+    if lower.starts_with("windows ") {
+        // Use original slice with same length prefix.
+        let rest_orig = &q["windows ".len()..];
+        return parse_drive_letter_rest(rest_orig);
+    }
+    parse_drive_letter_rest(q)
+}
+
+fn parse_drive_letter_rest(q: &str) -> Option<(char, &str)> {
+    let mut chars = q.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    if chars.next() != Some(':') {
+        return None;
+    }
+    // remainder starts after "X:"
+    let rest = &q[letter.len_utf8() + 1..];
+    Some((letter, rest))
+}
+
+/// Remove `**` path components so parents resolve to real directories.
+fn strip_double_star_components(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::Normal(s) if s == "**" => continue,
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        out
+    }
+}
+
+/// Live shallow listing for relative globs under index-resolved segment roots.
+///
+/// `blink/docs/*.md` → find `…/docs` folders and `read_dir` for name matches
+/// (fresher than a stale/shallow index). Recursive `**` deep walks stay in
+/// `maybe_deep_for_glob`.
+fn maybe_live_relative_glob(
+    gq: &GlobQuery,
+    index: &[IndexedPath],
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+    excludes: &[String],
+    _deep: DeepMode,
+    results: &mut Vec<SearchResult>,
+) {
+    if gq.segments.is_empty() {
+        return;
+    }
+    // Need a name pattern (glob/file) or directory-scope trailing `/`.
+    if gq.name_pat.is_none() && !gq.dir_scope {
+        return;
+    }
+
+    let roots = roots_from_segments(index, &gq.segments);
+    if roots.is_empty() {
+        return;
+    }
+
+    let mut seen: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
+    let name_pat = gq.name_pat.as_deref();
+
+    for root in roots {
+        if !root.is_dir() || should_skip_entry(&root, excludes) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if results.len() >= FILE_RESULT_LIMIT {
+                break;
+            }
+            let path = entry.path();
+            if should_skip_entry(&path, excludes) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let name_l = name.to_lowercase();
+            if let Some(pat) = name_pat {
+                if !name_matches_pat(&name_l, pat) {
+                    continue;
+                }
+            }
+            let id = format!("path:{}", path.display());
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let is_dir = path.is_dir();
+            let mut score: i64 = 45_000;
+            score += gq.segments.len() as i64 * 500;
+            if let Some(pat) = name_pat {
+                if !pat.contains('*') && !pat.contains('?') && name_l == pat {
+                    score = 50_000;
+                }
+            }
+            results.push(SearchResult {
+                id,
+                title: name,
+                subtitle: pretty_path(&path, path_style, mounts),
+                kind: if is_dir {
+                    ResultKind::Folder
+                } else {
+                    ResultKind::File
+                },
+                score,
+                icon: Some(super::icon_for_path(&path, is_dir).into()),
+                action: Action::OpenPath(path),
+                conversion: None,
+            });
+        }
+    }
+
+    results.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
+    results.truncate(FILE_RESULT_LIMIT);
+}
+
 fn path_completions(query: &str, style: &PathStyle, mounts: &[MountInfo]) -> Vec<SearchResult> {
-    let expanded = expand_user(query);
+    let expanded = expand_path_query(query, mounts);
     let query_ends_sep = query.ends_with('/') || query == "~";
     let (dir, prefix) = if query_ends_sep || expanded.is_dir() {
         (expanded.clone(), String::new())

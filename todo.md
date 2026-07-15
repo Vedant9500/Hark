@@ -106,24 +106,26 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 
 **Ask:** type patterns like `blink/docs/*.md` or `src/**/*.rs` and get matching files (scoped by path segments + extension/glob), not empty results.
 
-**Today:** only absolute/`~/` path *completions* (`path_completions`); free-text is name/fuzzy only — no `*`, no multi-segment path filter. Query `blink/docs/*.md` matches nothing useful.
+**Today:** path/glob search via `parse_glob_query` + index segments + live `read_dir` / deep walk. Absolute/`~/`/drive globs + relative `blink/docs/*.md` + `src/**/*.rs`.
 
 | Priority | Item | Notes | Status |
 |----------|------|-------|--------|
 | **P1** | Detect path-like / glob queries | If query contains `/` or `*`/`?` (and isn’t pure calc), route to path-glob search instead of app fuzzy | **done** — `is_path_glob_query` + engine `force_files` |
 | **P1** | Segment filter on index | Split on `/`; require each non-glob segment to appear in order in `path_lower` (e.g. `blink` then `docs`) | **done** — `find_path_segment` component-aware |
-| **P1** | Glob on final component | Support `*`, `?`, and `*.md` / `*foo*` on file/dir name (and optionally full relative path with `**` later) | **done** — custom `glob_match` (no extra crate) |
+| **P1** | Glob on final component | Support `*`, `?`, and `*.md` / `*foo*` on file/dir name | **done** — custom `glob_match` (no extra crate) |
 | **P1** | Extension shorthand | `*.md`, `*.rs`, `.png` as “any path ending with that ext” when no folder segments | **done** — `.md` → `*.md` |
-| **P2** | `**` recursive glob | `src/**/*.ts` across index; keep result cap (25) + strong scoring | pending — `*` already spans; `**` as segment not special-cased |
-| **P2** | Absolute/mount globs | `/home/…/*.pdf`, `D:/Glassbox/**/*.md` via index + live dir when under one folder | **partial** — `~/…/*.ext` live `read_dir` + index supplement |
-| **P2** | In-folder live glob | When pattern resolves under an existing dir, `read_dir` / walk that tree (fresher than index) | **partial** — absolute/`~/` final-component only; relative still index-only |
+| **P2** | `**` recursive glob | `src/**/*.ts` — strip `**` segments, set `recursive`; prefer live deep under prefix | **done** — `GlobQuery.recursive` + deep-walk bias |
+| **P2** | Absolute/mount globs | `/home/…/*.pdf`, `D:/Glassbox/**/*.md` via index + live dir when under one folder | **done** — `expand_path_query` drive letters + `~/` + strip `**` parents |
+| **P2** | In-folder live glob | When pattern resolves under an existing dir, `read_dir` / walk that tree (fresher than index) | **done** — absolute live `read_dir`; relative `maybe_live_relative_glob` under segment roots |
 
 **v1 query examples:**
 
 | Query | Meaning |
 |-------|---------|
-| `blink/docs/*.md` | paths containing `…/blink/…/docs/…` with name matching `*.md` |
+| `blink/docs/*.md` | paths containing `…/blink/…/docs/…` with name matching `*.md` (index + live `read_dir` on docs roots) |
+| `src/**/*.rs` | under `src` at any depth, name `*.rs` (recursive live deep when index shallow) |
 | `*.rs` | any indexed file ending in `.rs` |
+| `~/dev/*.md` / `D:/Glassbox/*.md` | absolute / drive-letter globs (mount map) |
 | `glassbox/src/` | folders/files under path segments glassbox + src |
 | `todo.md` | unchanged exact/fuzzy name search |
 | `optimization.md in glassbox/docs` | see **Scoped “in” search** below |
@@ -153,7 +155,7 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 - `main.rs in blink`
 - `*.md in docs/`
 
-**Today:** free-text is a single bag of tokens for fuzzy/name match; the word `in` is not special; path segments aren’t a scope filter.
+**Today:** scoped parse + deep walk; after `name in ` / partial scope, index folder soft-hints (`Action::SetQuery`) fill the query on Enter.
 
 | Priority | Item | Notes | Status |
 |----------|------|-------|--------|
@@ -163,7 +165,7 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 | **P1** | Files-only mode | `in` queries force file/folder provider (skip apps/commands) | **done** — `is_scoped_file_query` / `FileProvider::is_scoped_query` → engine `force_files` |
 | **P1** | Live deep walk when scoped | Scope narrows roots a lot → safe to live-walk under matched `glassbox` dirs past index depth (pairs with on-demand deep search) | **done** — `maybe_deep_for_scoped` (abs root / segment roots + pins) |
 | **P2** | Aliases | `within`, `under`, `inside` same as `in`; optional `from` | **done** — `in` / `within` / `under` / `inside` (`from` still optional) |
-| **P2** | Completions UX | After typing ` in `, suggest top folders from index as soft hints (optional subtitle “scoped to …”) | pending |
+| **P2** | Completions UX | After typing ` in `, suggest top folders from index as soft hints (optional subtitle “scoped to …”) | **done** — `scope_folder_suggestions` + `Action::SetQuery`; subtitle `scoped to …` |
 | **P3** | Reverse form | `glassbox/docs optimization.md` without `in` only if we can disambiguate; **not** v1 | pending |
 
 **Examples:**
