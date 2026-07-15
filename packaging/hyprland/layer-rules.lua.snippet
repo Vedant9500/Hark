@@ -1,0 +1,16 @@
+-- Paste into ~/.config/hypr/hyprland/rules.lua (replace the existing blink layer_rule).
+--
+-- Why: Hyprland blurs the full rectangular layer surface. Transparent pixels
+-- outside the rounded card read as a square "padding" halo. ignore_alpha must
+-- sit just under the shell fill (~0.85) so only the frosted card is blurred.
+
+-- Blink frosted glass: blur only pixels above ignore_alpha (shell ~0.85).
+-- Fully transparent corners must stay under the threshold or Hyprland paints a
+-- square blur halo around the rounded card.
+hl.layer_rule({
+    match        = { namespace = "blink" },
+    animation    = "popin 80%",
+    blur         = true,
+    ignore_alpha = 0.80,
+    xray         = false,
+})

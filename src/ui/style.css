@@ -20,7 +20,7 @@ window.blink-window > * {
   background-image: none;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 18px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.40);
+  box-shadow: none;
   padding: 12px;
   margin: 0;
   min-width: 680px;

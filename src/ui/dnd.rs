@@ -13,6 +13,7 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{DragSource, Widget};
+use super::thumbnails::freedesktop_thumbnail;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -268,6 +269,14 @@ fn content_for_path(path: &Path) -> ContentProvider {
 }
 
 fn set_drag_icon(source: &DragSource, path: &Path) {
+    // Prefer a FreeDesktop thumbnail for images (cheap, already on disk).
+    // Fall back to a themed mime icon so non-image files still look right.
+    if let Some(thumb) = drag_thumbnail_icon(path) {
+        // Hotspot near the top-left of the thumb so the pointer feels attached.
+        source.set_icon(Some(&thumb), 12, 12);
+        return;
+    }
+
     let display = source
         .widget()
         .map(|w| w.display())
@@ -289,6 +298,31 @@ fn set_drag_icon(source: &DragSource, path: &Path) {
     );
 
     source.set_icon(Some(&paintable), 24, 24);
+}
+
+/// Load a small drag icon from the FreeDesktop thumbnail cache when present.
+///
+/// Sync and main-thread, but thumbs are tiny PNGs already decoded by the
+/// desktop — no full-image decode and no coupling to the preview LRU (row
+/// drags often happen without a preview texture).
+fn drag_thumbnail_icon(path: &Path) -> Option<gdk::Texture> {
+    if path.is_dir() || !is_image_path(path) {
+        return None;
+    }
+    let thumb = freedesktop_thumbnail(path)?;
+    gdk::Texture::from_filename(&thumb).ok()
+}
+
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "avif" | "jxl" | "heic"
+            | "heif" | "tif" | "tiff" | "ico"
+    )
 }
 
 fn drag_icon_name(path: &Path) -> &'static str {

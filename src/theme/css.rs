@@ -64,8 +64,9 @@ window.blink-window .blink-shell {{
   background-image: none;
   border: 1px solid {border};
   border-radius: 16px;
-  /* Soft shadow; keep modest so 0-inset window doesn't show square clip. */
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.40);
+  /* No outer box-shadow: GTK paints it in the rectangular surface and Hyprland
+     layer blur turns that into a square "padding" halo. Depth comes from blur. */
+  box-shadow: none;
   padding: 0;
   margin: 0;
   /* Compact list width; Rust grows the window only when preview opens. */

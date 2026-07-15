@@ -1,6 +1,6 @@
 # Blink — TODO
 
-**Last updated:** 2026-07-14
+**Last updated:** 2026-07-15
 
 ---
 
@@ -38,19 +38,23 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 
 **Ask:** search an image in Blink → drag it into Telegram / WhatsApp / browser / file manager.
 
+**Today:** `src/ui/dnd.rs` + row/preview wiring. Real filesystem path payload (`GdkFileList` / `GFile` / `text/uri-list`); layer-shell focus-loss suppressed + exclusive keyboard released during drag; Hyprland MOVE preferred advertised but never deletes.
+
 | Priority | Item | Notes | Status |
 |----------|------|-------|--------|
-| **P1** | DnD file URI from result row | `gtk::DragSource` + `gdk::ContentProvider` for `text/uri-list` / `GdkFileList` from `Action::OpenPath` | pending |
-| **P1** | DnD from preview picture | Same content provider on the preview `Picture` / panel when showing a file path | pending |
+| **P1** | DnD file URI from result row | `attach_path_drag` on rows via `Action::drag_path()` (`OpenPath` / `.desktop` apps) | **done** — `src/ui/rows.rs` + `dnd.rs` |
+| **P1** | DnD from preview picture | `PathDragBinding` on preview panel when showing a file path | **done** — `src/ui/preview.rs` |
+| **P1** | Layer-shell / focus-loss safety | Suppress auto-hide; `KeyboardMode::OnDemand` mid-drag; 350 ms post-drop grace | **done** — `DragSession` + Hyprland fix commit |
 | **P2** | Multi-select DnD | Only if multi-select lands; single-file first | blocked |
-| **P2** | Drag icon / thumbnail hotspot | Nice-to-have; use cached preview texture or file icon | pending |
+| **P2** | Drag icon / thumbnail hotspot | Theme mime icon always; FreeDesktop thumb when present for images | **done** — `set_drag_icon` prefers `~/.cache/thumbnails` then icon theme |
 
 **Feasibility:** yes on GTK4/Wayland for **file paths** (not in-memory pixels as the primary payload). Telegram Desktop, browsers, Nautilus, etc. accept `file://` URI / file-list drops. Electron/WhatsApp desktop usually do too when they implement standard file DnD.
 
 **Caveats:**
-- Layer-shell launcher may need testing that the drag session is not killed when focus leaves Blink.
+- Layer-shell: handled (ignore focus-loss + keyboard mode toggle). Still worth retesting after compositor updates.
 - Prefer offering a real filesystem path (already true for file results), not a temp copy, unless the source is virtual.
 - Image “as bitmap” (`image/png` content) is a separate, less useful path for chat apps — they want the file.
+- Drag icon uses FreeDesktop thumbs when available (sync, small file); does not re-decode the full image or borrow the preview LRU (row drag often has no preview texture).
 
 ---
 

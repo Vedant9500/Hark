@@ -3,6 +3,7 @@ mod footer;
 mod preview;
 mod rows;
 mod settings;
+mod thumbnails;
 
 use crate::engine::{Engine, ExecuteOutcome};
 use crate::providers::{Action, ResultKind, SearchResult};
@@ -76,13 +77,14 @@ impl Launcher {
 
         let theme = ThemeManager::new();
 
-        // Transparent frame: provides equal inset on all 4 sides.
+        // Frame hugs the shell. Expanding it leaves a transparent rectangle that
+        // Hyprland layer-blur still samples around the rounded card (square halo).
         let frame = GtkBox::new(Orientation::Vertical, 0);
         frame.add_css_class("blink-frame");
-        frame.set_hexpand(true);
-        frame.set_vexpand(true);
-        frame.set_halign(gtk::Align::Fill);
-        frame.set_valign(gtk::Align::Fill);
+        frame.set_hexpand(false);
+        frame.set_vexpand(false);
+        frame.set_halign(gtk::Align::Center);
+        frame.set_valign(gtk::Align::Start);
 
         let shell = GtkBox::new(Orientation::Vertical, 0);
         shell.add_css_class("blink-shell");
