@@ -34,6 +34,8 @@ const WINDOW_MAX_HEIGHT: i32 = 520;
 const SHELL_INSET: i32 = 0;
 /// Debounce keystrokes before search + async deep (cuts typing CPU spikes).
 const SEARCH_DEBOUNCE_MS: u64 = 40;
+/// CJK / translate queries: longer settle so paste/IME does not spawn workers per glyph.
+const TRANSLATE_DEBOUNCE_MS: u64 = 180;
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -276,8 +278,16 @@ impl Launcher {
                 let search_for_deep = search_for_deep.clone();
                 let drag_session = drag_session.clone();
                 let debounce_slot = search_debounce.clone();
+                // Longer settle for CJK paste / translate so we do not thrash workers.
+                let wait_ms = if engine.should_translate_network(&q)
+                    || engine.translate_should_handle(&q)
+                {
+                    TRANSLATE_DEBOUNCE_MS
+                } else {
+                    SEARCH_DEBOUNCE_MS
+                };
                 let id = glib::timeout_add_local(
-                    std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                    std::time::Duration::from_millis(wait_ms),
                     move || {
                         *debounce_slot.borrow_mut() = None;
                         refresh_results(
@@ -740,6 +750,59 @@ fn refresh_results(
     if q.trim().is_empty() {
         return;
     }
+
+    // Async translate (network). UI path only did cache/pending — never curl on main.
+    if engine.should_translate_network(&q) {
+        let engine_t = engine.clone();
+        let list_t = list.clone();
+        let empty_t = empty.clone();
+        let results_t = results.clone();
+        let selected_t = selected.clone();
+        let footer_action_t = footer_action.clone();
+        let footer_term_t = footer_term.clone();
+        let preview_t = preview.clone();
+        let deep_gen_t = deep_gen.clone();
+        let search_entry_t = search_entry.clone();
+        let drag_session_t = drag_session.clone();
+        let q_t = q.clone();
+        let gen_t = gen;
+        let (tx_t, rx_t) = async_channel::bounded::<Vec<SearchResult>>(1);
+        let engine_worker = engine_t.clone();
+        let q_worker = q_t.clone();
+        std::thread::spawn(move || {
+            let hits = engine_worker.search_translate_network(&q_worker);
+            let _ = tx_t.send_blocking(hits);
+        });
+        glib::spawn_future_local(async move {
+            let Ok(hits) = rx_t.recv().await else {
+                return;
+            };
+            if deep_gen_t.get() != gen_t {
+                return;
+            }
+            if search_entry_t.text().as_str() != q_t.as_str() {
+                return;
+            }
+            if hits.is_empty() {
+                return;
+            }
+            let ui = engine_t.config().get().ui;
+            apply_translate_hits(
+                &hits,
+                &list_t,
+                &empty_t,
+                &results_t,
+                &selected_t,
+                &footer_action_t,
+                &footer_term_t,
+                &preview_t,
+                &drag_session_t,
+                ui.icon_size as i32,
+                ui.symbolic_icons,
+            );
+        });
+    }
+
     let current = results.borrow().clone();
     if !engine.should_deep_search(&q, &current) {
         return;
@@ -795,6 +858,61 @@ fn refresh_results(
             ui.symbolic_icons,
         );
     });
+}
+
+
+/// Replace pending translate row with network result (success or soft-fail).
+fn apply_translate_hits(
+    hits: &[SearchResult],
+    list: &ListBox,
+    empty: &Label,
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    selected: &Rc<Cell<usize>>,
+    footer_action: &Label,
+    footer_term: &GtkBox,
+    preview: &Rc<PreviewPanel>,
+    drag_session: &DragSession,
+    icon_size: i32,
+    symbolic_icons: bool,
+) {
+    if drag_session.is_active() || hits.is_empty() {
+        return;
+    }
+
+    let mut merged = results.borrow().clone();
+    // Drop pending translate rows; keep everything else.
+    merged.retain(|r| !crate::providers::translate::is_pending_result(r));
+    // Prepend translate hits (own the query).
+    let mut out = hits.to_vec();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|r| r.id.clone()).collect();
+    for r in merged {
+        if seen.insert(r.id.clone()) {
+            out.push(r);
+        }
+    }
+    out.truncate(25);
+
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    empty.set_visible(out.is_empty());
+    list.set_visible(!out.is_empty());
+    for item in out.iter() {
+        let row = build_row(item, false, drag_session, icon_size, symbolic_icons);
+        list.append(&row);
+    }
+    selected.set(0);
+    *results.borrow_mut() = out;
+
+    if let Some(row) = list.row_at_index(0) {
+        list.select_row(Some(&row));
+        update_footer(results, 0, footer_action, footer_term);
+        let item = results.borrow().first().cloned();
+        preview.update(item.as_ref());
+    } else {
+        update_footer(results, 0, footer_action, footer_term);
+        preview.clear();
+    }
 }
 
 /// Merge async deep file hits into the current result list without clobbering

@@ -1977,7 +1977,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     body.append(&card);
 
     let note = Label::new(Some(
-        "Paste Chinese (or type tr hello). Text is sent to the configured endpoint when not cached. Prefer a local LibreTranslate for privacy. See translation.md.",
+        "Paste Chinese (or type tr …). Shows Translating… then fills in (network off the UI thread). Empty endpoint uses free Google/MyMemory. Prefer local LibreTranslate for privacy.",
     ));
     note.add_css_class("blink-hint");
     note.set_halign(gtk::Align::Start);

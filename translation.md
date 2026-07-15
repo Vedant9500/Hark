@@ -1,7 +1,7 @@
 # Translation tool — implementation plan
 
-**Status:** Phase 1 done · Phase 1.1 optional  
-**Last updated:** 2026-07-15  
+**Status:** Phase 1 done · async + lag fixes · Phase 1.1 optional  
+**Last updated:** 2026-07-16  
 **Goal:** Paste Chinese (or other non-English text) into Blink → see a clear translation → Enter copies it.  
 **Constraint:** Stay light for a resident Hyprland daemon — no models on boot, no heavy crates in v1, short timeouts, aggressive cache.
 

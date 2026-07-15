@@ -327,8 +327,31 @@ impl Engine {
         self.files.search_with(query, true, DeepMode::Async)
     }
 
+    /// Blocking network translate for worker threads only (never call on GTK main).
+    pub fn search_translate_network(&self, query: &str) -> Vec<SearchResult> {
+        if !self.translate.is_enabled() {
+            return Vec::new();
+        }
+        self.translate.search_network(query)
+    }
+
+    /// Whether UI should schedule async translate (enabled + needs network).
+    pub fn should_translate_network(&self, query: &str) -> bool {
+        self.translate.is_enabled() && self.translate.needs_network(query)
+    }
+
+    /// Whether this query is a translate candidate (for debounce / UI gates).
+    pub fn translate_should_handle(&self, query: &str) -> bool {
+        self.translate.is_enabled() && self.translate.should_handle(query)
+    }
+
+
     /// Whether the UI should schedule an async deep walk for this query.
     pub fn should_deep_search(&self, query: &str, current: &[SearchResult]) -> bool {
+        // Translate owns CJK / `tr ` queries — never deep-walk those (was a major stutter).
+        if self.translate.is_enabled() && self.translate.should_handle(query) {
+            return false;
+        }
         // Only consider file/folder strength from current mixed results.
         let fileish: Vec<_> = current
             .iter()
