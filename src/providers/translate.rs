@@ -62,6 +62,19 @@ impl TranslateProvider {
         is_translate_query(query, &cfg)
     }
 
+    /// Auto-detect CJK (no `tr` prefix) — longer UI debounce; forced prefix stays snappy.
+    pub fn is_auto_query(&self, query: &str) -> bool {
+        let cfg = self.cfg();
+        if !cfg.enabled || !cfg.auto_detect {
+            return false;
+        }
+        let (forced, _) = strip_translate_prefix(query.trim());
+        if forced {
+            return false;
+        }
+        is_translate_query(query, &cfg)
+    }
+
     /// True when UI should spawn a worker: enabled, matches, not already cached.
     pub fn needs_network(&self, query: &str) -> bool {
         let cfg = self.cfg();
@@ -158,15 +171,136 @@ impl Provider for TranslateProvider {
     }
 }
 
+/// Parse query into (text, source_lang, target_lang).
+///
+/// Forced forms after `tr` / `translate` / `译`:
+/// - `tr en zh Hello` → source=en, target=zh, text=Hello
+/// - `tr zh en 你好` → source=zh, target=en, text=你好
+/// - `tr Hello` / bare CJK → auto/guessed source, config target
 fn parse_job(query: &str, cfg: &TranslateConfig) -> Option<(String, String, String)> {
-    let (forced, text) = strip_translate_prefix(query.trim());
-    let text = text.trim();
+    let (forced, rest) = strip_translate_prefix(query.trim());
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+
+    if forced {
+        if let Some((source, target, text)) = parse_direction_and_text(rest) {
+            return Some((text, normalize_lang(&source), normalize_lang(&target)));
+        }
+        // `tr en zh` with no payload — incomplete direction, not a job yet.
+        if incomplete_direction(rest) {
+            return None;
+        }
+    }
+
+    let source = guess_source_lang(rest, forced);
+    let target = normalize_lang(&cfg.target_lang);
+    Some((rest.to_string(), source, target))
+}
+
+/// Two lang codes and nothing else (`tr en zh`).
+fn incomplete_direction(rest: &str) -> bool {
+    let mut parts = rest.split_whitespace();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(a), Some(b), None) if is_lang_code(a) && is_lang_code(b) => true,
+        _ => false,
+    }
+}
+
+/// True when first two whitespace-separated tokens look like language codes
+/// and there is remaining text (`en zh Hello world`).
+fn parse_direction_and_text(rest: &str) -> Option<(String, String, String)> {
+    let mut parts = rest.split_whitespace();
+    let a = parts.next()?;
+    let b = parts.next()?;
+    if !is_lang_code(a) || !is_lang_code(b) {
+        return None;
+    }
+    // Remainder of original string after the two codes (preserve inner spaces).
+    let mut idx = 0usize;
+    let bytes = rest.as_bytes();
+    // skip first code
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    idx += a.len();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    idx += b.len();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    let text = rest[idx..].trim();
     if text.is_empty() {
         return None;
     }
-    let source = guess_source_lang(text, forced);
-    let target = cfg.target_lang.clone();
-    Some((text.to_string(), source, target))
+    Some((a.to_string(), b.to_string(), text.to_string()))
+}
+
+/// ISO-ish language tag: `en`, `zh`, `zh-CN`, `zh_cn`, `pt-BR` (2–3 letter primary).
+fn is_lang_code(tok: &str) -> bool {
+    let t = tok.trim();
+    if t.is_empty() || t.len() > 12 {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split(|c| c == '-' || c == '_').collect();
+    if parts.is_empty() || parts.len() > 2 {
+        return false;
+    }
+    let primary = parts[0];
+    if primary.len() < 2 || primary.len() > 3 || !primary.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    if let Some(region) = parts.get(1) {
+        if region.is_empty()
+            || region.len() > 4
+            || !region.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return false;
+        }
+    }
+    // Reject common English words mistaken as codes when alone is ok;
+    // "to"/"in" are 2 letters — still valid ISO, but `tr to en foo` is rare.
+    // Accept all valid-looking tags; `parse_direction` needs *two* consecutive.
+    true
+}
+
+fn normalize_lang(code: &str) -> String {
+    let c = code.trim().to_ascii_lowercase().replace('_', "-");
+    if c.is_empty() {
+        return "en".into();
+    }
+    // Canonical common forms
+    match c.as_str() {
+        "zh" | "zh-cn" | "zh-hans" | "cn" => "zh-CN".into(),
+        "zh-tw" | "zh-hant" | "zh-hk" => "zh-TW".into(),
+        "jp" => "ja".into(),
+        "kr" => "ko".into(),
+        "iw" => "he".into(),
+        other => {
+            // Keep primary + optional region uppercased like en, pt-BR
+            let mut parts = other.split('-');
+            let p = parts.next().unwrap_or("en");
+            if let Some(r) = parts.next() {
+                format!("{}-{}", p, r.to_ascii_uppercase())
+            } else {
+                p.to_string()
+            }
+        }
+    }
+}
+
+fn lang_badge(code: &str) -> String {
+    let c = code.trim();
+    if c.eq_ignore_ascii_case("auto") {
+        return "AUTO".into();
+    }
+    // zh-CN → ZH
+    let primary = c.split(['-', '_']).next().unwrap_or(c);
+    primary.to_ascii_uppercase()
 }
 
 fn ok_result(
@@ -176,8 +310,8 @@ fn ok_result(
     target: &str,
     backend: &str,
 ) -> SearchResult {
-    let src_b = source.to_ascii_uppercase();
-    let tgt_b = target.to_ascii_uppercase();
+    let src_b = lang_badge(source);
+    let tgt_b = lang_badge(target);
     SearchResult {
         id: format!("translate:{}", cache_key(source, target, source_text)),
         title: translated.to_string(),
@@ -196,8 +330,8 @@ fn ok_result(
 }
 
 fn pending_result(source_text: &str, source: &str, target: &str) -> SearchResult {
-    let src_b = source.to_ascii_uppercase();
-    let tgt_b = target.to_ascii_uppercase();
+    let src_b = lang_badge(source);
+    let tgt_b = lang_badge(target);
     SearchResult {
         id: format!("{PENDING_PREFIX}{}", simple_hash(source_text)),
         title: "Translating…".into(),
@@ -216,8 +350,8 @@ fn pending_result(source_text: &str, source: &str, target: &str) -> SearchResult
 }
 
 fn fail_result(source_text: &str, source: &str, target: &str, msg: &str) -> SearchResult {
-    let src_b = source.to_ascii_uppercase();
-    let tgt_b = target.to_ascii_uppercase();
+    let src_b = lang_badge(source);
+    let tgt_b = lang_badge(target);
     // Keep subtitle short so the conversion card stays readable.
     let short = if msg.chars().count() > 72 {
         let t: String = msg.chars().take(69).collect();
@@ -357,7 +491,8 @@ fn guess_source_lang(text: &str, _forced: bool) -> String {
     if han > 0 {
         return "zh-CN".into();
     }
-    "en".into()
+    // Latin / unknown: let free APIs auto-detect when supported.
+    "auto".into()
 }
 
 // ── HTTP (worker only) ──────────────────────────────────────────────────────
@@ -428,8 +563,8 @@ fn libretranslate(
     cfg: &TranslateConfig,
 ) -> Result<(String, String), String> {
     let url = format!("{}/translate", cfg.endpoint.trim_end_matches('/'));
-    // LibreTranslate often wants short codes: zh-CN → zh
-    let src = short_lang(source);
+    // LibreTranslate: short codes; "auto" when supported
+    let src = api_source_lang(source, true);
     let tgt = short_lang(target);
     let mut body = serde_json::json!({
         "q": text,
@@ -494,11 +629,7 @@ fn libretranslate(
 
 fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
     // Unofficial free endpoint (same family as many OSS clients). No API key.
-    let sl = if source == "en" {
-        "auto".to_string()
-    } else {
-        short_lang(source)
-    };
+    let sl = api_source_lang(source, true);
     let tl = short_lang(target);
     let out = Command::new("curl")
         .args([
@@ -543,7 +674,9 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
 }
 
 fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
-    let src = match short_lang(source).as_str() {
+    // MyMemory has no reliable "auto"; fall back to en when unknown.
+    let src = match api_source_lang(source, false).as_str() {
+        "auto" => "en".to_string(),
         "zh" => "zh-CN".to_string(),
         s => s.to_string(),
     };
@@ -599,11 +732,28 @@ fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), 
 }
 
 fn short_lang(code: &str) -> String {
-    let c = code.trim().to_ascii_lowercase();
+    let c = code.trim().to_ascii_lowercase().replace('_', "-");
+    if c == "auto" {
+        return "auto".into();
+    }
     if c.starts_with("zh") {
         return "zh".into();
     }
     c.split('-').next().unwrap_or("en").to_string()
+}
+
+/// Source language code for HTTP APIs.
+/// `allow_auto`: Google / LibreTranslate can use `auto`; MyMemory cannot.
+fn api_source_lang(source: &str, allow_auto: bool) -> String {
+    let s = source.trim();
+    if s.eq_ignore_ascii_case("auto") {
+        return if allow_auto {
+            "auto".into()
+        } else {
+            "en".into()
+        };
+    }
+    short_lang(s)
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
@@ -838,6 +988,56 @@ mod tests {
         assert_eq!(guess_source_lang("你好", false), "zh-CN");
         assert_eq!(guess_source_lang("こんにちは", false), "ja");
         assert_eq!(guess_source_lang("안녕하세요", false), "ko");
+        assert_eq!(guess_source_lang("Hello world", true), "auto");
+    }
+
+    #[test]
+    fn direction_parse_en_zh() {
+        let c = cfg_auto();
+        let job = parse_job("tr en zh Hello world", &c).expect("job");
+        assert_eq!(job.0, "Hello world");
+        assert_eq!(job.1.to_ascii_lowercase(), "en");
+        assert!(job.2.to_ascii_lowercase().starts_with("zh"));
+    }
+
+    #[test]
+    fn direction_parse_zh_en() {
+        let c = cfg_auto();
+        let job = parse_job("tr zh en 你好世界", &c).expect("job");
+        assert_eq!(job.0, "你好世界");
+        assert!(job.1.to_ascii_lowercase().starts_with("zh"));
+        assert_eq!(job.2.to_ascii_lowercase(), "en");
+    }
+
+    #[test]
+    fn direction_requires_text() {
+        let c = cfg_auto();
+        // Only two codes, no payload — not a direction job.
+        assert!(parse_job("tr en zh", &c).is_none());
+        // Without two codes: whole remainder is text, source=auto
+        let job = parse_job("tr Hello there", &c).expect("job");
+        assert_eq!(job.0, "Hello there");
+        assert_eq!(job.1, "auto");
+    }
+
+    #[test]
+    fn bare_cjk_uses_config_target() {
+        let mut c = cfg_auto();
+        c.target_lang = "en".into();
+        let job = parse_job("你好世界", &c).expect("job");
+        assert_eq!(job.0, "你好世界");
+        assert_eq!(job.1, "zh-CN");
+        assert_eq!(job.2, "en");
+    }
+
+    #[test]
+    fn is_lang_code_basic() {
+        assert!(is_lang_code("en"));
+        assert!(is_lang_code("zh"));
+        assert!(is_lang_code("zh-CN"));
+        assert!(is_lang_code("pt-BR"));
+        assert!(!is_lang_code("hello"));
+        assert!(!is_lang_code("1"));
     }
 
     #[test]

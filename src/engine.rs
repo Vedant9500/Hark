@@ -340,11 +340,16 @@ impl Engine {
         self.translate.is_enabled() && self.translate.needs_network(query)
     }
 
-    /// Whether this query is a translate candidate (for debounce / UI gates).
+    /// Whether this query is a translate candidate (UI gates / diagnostics).
+    #[allow(dead_code)]
     pub fn translate_should_handle(&self, query: &str) -> bool {
         self.translate.is_enabled() && self.translate.should_handle(query)
     }
 
+    /// Auto-detect translate (no forced `tr` prefix) — use longer debounce.
+    pub fn translate_is_auto_query(&self, query: &str) -> bool {
+        self.translate.is_enabled() && self.translate.is_auto_query(query)
+    }
 
     /// Whether the UI should schedule an async deep walk for this query.
     pub fn should_deep_search(&self, query: &str, current: &[SearchResult]) -> bool {

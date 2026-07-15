@@ -278,10 +278,8 @@ impl Launcher {
                 let search_for_deep = search_for_deep.clone();
                 let drag_session = drag_session.clone();
                 let debounce_slot = search_debounce.clone();
-                // Longer settle for CJK paste / translate so we do not thrash workers.
-                let wait_ms = if engine.should_translate_network(&q)
-                    || engine.translate_should_handle(&q)
-                {
+                // Longer settle only for auto CJK paste/IME (not forced `tr …`).
+                let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
                 } else {
                     SEARCH_DEBOUNCE_MS

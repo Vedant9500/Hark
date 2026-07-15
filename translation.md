@@ -1,6 +1,6 @@
 # Translation tool — implementation plan
 
-**Status:** Phase 1 done · async + lag fixes · Phase 1.1 optional  
+**Status:** Phase 1.1 done (direction + polish)  
 **Last updated:** 2026-07-16  
 **Goal:** Paste Chinese (or other non-English text) into Blink → see a clear translation → Enter copies it.  
 **Constraint:** Stay light for a resident Hyprland daemon — no models on boot, no heavy crates in v1, short timeouts, aggressive cache.
@@ -345,11 +345,11 @@ Privacy hint under the form:
 
 ### Phase 1.1 — Direction & polish (optional)
 
-- [ ] `tr en zh …` / `tr zh en …` parsing  
-- [ ] `source: "auto"` when API supports it  
-- [ ] Longer debounce for auto mode only  
-- [ ] Async “Translating…” + generation cancel  
-- [ ] Cache sweep / size cap  
+- [x] `tr en zh …` / `tr zh en …` parsing  
+- [x] `source: "auto"` when API supports it (Google / LibreTranslate; MyMemory falls back)  
+- [x] Longer debounce for auto mode only (forced `tr` stays 40 ms)  
+- [x] Async “Translating…” + generation cancel  
+- [x] Cache sweep / size cap  
 
 ### Phase 2 — Offline (later, optional feature)
 
@@ -458,3 +458,5 @@ Privacy hint under the form:
 | 2026-07-15 | Plan written from research; not implemented yet |
 | 2026-07-15 | Phase 0 scaffold: config, detection, engine gate, Settings toggle |
 | 2026-07-15 | Phase 1: cache + LibreTranslate/MyMemory curl, Settings fields, conversion card |
+| 2026-07-16 | Phase 1 async + lag fix (no main-thread curl, skip deep, debounce, race backends) |
+| 2026-07-16 | Phase 1.1: `tr en zh` direction, source auto, auto-only debounce |
