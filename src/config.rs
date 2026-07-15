@@ -336,6 +336,78 @@ impl UiThemeConfig {
     }
 }
 
+/// Online translate-on-paste settings (see `translation.md`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranslateConfig {
+    /// Master switch.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Default target language code (`en`, `zh`, …).
+    #[serde(default = "default_translate_target")]
+    pub target_lang: String,
+    /// LibreTranslate-compatible base URL. Empty = not configured (Phase 1).
+    #[serde(default)]
+    pub endpoint: String,
+    /// Optional API key for the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Auto-run when CJK / similar scripts are detected (no `tr ` prefix).
+    #[serde(default = "default_true")]
+    pub auto_detect: bool,
+    /// Max source characters accepted for translation.
+    #[serde(default = "default_translate_max_chars")]
+    pub max_chars: usize,
+}
+
+fn default_translate_target() -> String {
+    "en".into()
+}
+
+fn default_translate_max_chars() -> usize {
+    1000
+}
+
+impl Default for TranslateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_lang: default_translate_target(),
+            endpoint: String::new(),
+            api_key: None,
+            auto_detect: true,
+            max_chars: default_translate_max_chars(),
+        }
+    }
+}
+
+impl TranslateConfig {
+    pub fn sanitize(&mut self) {
+        self.max_chars = self.max_chars.clamp(100, 5000);
+        self.target_lang = self
+            .target_lang
+            .trim()
+            .to_ascii_lowercase();
+        if self.target_lang.is_empty() {
+            self.target_lang = default_translate_target();
+        }
+        // Keep only simple language tags: `en`, `zh`, `zh-cn`
+        self.target_lang = self
+            .target_lang
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .take(16)
+            .collect();
+        if self.target_lang.is_empty() {
+            self.target_lang = default_translate_target();
+        }
+        self.endpoint = self.endpoint.trim().trim_end_matches('/').to_string();
+        if let Some(k) = self.api_key.take() {
+            let t = k.trim().to_string();
+            self.api_key = if t.is_empty() { None } else { Some(t) };
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BlinkConfig {
     #[serde(default = "default_version")]
@@ -348,6 +420,9 @@ pub struct BlinkConfig {
     /// Appearance: transparency, accent, font, icons, radius.
     #[serde(default)]
     pub ui: UiThemeConfig,
+    /// Translate-on-paste (CJK / `tr ` prefix). Phase 0 scaffold — no network yet.
+    #[serde(default)]
+    pub translate: TranslateConfig,
 }
 
 fn default_version() -> u32 {
@@ -405,9 +480,14 @@ impl ConfigStore {
         }
 
         {
-            let before = cfg.ui.clone();
+            let before_ui = cfg.ui.clone();
             cfg.ui.sanitize();
-            if cfg.ui != before {
+            if cfg.ui != before_ui {
+                changed = true;
+            }
+            let before_tr = cfg.translate.clone();
+            cfg.translate.sanitize();
+            if cfg.translate != before_tr {
                 changed = true;
             }
         }
@@ -431,6 +511,7 @@ impl ConfigStore {
             let mut g = self.inner.write().unwrap();
             f(&mut g);
             g.ui.sanitize();
+            g.translate.sanitize();
         }
         self.save();
     }

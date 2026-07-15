@@ -56,6 +56,12 @@ const CATEGORIES: &[Category] = &[
         subtitle: "Opacity, colours, icons, type",
         icon: "preferences-desktop-theme-symbolic",
     },
+    Category {
+        id: "tools",
+        title: "Tools",
+        subtitle: "Translation & extras",
+        icon: "applications-utilities-symbolic",
+    },
 ];
 
 pub struct SettingsPanel {
@@ -243,6 +249,9 @@ impl SettingsPanel {
 
         let appearance_page = build_appearance_page(&engine, &theme, &cfg);
         content_stack.add_named(&appearance_page, Some("appearance"));
+
+        let tools_page = build_tools_page(&engine, &cfg);
+        content_stack.add_named(&tools_page, Some("tools"));
 
         content_stack.set_visible_child_name("indexing");
         split.append(&content_stack);
@@ -1843,3 +1852,59 @@ fn build_appearance_page(
     outer
 }
 
+
+
+fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {
+    let (outer, body) = page_shell(
+        "applications-utilities-symbolic",
+        "Tools",
+        "Optional helpers. Turning a tool off stops all related background work.",
+    );
+
+    body.append(&group_label("Translation"));
+
+    let card = GtkBox::new(Orientation::Vertical, 0);
+    card.add_css_class("blink-settings-card");
+
+    let (en_row, en_cb) = check_setting_row(
+        "Enable translation",
+        Some("Paste Chinese (or use tr …). When off: no network, cache, or translate work."),
+        cfg.translate.enabled,
+    );
+    {
+        let engine = engine.clone();
+        en_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine.config().update(|c| c.translate.enabled = on);
+        });
+    }
+    card.append(&en_row);
+
+    card.append(&Separator::new(Orientation::Horizontal));
+
+    let (auto_row, auto_cb) = check_setting_row(
+        "Auto-detect CJK paste",
+        Some("Without a tr prefix. Ignored when translation is disabled."),
+        cfg.translate.auto_detect,
+    );
+    {
+        let engine = engine.clone();
+        auto_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine.config().update(|c| c.translate.auto_detect = on);
+        });
+    }
+    card.append(&auto_row);
+
+    body.append(&card);
+
+    let note = Label::new(Some(
+        "Phase 0: detection only (no API yet). Phase 1 will add LibreTranslate-compatible HTTP + cache. See translation.md.",
+    ));
+    note.add_css_class("blink-hint");
+    note.set_halign(gtk::Align::Start);
+    note.set_wrap(true);
+    body.append(&note);
+
+    outer
+}

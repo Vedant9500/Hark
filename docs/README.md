@@ -6,6 +6,7 @@
 | **[power_performance.md](./power_performance.md)** | Blink vs Rofi: power, memory, CPU spikes, background processes, which to pick |
 | **[battery-optimization.md](./battery-optimization.md)** | How to optimize Blink for battery + low CPU spikes |
 | **[preview-optimization.md](./preview-optimization.md)** | Preview pane decode / cache optimization tracker |
+| **[translation.md](../translation.md)** | Translate-on-paste (CJK) implementation plan |
 | **[depth-index-benchmark.json](./depth-index-benchmark.json)** | Raw depth 2/3/4 measurement (2026-07-14) |
 
 Also see repo root:

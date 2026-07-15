@@ -2,6 +2,7 @@ use crate::config::ConfigStore;
 use crate::providers::apps::AppProvider;
 use crate::providers::calc::CalcProvider;
 use crate::providers::files::{FileProvider, IndexProgress};
+use crate::providers::translate::TranslateProvider;
 use crate::providers::{Action, Provider, ResultKind, SearchResult};
 use crate::usage::UsageStore;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ pub struct Engine {
     apps: Arc<AppProvider>,
     files: Arc<FileProvider>,
     calc: Arc<CalcProvider>,
+    translate: Arc<TranslateProvider>,
     usage: Arc<UsageStore>,
     config: Arc<ConfigStore>,
 }
@@ -24,6 +26,7 @@ impl Engine {
         let apps = Arc::new(AppProvider::new_empty());
         let files = Arc::new(FileProvider::new_empty(config.clone()));
         let calc = Arc::new(CalcProvider::new());
+        let translate = Arc::new(TranslateProvider::new(config.clone()));
 
         // Warm apps + file index off the UI thread (disk only; no network).
         let apps_bg = apps.clone();
@@ -52,6 +55,7 @@ impl Engine {
             apps,
             files,
             calc,
+            translate,
             usage,
             config,
         }
@@ -139,6 +143,15 @@ impl Engine {
             .any(|r| matches!(r.kind, ResultKind::Calc | ResultKind::Conversion));
         results.extend(calc);
 
+        // Translate: only when enabled. Disabled → zero I/O / no background work.
+        // Phase 0: detection only (empty results). Phase 1: cache + HTTP.
+        let mut force_translate = false;
+        if !calc_hit && self.translate.is_enabled() && self.translate.should_handle(q) {
+            let tr = self.translate.search(q);
+            force_translate = tr.iter().any(|r| r.score >= 50_000);
+            results.extend(tr);
+        }
+
         let force_files = q.starts_with("f ")
             || q.starts_with("file ")
             || q.starts_with("folder ")
@@ -156,6 +169,8 @@ impl Engine {
         if force_files {
             // Path/glob queries: files only (no Chrome for `*.md`).
             results.extend(self.files.search_with(q, true, DeepMode::Skip));
+        } else if force_translate {
+            // Strong translation hit — do not mix in apps/files noise.
         } else if !calc_hit {
             let apps = self.apps.search(q);
             // App score bands: exact 50k, prefix 30k+, contains 15k+, fuzzy often <1k.
