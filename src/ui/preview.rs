@@ -1,5 +1,6 @@
 use super::dnd::{DragSession, PathDragBinding};
-use super::thumbnails::freedesktop_thumbnail;
+use super::thumbnails::{freedesktop_thumbnail, store_freedesktop_thumbnail};
+use std::process::Command;
 use crate::providers::{Action, ResultKind, SearchResult};
 use gtk::gdk::{self, Texture};
 use gtk::gdk_pixbuf::Pixbuf;
@@ -83,7 +84,10 @@ pub enum MediaKind {
 
 impl MediaKind {
     fn is_previewable(self) -> bool {
-        matches!(self, MediaKind::Image | MediaKind::Video | MediaKind::Audio)
+        matches!(
+            self,
+            MediaKind::Image | MediaKind::Video | MediaKind::Audio | MediaKind::Document
+        )
     }
 }
 
@@ -320,25 +324,35 @@ impl PreviewPanel {
         // Always offer the real file path for DnD from the preview.
         self.drag.set_path(Some(path.clone()));
 
-        if media == MediaKind::Image {
+        let is_pdf = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+
+        // Images, video first-frame, and PDF page 1 share the picture pipeline.
+        if media == MediaKind::Image || media == MediaKind::Video || is_pdf {
             self.queue_image_load(path, item.title.clone(), meta);
-        } else {
-            self.cancel_debounce();
-            self.gen.set(self.gen.get().wrapping_add(1));
-            *self.last_path.borrow_mut() = Some(path.clone());
-            *self.inflight.borrow_mut() = None;
-            let badge = media_badge(media);
-            let icon_name = item
-                .icon
-                .as_deref()
-                .unwrap_or_else(|| icon_for_media(media));
-            let detail = match media {
-                MediaKind::Video => format!("Video file\n{meta}"),
-                MediaKind::Audio => format!("Audio file\n{meta}"),
-                _ => meta,
-            };
-            self.show_icon_preview(icon_name, badge, &item.title, &item.subtitle, Some(&detail));
+            return;
         }
+
+        // Audio / non-PDF documents stay icon + metadata.
+        self.cancel_debounce();
+        self.gen.set(self.gen.get().wrapping_add(1));
+        *self.last_path.borrow_mut() = Some(path.clone());
+        *self.inflight.borrow_mut() = None;
+        let badge = media_badge(media);
+        let icon_name = item
+            .icon
+            .as_deref()
+            .unwrap_or_else(|| icon_for_media(media));
+        let detail = match media {
+            MediaKind::Video => format!("Video file\n{meta}"),
+            MediaKind::Audio => format!("Audio file\n{meta}"),
+            MediaKind::Document => format!("Document\n{meta}"),
+            _ => meta,
+        };
+        self.show_icon_preview(icon_name, badge, &item.title, &item.subtitle, Some(&detail));
     }
 
     fn cancel_debounce(&self) {
@@ -465,12 +479,19 @@ impl PreviewPanel {
             return;
         }
 
-        if fp.len > MAX_IMAGE_BYTES {
+        // Full image decode is memory-heavy; video/PDF only extract a small frame.
+        let kind = media_kind(&path);
+        let size_cap = match kind {
+            MediaKind::Image => MAX_IMAGE_BYTES,
+            MediaKind::Video | MediaKind::Document => 2 * 1024 * 1024 * 1024, // 2 GiB
+            _ => MAX_IMAGE_BYTES,
+        };
+        if fp.len > size_cap {
             self.cancel_debounce();
             self.gen.set(self.gen.get().wrapping_add(1));
             *self.last_path.borrow_mut() = Some(path);
             *self.inflight.borrow_mut() = None;
-            self.show_image_chrome(&title, &meta, "Image too large to preview");
+            self.show_image_chrome(&title, &meta, "File too large to preview");
             self.picture.set_paintable(Option::<&gdk::Paintable>::None);
             return;
         }
@@ -563,11 +584,21 @@ impl PreviewPanel {
         let (tx, rx) = async_channel::bounded::<Option<DecodedPixels>>(1);
         let path_worker = req.path.clone();
         std::thread::spawn(move || {
-            // Thumb path resolve + decode stay off the GTK main loop.
-            let decoded = match freedesktop_thumbnail(&path_worker) {
-                Some(thumb) => decode_thumb_or_scaled(&thumb, &path_worker),
-                None => decode_image_scaled(&path_worker),
-            };
+            // Thumb path resolve + decode/extract stay off the GTK main loop.
+            let decoded = decode_preview_media(&path_worker);
+            // Best-effort: write FreeDesktop thumb so next open / other apps hit cache.
+            if let Some(ref px) = decoded {
+                if freedesktop_thumbnail(&path_worker).is_none() {
+                    let _ = store_freedesktop_thumbnail(
+                        &path_worker,
+                        px.width,
+                        px.height,
+                        px.rowstride,
+                        px.has_alpha,
+                        &px.pixels,
+                    );
+                }
+            }
             let _ = tx.send_blocking(decoded);
         });
 
@@ -659,14 +690,175 @@ struct DecodedPixels {
     dims_label: String,
 }
 
+/// Unified off-main decode for images, video first-frame, and PDF page 1.
+fn decode_preview_media(path: &Path) -> Option<DecodedPixels> {
+    // FreeDesktop cache first (images we generated, or system thumbnailers).
+    if let Some(thumb) = freedesktop_thumbnail(path) {
+        if let Some(px) = decode_thumb_or_scaled(&thumb, path) {
+            return Some(px);
+        }
+    }
+
+    let kind = media_kind(path);
+    let is_pdf = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+
+    if kind == MediaKind::Video {
+        return decode_video_frame(path);
+    }
+    if is_pdf {
+        return decode_pdf_page(path);
+    }
+    if kind == MediaKind::Image {
+        return decode_image_scaled(path);
+    }
+    None
+}
+
 /// Prefer FreeDesktop thumb; fall back to scaled original (single open each).
 fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels> {
     if let Some(mut px) = pixbuf_to_pixels(&Pixbuf::from_file(thumb).ok()?) {
-        // Thumb dims are not native image dims — label as thumbnail.
-        px.dims_label = format!("Thumbnail · {} × {}", px.width, px.height);
+        let kind = media_kind(original);
+        let is_pdf = original
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+        px.dims_label = if kind == MediaKind::Video {
+            format!("Video · {} × {}", px.width, px.height)
+        } else if is_pdf {
+            format!("PDF · {} × {}", px.width, px.height)
+        } else {
+            format!("Thumbnail · {} × {}", px.width, px.height)
+        };
         return Some(px);
     }
+    // Thumb corrupt — fall through by kind.
+    let kind = media_kind(original);
+    if kind == MediaKind::Video {
+        return decode_video_frame(original);
+    }
+    if original
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+    {
+        return decode_pdf_page(original);
+    }
     decode_image_scaled(original)
+}
+
+/// First video frame via `ffmpeg` (optional — fails soft if missing).
+fn decode_video_frame(path: &Path) -> Option<DecodedPixels> {
+    let tmp_dir = std::env::temp_dir().join("blink-preview");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let token = format!(
+        "v-{}-{}",
+        std::process::id(),
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("vid")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .take(24)
+            .collect::<String>()
+    );
+    let out = tmp_dir.join(format!("{token}.png"));
+    let _ = std::fs::remove_file(&out);
+
+    // Seek a bit past 0 so black intro frames are less common; fall back to 0s.
+    let mut ok = run_ffmpeg_frame(path, &out, "0.5");
+    if !ok || !out.is_file() {
+        let _ = std::fs::remove_file(&out);
+        ok = run_ffmpeg_frame(path, &out, "0");
+    }
+    if !ok || !out.is_file() {
+        let _ = std::fs::remove_file(&out);
+        return None;
+    }
+
+    let result = Pixbuf::from_file_at_scale(&out, DECODE_MAX_PX, DECODE_MAX_PX, true)
+        .ok()
+        .and_then(|pb| {
+            let mut px = pixbuf_to_pixels(&pb)?;
+            px.dims_label = format!("Video · {} × {}", px.width, px.height);
+            Some(px)
+        });
+    let _ = std::fs::remove_file(&out);
+    result
+}
+
+fn run_ffmpeg_frame(path: &Path, out: &Path, ss: &str) -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-ss", ss, "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-an",
+            "-vf",
+            &format!("scale='min({DECODE_MAX_PX},iw)':-2"),
+            "-y",
+        ])
+        .arg(out)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// PDF page 1 via `pdftoppm` (poppler-utils). Soft-fail if missing.
+fn decode_pdf_page(path: &Path) -> Option<DecodedPixels> {
+    let tmp_dir = std::env::temp_dir().join("blink-preview");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let token = format!(
+        "p-{}-{}",
+        std::process::id(),
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pdf")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .take(24)
+            .collect::<String>()
+    );
+    let prefix = tmp_dir.join(&token);
+    // pdftoppm -singlefile -png writes `{prefix}.png`
+    let out = tmp_dir.join(format!("{token}.png"));
+    let _ = std::fs::remove_file(&out);
+
+    let ok = Command::new("pdftoppm")
+        .args([
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-singlefile",
+            "-png",
+            "-scale-to",
+            &DECODE_MAX_PX.to_string(),
+        ])
+        .arg(path)
+        .arg(&prefix)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !ok || !out.is_file() {
+        let _ = std::fs::remove_file(&out);
+        return None;
+    }
+
+    let result = Pixbuf::from_file(&out).ok().and_then(|pb| {
+        let mut px = pixbuf_to_pixels(&pb)?;
+        px.dims_label = format!("PDF page 1 · {} × {}", px.width, px.height);
+        Some(px)
+    });
+    let _ = std::fs::remove_file(&out);
+    result
 }
 
 /// Off-main-thread scaled decode. `file_info` is header-only (cheap); full

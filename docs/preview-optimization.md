@@ -15,7 +15,7 @@
 4. Skip decode storms while the user is still scrolling results.
 5. Leave search / index latency unchanged (`blink --bench`).
 
-Non-goals this pass: video frame extraction, PDF first-page, remote URLs, generating missing FreeDesktop thumbnails.
+Originally non-goals; now shipped: video frame extraction, PDF first-page, generating missing FreeDesktop thumbnails. Still non-goal: remote URLs.
 
 ---
 
@@ -130,7 +130,7 @@ Thumb path already used as fast path when a thumb exists.
 | 3 | **Off-main-thread scaled decode** via `Pixbuf::from_file_at_scale` + pixel copy + main `Texture` | No UI stall; small textures | **done** |
 | 4 | Keep FreeDesktop thumbnail fast path + cache it | Instant when thumb exists | **done** |
 | 5 | Generation token already present — keep for stale cancel | Correctness under race | **done** |
-| 6 | Optional later: generate missing thumbs via `gdk-pixbuf` / `totem-video-thumbnailer` | Better first-hit for video | not this pass |
+| 6 | Optional later: generate missing thumbs via `gdk-pixbuf` / `totem-video-thumbnailer` | Better first-hit for video | **done** — write FreeDesktop PNG after worker decode |
 
 ### Target decode size
 
@@ -231,7 +231,7 @@ Shipped on top of the first preview opts (no search/index change):
 | Off-main thumbs | FreeDesktop path resolve + `Pixbuf::from_file` run on the worker (main only `stat` + schedule) |
 | Pixel transfer | `glib::Bytes::from_owned` moves the worker buffer into GBytes (no extra clone) |
 
-Still deferred: generate missing FreeDesktop thumbs; video/PDF frames; full single-open dims (kept header `file_info` for native WxH label).
+Shipped later: generate missing FreeDesktop thumbs; video first-frame (`ffmpeg`); PDF page 1 (`pdftoppm`). Still deferred: full single-open dims (kept header `file_info` for native WxH label).
 
 ---
 

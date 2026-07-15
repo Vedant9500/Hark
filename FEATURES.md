@@ -156,9 +156,11 @@ Also:
 ## 7. Preview pane
 
 - Side panel (~**280px**) for the selected result
-- **Images:** scaled decode off the main thread, FreeDesktop thumbnail fast path, LRU texture cache (cap **24**), mtime + size fingerprint, latest-wins decode
+- **Images:** scaled decode off the main thread, FreeDesktop thumbnail fast path, LRU texture cache (cap **24**), mtime + size fingerprint, latest-wins decode; generate missing thumbs into `~/.cache/thumbnails`
 - Media typing: image / video / audio / document / archive / code / other
-- Video / audio / documents: icon + metadata (full media-frame preview is limited today)
+- **Video:** first-frame preview via `ffmpeg` (falls back to icon if tool/file fails)
+- **PDF:** first-page preview via `pdftoppm` (poppler); other documents stay icon + metadata
+- Audio: icon + metadata
 - Drag-and-drop from the preview picture as well as list rows
 
 ---
@@ -256,8 +258,8 @@ Positions near ~20% from the top of the focused monitor.
 Tracked in [todo.md](todo.md). Not fully shipped yet:
 
 - Multi-select drag-and-drop
-- Generate missing FreeDesktop thumbnails
-- Video first-frame / PDF page preview
+- ~~Generate missing FreeDesktop thumbnails~~ **done**
+- ~~Video first-frame / PDF page preview~~ **done**
 - Per-extension open overrides
 - One-shot “Open with…” on results (vs Settings defaults)
 

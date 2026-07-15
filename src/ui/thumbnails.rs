@@ -3,14 +3,14 @@
 //! Shared by preview decode and drag-icon polish so MD5/URI path logic stays
 //! in one place.
 
+use gtk::gdk_pixbuf::Pixbuf;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// FreeDesktop thumbnail path (`~/.cache/thumbnails/{large,normal}/md5(uri).png`).
 pub(crate) fn freedesktop_thumbnail(path: &Path) -> Option<PathBuf> {
-    let canon = path.canonicalize().ok()?;
-    // file:// URI — percent-encode non-ascii is overkill for local paths here
-    let uri = format!("file://{}", canon.display());
-    let digest = md5_hex(uri.as_bytes());
+    let digest = thumbnail_digest(path)?;
     let base = dirs::home_dir()?.join(".cache/thumbnails");
     for size in ["large", "normal", "x-large"] {
         let p = base.join(size).join(format!("{digest}.png"));
@@ -19,6 +19,112 @@ pub(crate) fn freedesktop_thumbnail(path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Canonical FreeDesktop `file://` URI + MD5 digest used for cache names.
+pub(crate) fn thumbnail_digest(path: &Path) -> Option<String> {
+    let canon = path.canonicalize().ok()?;
+    let uri = file_uri(&canon);
+    Some(md5_hex(uri.as_bytes()))
+}
+
+fn file_uri(canon: &Path) -> String {
+    // Local paths only; percent-encoding non-ascii is rare for our use.
+    format!("file://{}", canon.display())
+}
+
+/// Write a FreeDesktop-style thumbnail for `source` from already-decoded pixels.
+///
+/// Best-effort: never fails the preview path. Uses the `large` (256) slot when
+/// the image is big enough, else `normal` (128). Includes Thumb::URI / MTime
+/// text chunks when gdk-pixbuf accepts them.
+pub(crate) fn store_freedesktop_thumbnail(
+    source: &Path,
+    width: i32,
+    height: i32,
+    rowstride: i32,
+    has_alpha: bool,
+    pixels: &[u8],
+) -> bool {
+    if width <= 0 || height <= 0 || pixels.is_empty() {
+        return false;
+    }
+    let Ok(canon) = source.canonicalize() else {
+        return false;
+    };
+    let uri = file_uri(&canon);
+    let digest = md5_hex(uri.as_bytes());
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+
+    // Prefer large (256) when either edge is big enough; otherwise normal (128).
+    let (subdir, max_edge) = if width.max(height) >= 192 {
+        ("large", 256)
+    } else {
+        ("normal", 128)
+    };
+    let dir = home.join(".cache/thumbnails").join(subdir);
+    if fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let dest = dir.join(format!("{digest}.png"));
+    if dest.is_file() {
+        return true;
+    }
+
+    let bytes = glib::Bytes::from_owned(pixels.to_vec());
+    let pixbuf = Pixbuf::from_bytes(
+        &bytes,
+        gtk::gdk_pixbuf::Colorspace::Rgb,
+        has_alpha,
+        8,
+        width,
+        height,
+        rowstride,
+    );
+
+    let scaled = {
+        let w = pixbuf.width();
+        let h = pixbuf.height();
+        if w > max_edge || h > max_edge {
+            let scale = (max_edge as f64) / (w.max(h) as f64);
+            let nw = ((w as f64) * scale).round().max(1.0) as i32;
+            let nh = ((h as f64) * scale).round().max(1.0) as i32;
+            pixbuf
+                .scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)
+                .unwrap_or(pixbuf)
+        } else {
+            pixbuf
+        }
+    };
+
+    let mtime = fs::metadata(&canon)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|| "0".into());
+
+    // Atomic-ish write via temp then rename.
+    let tmp = dir.join(format!(".{digest}.blink-tmp.png"));
+    let options = [
+        ("tEXt::Thumb::URI", uri.as_str()),
+        ("tEXt::Thumb::MTime", mtime.as_str()),
+    ];
+    let ok = scaled
+        .savev(&tmp, "png", &options)
+        .or_else(|_| scaled.savev(&tmp, "png", &[]))
+        .is_ok();
+    if !ok {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    if fs::rename(&tmp, &dest).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 fn md5_hex(message: &[u8]) -> String {

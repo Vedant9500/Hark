@@ -16,8 +16,8 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 | **P1** | Deduplicate LRU insert path | `insert_cache` exists but async completion reimplements map/order eviction | **done** — sole insert path is `PreviewPanel::insert_cache` |
 | **P2** | Off-main FreeDesktop thumb load | Thumb path is intentional + cheap, but still sync on UI thread (`canonicalize` + MD5 + `Texture::from_filename`) under rapid select | **done** — thumb resolve + load on worker; main only stats + debounce |
 | **P2** | Optional: drop extra pixel→Pixbuf hop | Worker already copies pixels; main rebuilds Pixbuf then Texture — fine at 496px, short-lived ~2× peak | **partial** — `Bytes::from_owned` avoids a second buffer clone on main; Pixbuf hop remains (GTK API) |
-| later | Generate missing FreeDesktop thumbs | Better first-hit for images without `~/.cache/thumbnails` entry (doc item 6) | not this pass |
-| later | Video first-frame / PDF page | Non-goals of current preview pass; icon-only today | not this pass |
+| later | Generate missing FreeDesktop thumbs | Better first-hit for images without `~/.cache/thumbnails` entry (doc item 6) | **done** — worker writes `large`/`normal` PNG after decode when missing |
+| later | Video first-frame / PDF page | Non-goals of current preview pass; icon-only today | **done** — `ffmpeg` first-frame + `pdftoppm` page 1 (soft-fail if tools missing) |
 
 ### Done (keep for context)
 
@@ -31,6 +31,9 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 - [x] Cache fingerprint (mtime + size)
 - [x] Shared `insert_cache` for all writers
 - [x] Off-main FreeDesktop thumb resolve + load
+- [x] Generate missing FreeDesktop thumbs after decode
+- [x] Video first-frame preview (`ffmpeg`)
+- [x] PDF first-page preview (`pdftoppm`)
 
 ---
 
