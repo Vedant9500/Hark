@@ -54,7 +54,8 @@ pub struct Launcher {
     /// Pending search debounce timer (cancelled on each keystroke / hide).
     search_debounce: Rc<RefCell<Option<glib::SourceId>>>,
     drag_session: DragSession,
-    _theme: Rc<ThemeManager>,
+    #[allow(dead_code)]
+    theme: Rc<ThemeManager>,
 }
 
 impl Launcher {
@@ -75,7 +76,7 @@ impl Launcher {
         window.set_size_request(outer_w, -1);
         setup_window_chrome(&window);
 
-        let theme = ThemeManager::new();
+        let theme = ThemeManager::new(engine.config());
 
         // Frame hugs the shell. Expanding it leaves a transparent rectangle that
         // Hyprland layer-blur still samples around the rounded card (square halo).
@@ -227,7 +228,7 @@ impl Launcher {
         search_view.append(&footer);
 
         // ========== SETTINGS VIEW ==========
-        let settings = SettingsPanel::new(engine.clone());
+        let settings = SettingsPanel::new(engine.clone(), theme.clone());
 
         stack.add_named(&search_view, Some("search"));
         stack.add_named(settings.widget(), Some("settings"));
@@ -593,7 +594,7 @@ impl Launcher {
             deep_gen,
             search_debounce,
             drag_session,
-            _theme: theme,
+            theme: theme.clone(),
         }
     }
 
@@ -698,6 +699,10 @@ fn refresh_results(
     if drag_session.is_active() {
         return;
     }
+    let ui = engine.config().get().ui;
+    let icon_size = ui.icon_size as i32;
+    let symbolic_icons = ui.symbolic_icons;
+
 
     // Invalidate any in-flight async deep walk for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
@@ -712,7 +717,7 @@ fn refresh_results(
     list.set_visible(!found.is_empty());
 
     for (i, item) in found.iter().enumerate() {
-        let row = build_row(item, i == 0, drag_session);
+        let row = build_row(item, i == 0, drag_session, icon_size, symbolic_icons);
         list.append(&row);
     }
 
@@ -755,8 +760,9 @@ fn refresh_results(
     // Worker → main thread (event-driven; no 16 ms poll waking the UI loop).
     let (tx, rx) = async_channel::bounded::<Vec<SearchResult>>(1);
     let q_worker = q.clone();
+    let engine_worker = engine.clone();
     std::thread::spawn(move || {
-        let deep = engine.search_files_deep(&q_worker);
+        let deep = engine_worker.search_files_deep(&q_worker);
         let _ = tx.send_blocking(deep);
     });
 
@@ -774,6 +780,7 @@ fn refresh_results(
         if deep_hits.is_empty() {
             return;
         }
+        let ui = engine.config().get().ui;
         apply_deep_hits(
             &deep_hits,
             &list,
@@ -784,6 +791,8 @@ fn refresh_results(
             &footer_term,
             &preview,
             &drag_session,
+            ui.icon_size as i32,
+            ui.symbolic_icons,
         );
     });
 }
@@ -800,6 +809,8 @@ fn apply_deep_hits(
     footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
+    icon_size: i32,
+    symbolic_icons: bool,
 ) {
     // Rebuilding rows would cancel an active drag.
     if drag_session.is_active() {
@@ -841,7 +852,7 @@ fn apply_deep_hits(
     empty.set_visible(merged.is_empty());
     list.set_visible(!merged.is_empty());
     for item in merged.iter() {
-        let row = build_row(item, false, drag_session);
+        let row = build_row(item, false, drag_session, icon_size, symbolic_icons);
         list.append(&row);
     }
 

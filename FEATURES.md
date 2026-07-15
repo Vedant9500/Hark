@@ -145,6 +145,7 @@ Examples:
 3. **Exclusions** — names always skipped
 4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Blink-only, does not change system MIME
 5. **Display** — path style: **Label** vs **Drive** (`~/…` / `Windows C:…` style)
+6. **Appearance** — opacity, accent colour, font scale, icon size/style, corner radius
 
 Also:
 
@@ -178,6 +179,7 @@ Also:
 
 - Default Tokyo Night–style palette
 - Live theme from **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`)
+- **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
 - Hot-reloads on file change (or 2s poll fallback)
 - Custom GTK CSS for launcher chrome
 

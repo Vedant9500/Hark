@@ -11,20 +11,39 @@ fn rgba(hex: &str, alpha: f32) -> String {
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
-pub fn render(theme: &Theme) -> String {
-    let base = 0.85_f32;
+pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
+    let base = ui.opacity.clamp(0.40, 1.0);
+    let primary = ui
+        .accent
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(theme.primary.as_str());
+    let scale = ui.font_scale.clamp(0.85, 1.30);
+    let radius = ui.radius.clamp(8, 24);
+    let row_radius = (radius as f32 * 0.5).round().clamp(4.0, 14.0) as u32;
+    let icon_size = ui.icon_size.clamp(18, 36);
+
     let shell_bg = rgba(&theme.surface_container, base);
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
-    let selected_bg = rgba(&theme.primary, 0.18);
+    let selected_bg = rgba(primary, 0.18);
     let border = rgba(&theme.outline_variant, 0.65);
     let border_soft = rgba(&theme.outline_variant, 0.50);
     let hint = &theme.on_surface_variant;
     let empty = &theme.on_surface_variant;
     let subtitle = &theme.on_surface_variant;
     let on_surface = &theme.on_surface;
-    let primary = &theme.primary;
     let conv_badge_bg = rgba(&theme.on_surface, 0.08);
+
+    // Scaled type sizes (base @ scale 1.0).
+    let fs = |px: f32| -> String { format!("{:.1}px", px * scale) };
+    let search_fs = fs(18.0);
+    let title_fs = fs(14.0);
+    let subtitle_fs = fs(12.0);
+    let badge_fs = fs(11.0);
+    let preview_title_fs = fs(13.0);
+    let preview_meta_fs = fs(11.0);
+    let empty_fs = fs(12.0);
 
     format!(
         r#"
@@ -63,7 +82,7 @@ window.blink-window .blink-shell {{
   background-color: {shell_bg};
   background-image: none;
   border: 1px solid {border};
-  border-radius: 16px;
+  border-radius: {radius}px;
   /* No outer box-shadow: GTK paints it in the rectangular surface and Hyprland
      layer blur turns that into a square "padding" halo. Depth comes from blur. */
   box-shadow: none;
@@ -96,7 +115,7 @@ window.blink-window .blink-search {{
   border: none;
   border-radius: 0;
   padding: 2px 4px;
-  font-size: 18px;
+  font-size: {search_fs};
   font-weight: 500;
   color: {on_surface};
   caret-color: {primary};
@@ -161,7 +180,7 @@ window.blink-window .blink-preview-body {{
 
 window.blink-window .blink-preview-empty {{
   color: {empty};
-  font-size: 12px;
+  font-size: {empty_fs};
   opacity: 0.7;
   line-height: 1.4;
 }}
@@ -184,19 +203,19 @@ window.blink-window .blink-preview-badge {{
 }}
 
 window.blink-window .blink-preview-title {{
-  font-size: 13px;
+  font-size: {preview_title_fs};
   font-weight: 600;
   color: {on_surface};
 }}
 
 window.blink-window .blink-preview-sub {{
-  font-size: 11px;
+  font-size: {preview_meta_fs};
   color: {subtitle};
   opacity: 0.9;
 }}
 
 window.blink-window .blink-preview-meta {{
-  font-size: 11px;
+  font-size: {preview_meta_fs};
   color: {hint};
   opacity: 0.85;
   line-height: 1.35;
@@ -217,6 +236,8 @@ window.blink-window .blink-preview-picture {{
 window.blink-window .blink-row-icon {{
   margin-right: 2px;
   opacity: 0.95;
+  min-width: {icon_size}px;
+  min-height: {icon_size}px;
 }}
 
 window.blink-window .blink-scroll {{
@@ -243,7 +264,7 @@ window.blink-window .blink-results > row {{
   border: none;
   outline: none;
   box-shadow: none;
-  border-radius: 8px;
+  border-radius: {row_radius}px;
   padding: 0;
   margin: 1px 0;
   /* let content define height — fixed min-height was clipping glyphs */
@@ -251,7 +272,7 @@ window.blink-window .blink-results > row {{
 }}
 
 window.blink-window .blink-row-inner {{
-  border-radius: 8px;
+  border-radius: {row_radius}px;
   padding: 8px 10px;
   background-color: transparent;
 }}
@@ -269,7 +290,7 @@ window.blink-window .blink-results > row:selected:hover {{
 
 window.blink-window .blink-title {{
   color: {on_surface};
-  font-size: 14px;
+  font-size: {title_fs};
   font-weight: 600;
   /* avoid glyph tops/bottoms being clipped by tight allocation */
   min-height: 18px;
@@ -279,7 +300,7 @@ window.blink-window .blink-title {{
 
 window.blink-window .blink-subtitle {{
   color: {subtitle};
-  font-size: 12px;
+  font-size: {subtitle_fs};
   opacity: 0.9;
   min-height: 16px;
   padding-top: 1px;
@@ -291,7 +312,7 @@ window.blink-window .blink-badge {{
   color: {hint};
   border-radius: 0;
   padding: 0 2px;
-  font-size: 11px;
+  font-size: {badge_fs};
   font-weight: 500;
   opacity: 0.85;
 }}

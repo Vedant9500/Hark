@@ -1,5 +1,6 @@
-use crate::config::{discover_mounts, FileOpenCategory, PathStyle};
+use crate::config::{discover_mounts, FileOpenCategory, PathStyle, UiThemeConfig};
 use crate::engine::Engine;
+use crate::theme::ThemeManager;
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
@@ -49,6 +50,12 @@ const CATEGORIES: &[Category] = &[
         subtitle: "How paths are shown",
         icon: "preferences-desktop-display-symbolic",
     },
+    Category {
+        id: "appearance",
+        title: "Appearance",
+        subtitle: "Opacity, colours, icons, type",
+        icon: "preferences-desktop-theme-symbolic",
+    },
 ];
 
 pub struct SettingsPanel {
@@ -56,13 +63,15 @@ pub struct SettingsPanel {
     status: Label,
     pub nav: ListBox,
     engine: Arc<Engine>,
+    #[allow(dead_code)]
+    theme: Rc<ThemeManager>,
     on_done: Rc<RefCell<Option<Box<dyn Fn()>>>>,
     /// Closes in-panel overlays (e.g. default-app picker). Returns true if one was open.
     dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>,
 }
 
 impl SettingsPanel {
-    pub fn new(engine: Arc<Engine>) -> Self {
+    pub fn new(engine: Arc<Engine>, theme: Rc<ThemeManager>) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("blink-settings");
         root.set_hexpand(true);
@@ -232,6 +241,9 @@ impl SettingsPanel {
         let display_page = build_display_page(&engine, &cfg);
         content_stack.add_named(&display_page, Some("display"));
 
+        let appearance_page = build_appearance_page(&engine, &theme, &cfg);
+        content_stack.add_named(&appearance_page, Some("appearance"));
+
         content_stack.set_visible_child_name("indexing");
         split.append(&content_stack);
         root.append(&split);
@@ -306,6 +318,7 @@ impl SettingsPanel {
             status,
             nav,
             engine,
+            theme,
             on_done,
             dismiss_overlay,
         }
@@ -1413,3 +1426,420 @@ fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
         }
     });
 }
+
+
+fn build_appearance_page(
+    engine: &Arc<Engine>,
+    theme: &Rc<ThemeManager>,
+    cfg: &crate::config::BlinkConfig,
+) -> GtkBox {
+    let (outer, body) = page_shell(
+        "preferences-desktop-theme-symbolic",
+        "Appearance",
+        "Tweak transparency, accent colour, type scale, and icons. Colours still follow your Caelestia scheme.",
+    );
+
+    let ui = cfg.ui.clone();
+
+    // --- Opacity ---
+    body.append(&group_label("Panel"));
+
+    let panel_card = GtkBox::new(Orientation::Vertical, 0);
+    panel_card.add_css_class("blink-settings-card");
+
+    let opacity_row = setting_row(
+        "Transparency",
+        Some(&format!("{:.0}% opaque", ui.opacity * 100.0)),
+    );
+    let opacity_stepper = GtkBox::new(Orientation::Horizontal, 4);
+    opacity_stepper.set_valign(gtk::Align::Center);
+    let op_dec = Button::with_label("−");
+    op_dec.add_css_class("blink-settings-btn");
+    op_dec.add_css_class("blink-settings-icon-btn");
+    let op_val = Label::new(Some(&format!("{:.0}%", ui.opacity * 100.0)));
+    op_val.add_css_class("blink-settings-stepper-val");
+    op_val.set_width_chars(4);
+    let op_inc = Button::with_label("+");
+    op_inc.add_css_class("blink-settings-btn");
+    op_inc.add_css_class("blink-settings-icon-btn");
+    opacity_stepper.append(&op_dec);
+    opacity_stepper.append(&op_val);
+    opacity_stepper.append(&op_inc);
+    opacity_row.append(&opacity_stepper);
+    panel_card.append(&opacity_row);
+
+    let opacity_hint = opacity_row
+        .first_child()
+        .and_then(|c| c.last_child())
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let op_val = op_val.clone();
+        let opacity_hint = opacity_hint.clone();
+        op_dec.connect_clicked(move |_| {
+            let mut next = 0.85f32;
+            engine.config().update(|c| {
+                next = (c.ui.opacity - 0.05).clamp(0.40, 1.0);
+                c.ui.opacity = next;
+            });
+            op_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &opacity_hint {
+                h.set_text(&format!("{:.0}% opaque", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let op_val = op_val.clone();
+        let opacity_hint = opacity_hint.clone();
+        op_inc.connect_clicked(move |_| {
+            let mut next = 0.85f32;
+            engine.config().update(|c| {
+                next = (c.ui.opacity + 0.05).clamp(0.40, 1.0);
+                c.ui.opacity = next;
+            });
+            op_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &opacity_hint {
+                h.set_text(&format!("{:.0}% opaque", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+
+    panel_card.append(&Separator::new(Orientation::Horizontal));
+
+    // Corner radius
+    let radius_row = setting_row("Corner radius", Some(&format!("{}px", ui.radius)));
+    let radius_stepper = GtkBox::new(Orientation::Horizontal, 4);
+    let r_dec = Button::with_label("−");
+    r_dec.add_css_class("blink-settings-btn");
+    r_dec.add_css_class("blink-settings-icon-btn");
+    let r_val = Label::new(Some(&format!("{}", ui.radius)));
+    r_val.add_css_class("blink-settings-stepper-val");
+    r_val.set_width_chars(3);
+    let r_inc = Button::with_label("+");
+    r_inc.add_css_class("blink-settings-btn");
+    r_inc.add_css_class("blink-settings-icon-btn");
+    radius_stepper.append(&r_dec);
+    radius_stepper.append(&r_val);
+    radius_stepper.append(&r_inc);
+    radius_row.append(&radius_stepper);
+    panel_card.append(&radius_row);
+
+    let radius_hint = radius_row
+        .first_child()
+        .and_then(|c| c.last_child())
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let r_val = r_val.clone();
+        let radius_hint = radius_hint.clone();
+        r_dec.connect_clicked(move |_| {
+            let mut next = 16u32;
+            engine.config().update(|c| {
+                next = c.ui.radius.saturating_sub(1).max(8);
+                c.ui.radius = next;
+            });
+            r_val.set_text(&format!("{next}"));
+            if let Some(h) = &radius_hint {
+                h.set_text(&format!("{next}px"));
+            }
+            theme.reload();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let r_val = r_val.clone();
+        let radius_hint = radius_hint.clone();
+        r_inc.connect_clicked(move |_| {
+            let mut next = 16u32;
+            engine.config().update(|c| {
+                next = (c.ui.radius + 1).min(24);
+                c.ui.radius = next;
+            });
+            r_val.set_text(&format!("{next}"));
+            if let Some(h) = &radius_hint {
+                h.set_text(&format!("{next}px"));
+            }
+            theme.reload();
+        });
+    }
+
+    body.append(&panel_card);
+
+    // --- Accent ---
+    body.append(&group_label("Colours"));
+
+    let colour_card = GtkBox::new(Orientation::Vertical, 0);
+    colour_card.add_css_class("blink-settings-card");
+
+    let accent_row = setting_row(
+        "Accent override",
+        Some("Empty = Caelestia primary"),
+    );
+    let accent_entry = Entry::builder()
+        .placeholder_text("#7aa2f7")
+        .hexpand(false)
+        .width_chars(10)
+        .build();
+    accent_entry.add_css_class("blink-settings-entry");
+    if let Some(a) = &ui.accent {
+        accent_entry.set_text(a);
+    }
+    accent_row.append(&accent_entry);
+    colour_card.append(&accent_row);
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        accent_entry.connect_changed(move |entry| {
+            let text = entry.text().to_string();
+            engine.config().update(|c| {
+                let t = text.trim();
+                if t.is_empty() {
+                    c.ui.accent = None;
+                } else {
+                    c.ui.accent = Some(t.to_string());
+                }
+            });
+            theme.reload();
+        });
+    }
+
+    colour_card.append(&Separator::new(Orientation::Horizontal));
+
+    let presets = GtkBox::new(Orientation::Horizontal, 6);
+    presets.add_css_class("blink-settings-list-row");
+    let preset_label = Label::new(Some("Quick accents"));
+    preset_label.add_css_class("blink-settings-row-title");
+    preset_label.set_halign(gtk::Align::Start);
+    preset_label.set_hexpand(true);
+    presets.append(&preset_label);
+
+    for (name, hex) in [
+        ("Blue", "#7aa2f7"),
+        ("Cyan", "#7dcfff"),
+        ("Magenta", "#bb9af7"),
+        ("Green", "#9ece6a"),
+        ("Orange", "#ff9e64"),
+        ("Red", "#f7768e"),
+        ("Reset", ""),
+    ] {
+        let btn = Button::with_label(name);
+        btn.add_css_class("blink-settings-btn");
+        btn.add_css_class("blink-settings-link");
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let accent_entry = accent_entry.clone();
+        let hex = hex.to_string();
+        btn.connect_clicked(move |_| {
+            if hex.is_empty() {
+                accent_entry.set_text("");
+                engine.config().update(|c| c.ui.accent = None);
+            } else {
+                accent_entry.set_text(&hex);
+                engine.config().update(|c| c.ui.accent = Some(hex.clone()));
+            }
+            theme.reload();
+        });
+        presets.append(&btn);
+    }
+    colour_card.append(&presets);
+    body.append(&colour_card);
+
+    // --- Type ---
+    body.append(&group_label("Type & icons"));
+
+    let type_card = GtkBox::new(Orientation::Vertical, 0);
+    type_card.add_css_class("blink-settings-card");
+
+    let font_row = setting_row(
+        "Font scale",
+        Some(&format!("{:.0}%", ui.font_scale * 100.0)),
+    );
+    let font_stepper = GtkBox::new(Orientation::Horizontal, 4);
+    let f_dec = Button::with_label("−");
+    f_dec.add_css_class("blink-settings-btn");
+    f_dec.add_css_class("blink-settings-icon-btn");
+    let f_val = Label::new(Some(&format!("{:.0}%", ui.font_scale * 100.0)));
+    f_val.add_css_class("blink-settings-stepper-val");
+    f_val.set_width_chars(4);
+    let f_inc = Button::with_label("+");
+    f_inc.add_css_class("blink-settings-btn");
+    f_inc.add_css_class("blink-settings-icon-btn");
+    font_stepper.append(&f_dec);
+    font_stepper.append(&f_val);
+    font_stepper.append(&f_inc);
+    font_row.append(&font_stepper);
+    type_card.append(&font_row);
+
+    let font_hint = font_row
+        .first_child()
+        .and_then(|c| c.last_child())
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let f_val = f_val.clone();
+        let font_hint = font_hint.clone();
+        f_dec.connect_clicked(move |_| {
+            let mut next = 1.0f32;
+            engine.config().update(|c| {
+                next = ((c.ui.font_scale * 100.0).round() - 5.0).max(85.0) / 100.0;
+                c.ui.font_scale = next;
+            });
+            f_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &font_hint {
+                h.set_text(&format!("{:.0}%", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let f_val = f_val.clone();
+        let font_hint = font_hint.clone();
+        f_inc.connect_clicked(move |_| {
+            let mut next = 1.0f32;
+            engine.config().update(|c| {
+                next = ((c.ui.font_scale * 100.0).round() + 5.0).min(130.0) / 100.0;
+                c.ui.font_scale = next;
+            });
+            f_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &font_hint {
+                h.set_text(&format!("{:.0}%", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+
+    type_card.append(&Separator::new(Orientation::Horizontal));
+
+    let icon_row = setting_row("Icon size", Some(&format!("{}px", ui.icon_size)));
+    let icon_stepper = GtkBox::new(Orientation::Horizontal, 4);
+    let i_dec = Button::with_label("−");
+    i_dec.add_css_class("blink-settings-btn");
+    i_dec.add_css_class("blink-settings-icon-btn");
+    let i_val = Label::new(Some(&format!("{}", ui.icon_size)));
+    i_val.add_css_class("blink-settings-stepper-val");
+    i_val.set_width_chars(3);
+    let i_inc = Button::with_label("+");
+    i_inc.add_css_class("blink-settings-btn");
+    i_inc.add_css_class("blink-settings-icon-btn");
+    icon_stepper.append(&i_dec);
+    icon_stepper.append(&i_val);
+    icon_stepper.append(&i_inc);
+    icon_row.append(&icon_stepper);
+    type_card.append(&icon_row);
+
+    let icon_hint = icon_row
+        .first_child()
+        .and_then(|c| c.last_child())
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let i_val = i_val.clone();
+        let icon_hint = icon_hint.clone();
+        i_dec.connect_clicked(move |_| {
+            let mut next = 26u32;
+            engine.config().update(|c| {
+                next = c.ui.icon_size.saturating_sub(2).max(18);
+                c.ui.icon_size = next;
+            });
+            i_val.set_text(&format!("{next}"));
+            if let Some(h) = &icon_hint {
+                h.set_text(&format!("{next}px"));
+            }
+            theme.reload();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let i_val = i_val.clone();
+        let icon_hint = icon_hint.clone();
+        i_inc.connect_clicked(move |_| {
+            let mut next = 26u32;
+            engine.config().update(|c| {
+                next = (c.ui.icon_size + 2).min(36);
+                c.ui.icon_size = next;
+            });
+            i_val.set_text(&format!("{next}"));
+            if let Some(h) = &icon_hint {
+                h.set_text(&format!("{next}px"));
+            }
+            theme.reload();
+        });
+    }
+
+    type_card.append(&Separator::new(Orientation::Horizontal));
+
+    let (sym_row, sym_cb) = check_setting_row(
+        "Prefer symbolic icons",
+        Some("Use -symbolic variants when the icon theme provides them"),
+        ui.symbolic_icons,
+    );
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        sym_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine.config().update(|c| c.ui.symbolic_icons = on);
+            theme.reload();
+        });
+    }
+    type_card.append(&sym_row);
+
+    body.append(&type_card);
+
+    // Reset
+    body.append(&group_label("Reset"));
+    let reset_card = GtkBox::new(Orientation::Vertical, 0);
+    reset_card.add_css_class("blink-settings-card");
+    let reset_row = setting_row("Restore defaults", Some("Opacity, accent, font, icons, radius"));
+    let reset_btn = Button::with_label("Reset appearance");
+    reset_btn.add_css_class("blink-settings-btn");
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let accent_entry = accent_entry.clone();
+        let op_val = op_val.clone();
+        let r_val = r_val.clone();
+        let f_val = f_val.clone();
+        let i_val = i_val.clone();
+        reset_btn.connect_clicked(move |_| {
+            engine.config().update(|c| c.ui = UiThemeConfig::default());
+            accent_entry.set_text("");
+            op_val.set_text("85%");
+            r_val.set_text("16");
+            f_val.set_text("100%");
+            i_val.set_text("26");
+            theme.reload();
+        });
+    }
+    reset_row.append(&reset_btn);
+    reset_card.append(&reset_row);
+    body.append(&reset_card);
+
+    let note = Label::new(Some(
+        "Base colours come from Caelestia (~/.local/state/caelestia/scheme.json). Accent override only changes the highlight colour. Icon size applies on the next search refresh.",
+    ));
+    note.add_css_class("blink-hint");
+    note.set_halign(gtk::Align::Start);
+    note.set_wrap(true);
+    body.append(&note);
+
+    outer
+}
+

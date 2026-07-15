@@ -253,6 +253,20 @@ Source: `src/ui/preview.rs` · tracker: `docs/preview-optimization.md`
 
 ---
 
+## Appearance tweaks (Settings)
+
+| Priority | Item | Status |
+|----------|------|--------|
+| **P1** | Panel opacity | **done** — `ui.opacity` 40–100% |
+| **P1** | Accent override + presets | **done** — hex override on Caelestia primary |
+| **P1** | Font scale | **done** — 85–130% |
+| **P1** | Icon size + symbolic | **done** — 18–36px; prefer `-symbolic` |
+| **P1** | Corner radius | **done** — 8–24px shell + row radius |
+
+Config: `BlinkConfig.ui` (`~/.config/blink/config.json`). Live CSS reload via `ThemeManager::reload`.
+
+---
+
 ## Ranking / relevance
 
 | Priority | Item | Notes | Status |

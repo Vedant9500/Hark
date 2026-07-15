@@ -264,6 +264,78 @@ impl FileOpenCategory {
     }
 }
 
+/// Appearance tweaks layered on top of the Caelestia colour scheme.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiThemeConfig {
+    /// Panel shell opacity 0.40–1.0 (default 0.85).
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    /// Optional accent override (`#rrggbb`). Empty = scheme primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    /// UI type scale 0.85–1.30 (default 1.0).
+    #[serde(default = "default_font_scale")]
+    pub font_scale: f32,
+    /// Result-row icon pixel size (18–36, default 26).
+    #[serde(default = "default_icon_size")]
+    pub icon_size: u32,
+    /// Prefer symbolic icons when the theme provides them.
+    #[serde(default)]
+    pub symbolic_icons: bool,
+    /// Shell corner radius in px (8–24, default 16).
+    #[serde(default = "default_radius")]
+    pub radius: u32,
+}
+
+fn default_opacity() -> f32 {
+    0.85
+}
+fn default_font_scale() -> f32 {
+    1.0
+}
+fn default_icon_size() -> u32 {
+    26
+}
+fn default_radius() -> u32 {
+    16
+}
+
+impl Default for UiThemeConfig {
+    fn default() -> Self {
+        Self {
+            opacity: default_opacity(),
+            accent: None,
+            font_scale: default_font_scale(),
+            icon_size: default_icon_size(),
+            symbolic_icons: false,
+            radius: default_radius(),
+        }
+    }
+}
+
+impl UiThemeConfig {
+    /// Clamp all fields into safe ranges (settings + load path).
+    pub fn sanitize(&mut self) {
+        self.opacity = self.opacity.clamp(0.40, 1.0);
+        self.font_scale = self.font_scale.clamp(0.85, 1.30);
+        self.icon_size = self.icon_size.clamp(18, 36);
+        self.radius = self.radius.clamp(8, 24);
+        if let Some(a) = self.accent.take() {
+            let t = a.trim();
+            if t.is_empty() {
+                self.accent = None;
+            } else {
+                let hex = t.trim_start_matches('#');
+                if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    self.accent = Some(format!("#{hex}").to_ascii_lowercase());
+                } else {
+                    self.accent = None;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BlinkConfig {
     #[serde(default = "default_version")]
@@ -273,6 +345,9 @@ pub struct BlinkConfig {
     /// Per-category default apps for opening files from Blink (not system MIME).
     #[serde(default)]
     pub open_with: OpenWithConfig,
+    /// Appearance: transparency, accent, font, icons, radius.
+    #[serde(default)]
+    pub ui: UiThemeConfig,
 }
 
 fn default_version() -> u32 {
@@ -329,6 +404,14 @@ impl ConfigStore {
             }
         }
 
+        {
+            let before = cfg.ui.clone();
+            cfg.ui.sanitize();
+            if cfg.ui != before {
+                changed = true;
+            }
+        }
+
         let store = Self {
             inner: RwLock::new(cfg),
             path,
@@ -347,6 +430,7 @@ impl ConfigStore {
         {
             let mut g = self.inner.write().unwrap();
             f(&mut g);
+            g.ui.sanitize();
         }
         self.save();
     }

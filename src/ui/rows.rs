@@ -7,6 +7,8 @@ pub(crate) fn build_row(
     item: &SearchResult,
     _selected: bool,
     drag_session: &DragSession,
+    icon_size: i32,
+    symbolic_icons: bool,
 ) -> ListBoxRow {
     let row = ListBoxRow::new();
     row.set_activatable(true);
@@ -27,13 +29,24 @@ pub(crate) fn build_row(
     hbox.set_margin_start(2);
     hbox.set_margin_end(2);
 
-    let icon_name = item.icon.as_deref().unwrap_or(match item.kind {
+    let mut icon_name = item.icon.as_deref().unwrap_or(match item.kind {
         ResultKind::App => "application-x-executable",
         ResultKind::File => "text-x-generic",
         ResultKind::Folder => "folder",
         ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
         ResultKind::Command => "preferences-system",
-    });
+    }).to_string();
+    if symbolic_icons && !icon_name.ends_with("-symbolic") {
+        // Prefer symbolic variant when the icon theme provides it.
+        let candidate = format!("{icon_name}-symbolic");
+        if let Some(display) = gtk::gdk::Display::default() {
+            let theme = gtk::IconTheme::for_display(&display);
+            if theme.has_icon(&candidate) {
+                icon_name = candidate;
+            }
+        }
+    }
+    let icon_name = icon_name.as_str();
     // Resolve through the display icon theme so missing specific names fall back cleanly.
     let display = gtk::gdk::Display::default();
     let icon = if let Some(display) = display {
@@ -75,7 +88,7 @@ pub(crate) fn build_row(
         gtk::Image::from_icon_name(icon_name)
     };
     icon.add_css_class("blink-row-icon");
-    icon.set_pixel_size(26);
+    icon.set_pixel_size(icon_size.clamp(18, 36));
     icon.set_valign(gtk::Align::Center);
     icon.set_opacity(1.0);
 

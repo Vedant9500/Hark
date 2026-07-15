@@ -66,18 +66,19 @@ impl Theme {
         }
     }
 
-    pub fn to_css(&self) -> String {
-        css::render(self)
+    pub fn to_css(&self, ui: &crate::config::UiThemeConfig) -> String {
+        css::render(self, ui)
     }
 }
 
 pub struct ThemeManager {
     provider: CssProvider,
+    config: std::sync::Arc<crate::config::ConfigStore>,
     _monitor: RefCell<Option<gio::FileMonitor>>,
 }
 
 impl ThemeManager {
-    pub fn new() -> Rc<Self> {
+    pub fn new(config: std::sync::Arc<crate::config::ConfigStore>) -> Rc<Self> {
         let provider = CssProvider::new();
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().expect("display"),
@@ -87,6 +88,7 @@ impl ThemeManager {
 
         let mgr = Rc::new(Self {
             provider,
+            config,
             _monitor: RefCell::new(None),
         });
         mgr.apply();
@@ -96,7 +98,13 @@ impl ThemeManager {
 
     pub fn apply(&self) {
         let theme = Theme::load();
-        self.provider.load_from_string(&theme.to_css());
+        let ui = self.config.get().ui;
+        self.provider.load_from_string(&theme.to_css(&ui));
+    }
+
+    /// Re-read config + scheme and refresh CSS (call after Settings tweaks).
+    pub fn reload(&self) {
+        self.apply();
     }
 
     fn watch(self: &Rc<Self>) {
