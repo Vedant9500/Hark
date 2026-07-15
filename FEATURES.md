@@ -179,6 +179,7 @@ Also:
 
 - Default Tokyo Night–style palette
 - Live theme from **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`)
+- **Translate-on-paste:** CJK / `tr …` → conversion card + copy; LibreTranslate or free MyMemory; disk cache; master kill switch in Settings → Tools
 - **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
 - Hot-reloads on file change (or 2s poll fallback)
 - Custom GTK CSS for launcher chrome

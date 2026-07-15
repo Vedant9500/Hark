@@ -1,6 +1,6 @@
 # Translation tool — implementation plan
 
-**Status:** Phase 0 done · Phase 1 not started  
+**Status:** Phase 1 done · Phase 1.1 optional  
 **Last updated:** 2026-07-15  
 **Goal:** Paste Chinese (or other non-English text) into Blink → see a clear translation → Enter copies it.  
 **Constraint:** Stay light for a resident Hyprland daemon — no models on boot, no heavy crates in v1, short timeouts, aggressive cache.
@@ -323,15 +323,17 @@ Privacy hint under the form:
 
 ### Phase 1 — MVP online translate (1–2 days)
 
-- [ ] Prefix `tr ` / `translate `  
-- [ ] CJK auto-detect  
-- [ ] LibreTranslate-compatible `curl` POST  
-- [ ] Disk cache + TTL  
-- [ ] `ConversionView` + `Action::Copy`  
-- [ ] Engine short-circuit when confident  
-- [ ] Settings: enable, target lang, endpoint, auto_detect  
-- [ ] Soft failure row  
-- [ ] Docs: this file status → partial/done; FEATURES.md bullet  
+- [x] Prefix `tr ` / `translate `  
+- [x] CJK auto-detect  
+- [x] LibreTranslate-compatible `curl` POST (custom endpoint)  
+- [x] Free MyMemory fallback when endpoint empty  
+- [x] Disk cache + TTL (14d) + sweep  
+- [x] `ConversionView` + `Action::Copy`  
+- [x] Engine short-circuit when translate owns the query  
+- [x] Settings: enable, target lang, endpoint, api key, auto_detect  
+- [x] Soft failure row  
+- [x] Master kill switch still hard-gates all I/O  
+- [x] Docs: this file status; FEATURES.md bullet  
 
 **Done criteria:**
 
@@ -455,3 +457,4 @@ Privacy hint under the form:
 |------|------|
 | 2026-07-15 | Plan written from research; not implemented yet |
 | 2026-07-15 | Phase 0 scaffold: config, detection, engine gate, Settings toggle |
+| 2026-07-15 | Phase 1: cache + LibreTranslate/MyMemory curl, Settings fields, conversion card |

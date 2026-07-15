@@ -1868,7 +1868,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
 
     let (en_row, en_cb) = check_setting_row(
         "Enable translation",
-        Some("Paste Chinese (or use tr …). When off: no network, cache, or translate work."),
+        Some("When off: no network, cache, or translate work at all."),
         cfg.translate.enabled,
     );
     {
@@ -1896,10 +1896,88 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     }
     card.append(&auto_row);
 
+    card.append(&Separator::new(Orientation::Horizontal));
+
+    // Target language
+    let target_row = setting_row("Target language", Some("BCP-47 code, e.g. en / zh / ja / hi"));
+    let target_entry = Entry::builder()
+        .placeholder_text("en")
+        .hexpand(false)
+        .width_chars(8)
+        .build();
+    target_entry.add_css_class("blink-settings-entry");
+    target_entry.set_text(&cfg.translate.target_lang);
+    target_row.append(&target_entry);
+    card.append(&target_row);
+    {
+        let engine = engine.clone();
+        target_entry.connect_changed(move |entry| {
+            let text = entry.text().to_string();
+            engine.config().update(|c| {
+                c.translate.target_lang = text;
+            });
+        });
+    }
+
+    card.append(&Separator::new(Orientation::Horizontal));
+
+    // Endpoint
+    let ep_row = setting_row(
+        "API endpoint",
+        Some("LibreTranslate base URL. Empty = free MyMemory fallback"),
+    );
+    let ep_entry = Entry::builder()
+        .placeholder_text("https://libretranslate.example")
+        .hexpand(true)
+        .build();
+    ep_entry.add_css_class("blink-settings-entry");
+    ep_entry.set_text(&cfg.translate.endpoint);
+    ep_row.append(&ep_entry);
+    card.append(&ep_row);
+    {
+        let engine = engine.clone();
+        ep_entry.connect_changed(move |entry| {
+            let text = entry.text().to_string();
+            engine.config().update(|c| {
+                c.translate.endpoint = text;
+            });
+        });
+    }
+
+    card.append(&Separator::new(Orientation::Horizontal));
+
+    // API key
+    let key_row = setting_row("API key", Some("Optional for self-hosted LibreTranslate"));
+    let key_entry = Entry::builder()
+        .placeholder_text("(optional)")
+        .hexpand(true)
+        .visibility(false)
+        .build();
+    key_entry.add_css_class("blink-settings-entry");
+    if let Some(k) = &cfg.translate.api_key {
+        key_entry.set_text(k);
+    }
+    key_row.append(&key_entry);
+    card.append(&key_row);
+    {
+        let engine = engine.clone();
+        key_entry.connect_changed(move |entry| {
+            let text = entry.text().to_string();
+            engine.config().update(|c| {
+                let t = text.trim();
+                c.translate.api_key = if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                };
+            });
+        });
+    }
+
     body.append(&card);
 
     let note = Label::new(Some(
-        "Phase 0: detection only (no API yet). Phase 1 will add LibreTranslate-compatible HTTP + cache. See translation.md.",
+        "Paste Chinese (or type tr hello). Text is sent to the configured endpoint when not cached. Prefer a local LibreTranslate for privacy. See translation.md.",
     ));
     note.add_css_class("blink-hint");
     note.set_halign(gtk::Align::Start);

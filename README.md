@@ -62,7 +62,9 @@ Share the full code so they can build/modify it themselves:
 tar xzf blink-0.1.0-source.tar.gz
 cd blink-0.1.0-source
 # read BUILD_FROM_SOURCE.txt
-./scripts/install.sh
+./scripts/install.sh          # build + install + restart daemon
+# ./scripts/install.sh --no-restart
+# ./scripts/install.sh --restart-only
 ```
 
 Do **not** zip the whole project folder by hand — `target/` alone is multi‑GB of junk.

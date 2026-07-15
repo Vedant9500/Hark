@@ -144,11 +144,11 @@ impl Engine {
         results.extend(calc);
 
         // Translate: only when enabled. Disabled → zero I/O / no background work.
-        // Phase 0: detection only (empty results). Phase 1: cache + HTTP.
         let mut force_translate = false;
         if !calc_hit && self.translate.is_enabled() && self.translate.should_handle(q) {
             let tr = self.translate.search(q);
-            force_translate = tr.iter().any(|r| r.score >= 50_000);
+            // Any translate row (success or soft-fail) owns the query.
+            force_translate = !tr.is_empty();
             results.extend(tr);
         }
 

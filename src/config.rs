@@ -420,7 +420,7 @@ pub struct BlinkConfig {
     /// Appearance: transparency, accent, font, icons, radius.
     #[serde(default)]
     pub ui: UiThemeConfig,
-    /// Translate-on-paste (CJK / `tr ` prefix). Phase 0 scaffold — no network yet.
+    /// Translate-on-paste (CJK / `tr ` prefix). Online via LibreTranslate or MyMemory.
     #[serde(default)]
     pub translate: TranslateConfig,
 }
