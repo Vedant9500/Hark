@@ -258,7 +258,7 @@ impl Launcher {
         let results: Rc<RefCell<Vec<SearchResult>>> = Rc::new(RefCell::new(Vec::new()));
         let selected: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let suppress_select: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-        let ui_cfg0 = engine.config().get().ui;
+        let ui_cfg0 = engine.config().snapshot().ui.clone();
         let ui_icon_size: Rc<Cell<i32>> = Rc::new(Cell::new(ui_cfg0.icon_size as i32));
         let ui_symbolic: Rc<Cell<bool>> = Rc::new(Cell::new(ui_cfg0.symbolic_icons));
         let in_settings = Rc::new(Cell::new(false));
@@ -380,7 +380,7 @@ impl Launcher {
                 stack.set_visible_child_name("search");
                 search.grab_focus();
                 // Settings may have changed icon prefs.
-                let ui = engine.config().get().ui;
+                let ui = engine.config().snapshot().ui.clone();
                 ui_icon_size.set(ui.icon_size as i32);
                 ui_symbolic.set(ui.symbolic_icons);
                 refresh_results(
@@ -674,7 +674,7 @@ impl Launcher {
         self.stack.set_visible_child_name("search");
         self.search.set_text("");
         // Refresh cached appearance from config (settings may have changed while hidden).
-        let ui = self.engine.config().get().ui;
+        let ui = self.engine.config().snapshot().ui.clone();
         self.ui_icon_size.set(ui.icon_size as i32);
         self.ui_symbolic.set(ui.symbolic_icons);
         refresh_results(

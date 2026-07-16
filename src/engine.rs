@@ -289,7 +289,7 @@ impl Engine {
             Action::OpenPath(path) => {
                 // Auto-promote parent project folder so future deep walks prefer it.
                 maybe_auto_promote_deep_root(self, path);
-                let cfg = self.config.get();
+                let cfg = self.config.snapshot();
                 crate::providers::files::open_path_with(path, Some(&cfg.open_with));
                 ExecuteOutcome::Launched
             }

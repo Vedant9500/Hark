@@ -5,14 +5,14 @@
 
 use crate::providers::SearchResult;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX_ENTRIES: usize = 64;
 const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
 
 struct Entry {
-    hits: Vec<SearchResult>,
+    hits: Arc<[SearchResult]>,
     expires: Instant,
     /// Insertion / last-hit order for simple LRU eviction.
     last_used: Instant,
@@ -62,7 +62,8 @@ impl LiveCache {
         true
     }
 
-    pub fn get(&self, query: &str) -> Option<Vec<SearchResult>> {
+    /// Shared hits for the query (Arc clone only).
+    pub fn get(&self, query: &str) -> Option<Arc<[SearchResult]>> {
         let key = Self::key_for(query);
         if key.is_empty() {
             return None;
@@ -90,7 +91,7 @@ impl LiveCache {
         map.insert(
             key,
             Entry {
-                hits,
+                hits: hits.into(),
                 expires: now + DEFAULT_TTL,
                 last_used: now,
             },
@@ -147,6 +148,10 @@ mod tests {
         assert_eq!(c.get("f foo.bar").unwrap().len(), 1);
         assert_eq!(c.get("file foo.bar").unwrap().len(), 1);
         assert!(c.get("other").is_none());
+        // Same Arc across gets for the same key
+        let a = c.get("foo.bar").unwrap();
+        let b = c.get("foo.bar").unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
     }
 
     #[test]

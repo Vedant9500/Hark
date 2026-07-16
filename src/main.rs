@@ -193,7 +193,7 @@ fn run_bench() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let apps_n = engine.apps_len();
-    let cfg = engine.config().get();
+    let cfg = engine.config().snapshot();
     let deep = cfg.index.deep_roots.join(", ");
     let deep = if deep.is_empty() { "(none)".into() } else { deep };
     println!(

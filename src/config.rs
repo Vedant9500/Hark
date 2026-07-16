@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -470,7 +470,8 @@ pub struct MountInfo {
 }
 
 pub struct ConfigStore {
-    inner: RwLock<BlinkConfig>,
+    /// Arc swap on update — hot paths clone the Arc, not the whole config tree.
+    inner: RwLock<Arc<BlinkConfig>>,
     path: PathBuf,
 }
 
@@ -532,7 +533,7 @@ impl ConfigStore {
         }
 
         let store = Self {
-            inner: RwLock::new(cfg),
+            inner: RwLock::new(Arc::new(cfg)),
             path,
         };
         if changed || !store.path.exists() {
@@ -541,21 +542,31 @@ impl ConfigStore {
         store
     }
 
+    /// Full owned clone — prefer [`snapshot`] or [`with`] on hot paths.
+    #[allow(dead_code)] // public API for owned detach; hot paths use snapshot/with
     pub fn get(&self) -> BlinkConfig {
+        (*self.snapshot()).clone()
+    }
+
+    /// Cheap shared handle to the current config (clone Arc only).
+    pub fn snapshot(&self) -> Arc<BlinkConfig> {
         self.inner.read().unwrap().clone()
     }
 
     /// Borrow config without cloning the full snapshot (hot paths).
     pub fn with<R>(&self, f: impl FnOnce(&BlinkConfig) -> R) -> R {
-        f(&self.inner.read().unwrap())
+        let g = self.inner.read().unwrap();
+        f(g.as_ref())
     }
 
     pub fn update<F: FnOnce(&mut BlinkConfig)>(&self, f: F) {
         {
             let mut g = self.inner.write().unwrap();
-            f(&mut g);
-            g.ui.sanitize();
-            g.translate.sanitize();
+            let mut cfg = (**g).clone();
+            f(&mut cfg);
+            cfg.ui.sanitize();
+            cfg.translate.sanitize();
+            *g = Arc::new(cfg);
         }
         self.save();
     }
@@ -564,7 +575,8 @@ impl ConfigStore {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Ok(data) = serde_json::to_string_pretty(&*self.inner.read().unwrap()) {
+        let snap = self.snapshot();
+        if let Ok(data) = serde_json::to_string_pretty(snap.as_ref()) {
             let tmp = self.path.with_extension("json.tmp");
             if fs::write(&tmp, data).is_ok() {
                 let _ = fs::rename(tmp, &self.path);

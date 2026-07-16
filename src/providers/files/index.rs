@@ -78,20 +78,24 @@ impl IndexState {
     /// Battery path: if RAM already holds a fresh index (TTL + fingerprint), skip
     /// disk re-read and mount rediscovery. Periodic timer hits this every 45m.
     pub fn ensure_fresh(&self) {
-        // Fast path: in-memory index still valid — no I/O.
+        // Battery path: if RAM holds a non-empty index and meta TTL is OK,
+        // recompute fingerprint against *cached* mounts (no findmnt).
+        // Only rediscover mounts when TTL expires or that fingerprint mismatches
+        // (settings change or mounts list actually drifted after a real refresh).
         {
             let n = self.index.read().unwrap().len();
             if n > 0 && !cache_ttl_stale() {
-                let fp = {
-                    // Mount list only when we need a fingerprint check.
-                    *self.mounts.write().unwrap() = discover_mounts();
-                    self.compute_fingerprint()
-                };
                 let mem_fp = self.fingerprint.read().unwrap().clone();
+                let fp_cached_mounts = self.compute_fingerprint();
+                if !mem_fp.is_empty() && mem_fp == fp_cached_mounts {
+                    return; // no I/O beyond meta TTL file already checked
+                }
+                // Config roots/depth/excludes changed, or mount set in RAM is stale.
+                *self.mounts.write().unwrap() = discover_mounts();
+                let fp = self.compute_fingerprint();
                 if !mem_fp.is_empty() && mem_fp == fp {
                     return;
                 }
-                // Fingerprint changed (roots/depth/excludes) — fall through to rebuild.
                 self.run_build(fp);
                 return;
             }
@@ -141,7 +145,7 @@ impl IndexState {
     }
 
     fn compute_fingerprint(&self) -> String {
-        let cfg = self.config.get();
+        let cfg = self.config.snapshot();
         let mounts = self.mounts.read().unwrap();
         let mut roots: Vec<String> = Vec::new();
         if cfg.index.include_home {
@@ -186,7 +190,7 @@ impl IndexState {
     }
 
     fn build_index(&self) -> Vec<IndexedPath> {
-        let cfg = self.config.get();
+        let cfg = self.config.snapshot();
         let mounts = self.mounts.read().unwrap().clone();
         let excludes = &cfg.index.exclude;
         let max_depth = cfg.index.max_depth.clamp(1, 6);

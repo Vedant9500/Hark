@@ -98,7 +98,7 @@ impl ThemeManager {
 
     pub fn apply(&self) {
         let theme = Theme::load();
-        let ui = self.config.get().ui;
+        let ui = self.config.snapshot().ui.clone();
         self.provider.load_from_string(&theme.to_css(&ui));
     }
 

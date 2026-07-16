@@ -13,12 +13,14 @@ pub use search::{is_path_glob_query, is_scoped_file_query, DeepMode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct FileProvider {
     state: IndexState,
     matcher: SkimMatcherV2,
     live_cache: LiveCache,
+    /// One-slot memo: normalized query → is confident scoped `in` (avoids double index parse).
+    scoped_memo: Mutex<Option<(String, bool)>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +37,7 @@ impl FileProvider {
             state: IndexState::new(config),
             matcher: SkimMatcherV2::default().ignore_case(),
             live_cache: LiveCache::new(),
+            scoped_memo: Mutex::new(None),
         }
     }
 
@@ -68,12 +71,12 @@ impl FileProvider {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let cfg = self.state.config.get();
+        let path_style = self.state.config.with(|c| c.index.path_style.clone());
         let mounts = self.state.mounts.read().unwrap();
         Some(SearchResult {
             id: format!("path:{}", path.display()),
             title: name,
-            subtitle: pretty_path(path, &cfg.index.path_style, &mounts),
+            subtitle: pretty_path(path, &path_style, &mounts),
             kind: if is_dir {
                 ResultKind::Folder
             } else {
@@ -101,18 +104,12 @@ impl FileProvider {
         // Full cache hit for a deep mode: skip the walk entirely.
         if deep != DeepMode::Skip {
             if let Some(cached) = self.live_cache.get(query) {
-                return cached;
+                return cached.to_vec();
             }
         }
 
-        // Snapshot config/mounts without holding the index lock across disk walks.
-        let (path_style, excludes, deep_roots) = self.state.config.with(|cfg| {
-            (
-                cfg.index.path_style.clone(),
-                cfg.index.exclude.clone(),
-                cfg.index.deep_roots.clone(),
-            )
-        });
+        // Cheap Arc config + mounts snapshot; index lock only for scan/plan.
+        let cfg = self.state.config.snapshot();
         let mounts = self.state.mounts.read().unwrap().clone();
 
         // Phase 1: index-only search under a short read lock (no WalkDir).
@@ -121,13 +118,13 @@ impl FileProvider {
             let results = search::search_index(
                 &index,
                 query,
-                &path_style,
+                &cfg.index.path_style,
                 &mounts,
-                &excludes,
+                &cfg.index.exclude,
                 &self.matcher,
                 allow_fuzzy,
                 DeepMode::Skip,
-                &deep_roots,
+                &cfg.index.deep_roots,
             );
             let jobs = if deep != DeepMode::Skip {
                 search::plan_deep_jobs(
@@ -135,7 +132,7 @@ impl FileProvider {
                     query,
                     &results,
                     deep,
-                    &deep_roots,
+                    &cfg.index.deep_roots,
                     &mounts,
                 )
             } else {
@@ -148,9 +145,9 @@ impl FileProvider {
         if !deep_jobs.is_empty() {
             search::run_deep_jobs(
                 deep_jobs,
-                &path_style,
+                &cfg.index.path_style,
                 &mounts,
-                &excludes,
+                &cfg.index.exclude,
                 &mut results,
             );
         }
@@ -160,7 +157,7 @@ impl FileProvider {
             self.live_cache.put(query, results.clone());
         } else if let Some(cached) = self.live_cache.get(query) {
             // UI path: merge previous live hits into index-only results.
-            merge_cached(&mut results, cached);
+            merge_cached(&mut results, cached.as_ref());
         }
         results
     }
@@ -178,31 +175,44 @@ impl FileProvider {
         {
             return false;
         }
-        // Index-aware scoped `in` queries (folder-name scopes need the index).
-        if self.is_scoped_query(query) {
+        // Scoped `in` (cheap path first; memoized index-aware for bare folders).
+        if is_scoped_file_query(query) || self.is_scoped_query(query) {
             return !search::index_results_are_strong(index_results);
         }
         search::should_deep_search(query, index_results)
     }
 
     /// Confident `name in scope` parse (uses index for bare folder scopes).
+    /// Memoized for the last query so engine + deep-gating share one index parse.
     pub fn is_scoped_query(&self, query: &str) -> bool {
-        if is_scoped_file_query(query) {
-            return true;
+        let memo_key = LiveCache::key_for(query);
+        if memo_key.is_empty() {
+            return false;
         }
-        let raw = query.trim();
-        let q = raw
-            .strip_prefix("f ")
-            .or_else(|| raw.strip_prefix("file "))
-            .or_else(|| raw.strip_prefix("folder "))
-            .unwrap_or(raw)
-            .trim();
-        let index = self.state.index.read().unwrap();
-        search::parse_scoped_for_query(q, &index).is_some()
+        if let Some((k, v)) = self.scoped_memo.lock().unwrap().as_ref() {
+            if *k == memo_key {
+                return *v;
+            }
+        }
+        let v = if is_scoped_file_query(query) {
+            true
+        } else {
+            let raw = query.trim();
+            let q = raw
+                .strip_prefix("f ")
+                .or_else(|| raw.strip_prefix("file "))
+                .or_else(|| raw.strip_prefix("folder "))
+                .unwrap_or(raw)
+                .trim();
+            let index = self.state.index.read().unwrap();
+            search::parse_scoped_for_query(q, &index).is_some()
+        };
+        *self.scoped_memo.lock().unwrap() = Some((memo_key, v));
+        v
     }
 }
 
-fn merge_cached(base: &mut Vec<SearchResult>, cached: Vec<SearchResult>) {
+fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
     if cached.is_empty() {
         return;
     }
@@ -210,7 +220,7 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: Vec<SearchResult>) {
         base.iter().map(|r| r.id.clone()).collect();
     for r in cached {
         if seen.insert(r.id.clone()) {
-            base.push(r);
+            base.push(r.clone());
         }
     }
     base.sort_by(|a, b| {

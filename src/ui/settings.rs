@@ -227,7 +227,7 @@ impl SettingsPanel {
         content_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
         content_stack.set_transition_duration(100);
 
-        let cfg = engine.config().get();
+        let cfg = engine.config().snapshot();
 
         let (indexing_page, status) = build_indexing_page(&engine, &cfg);
         content_stack.add_named(&indexing_page, Some("indexing"));
@@ -863,7 +863,7 @@ fn defaults_category_row(
     title.set_halign(gtk::Align::Start);
     title.set_xalign(0.0);
 
-    let current = engine.config().get().open_with.get(cat).map(|s| s.to_string());
+    let current = engine.config().snapshot().open_with.get(cat).map(|s| s.to_string());
     let sub_text = format_open_with_label(engine, current.as_deref());
     let sub = Label::new(Some(&sub_text));
     sub.add_css_class("blink-settings-list-sub");
@@ -1282,7 +1282,7 @@ fn refill_extra_list(list: &GtkBox, engine: &Arc<Engine>) {
     while let Some(c) = list.first_child() {
         list.remove(&c);
     }
-    let roots = engine.config().get().index.extra_roots;
+    let roots = engine.config().snapshot().index.extra_roots.clone();
     if roots.is_empty() {
         let empty = Label::new(Some("No extra folders yet"));
         empty.add_css_class("blink-hint");
@@ -1303,7 +1303,7 @@ fn refill_deep_list(list: &GtkBox, engine: &Arc<Engine>) {
     while let Some(c) = list.first_child() {
         list.remove(&c);
     }
-    let roots = engine.config().get().index.deep_roots;
+    let roots = engine.config().snapshot().index.deep_roots.clone();
     if roots.is_empty() {
         let empty = Label::new(Some("No deep roots yet — pin a project folder"));
         empty.add_css_class("blink-hint");
@@ -1331,7 +1331,7 @@ fn refill_exclude_list(list: &GtkBox, engine: &Arc<Engine>) {
     while let Some(c) = list.first_child() {
         list.remove(&c);
     }
-    let items = engine.config().get().index.exclude;
+    let items = engine.config().snapshot().index.exclude.clone();
     if items.is_empty() {
         let empty = Label::new(Some("No exclusions"));
         empty.add_css_class("blink-hint");
