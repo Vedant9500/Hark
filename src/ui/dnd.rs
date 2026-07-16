@@ -51,6 +51,7 @@ impl DragSession {
 ///
 /// Short clicks still activate the row; GTK only starts the drag after the
 /// movement threshold.
+#[allow(dead_code)]
 pub fn attach_path_drag(widget: &impl IsA<Widget>, path: &Path, session: &DragSession) {
     if !path.exists() {
         return;

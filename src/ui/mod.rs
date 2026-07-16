@@ -15,10 +15,10 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Entry, EventControllerKey, Label, ListBox,
-    Orientation, PolicyType, ScrolledWindow, Stack,
+    ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack,
 };
 use preview::PreviewPanel;
-use rows::build_row;
+use rows::ResultRowPool;
 use settings::SettingsPanel;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -43,6 +43,7 @@ pub struct Launcher {
     window: ApplicationWindow,
     search: Entry,
     list: ListBox,
+    row_pool: Rc<RefCell<ResultRowPool>>,
     empty: Label,
     results: Rc<RefCell<Vec<SearchResult>>>,
     selected: Rc<Cell<usize>>,
@@ -156,6 +157,7 @@ impl Launcher {
         list.add_css_class("blink-results");
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.set_activate_on_single_click(true);
+        list.set_vexpand(false);
         scroll.set_child(Some(&list));
 
         let empty = Label::new(Some("Type to search apps, files, math, or conversions"));
@@ -163,7 +165,9 @@ impl Launcher {
         empty.set_halign(gtk::Align::Center);
         empty.set_valign(gtk::Align::Center);
         empty.set_hexpand(true);
-        empty.set_vexpand(true);
+        // Only expand when it's the sole content (no results); otherwise it
+        // steals vertical space under the list.
+        empty.set_vexpand(false);
 
         list_col.append(&scroll);
         list_col.append(&empty);
@@ -173,6 +177,9 @@ impl Launcher {
         let drag_session = DragSession::new(ignore_focus_loss.clone());
         // Needed so DnD can release exclusive keyboard grab under layer-shell.
         drag_session.bind_window(&window);
+
+        // Fixed 25-row pool: update in place on search (Phase 2).
+        let row_pool = Rc::new(RefCell::new(ResultRowPool::new(&drag_session)));
 
         let preview = Rc::new(PreviewPanel::new(drag_session.clone()));
         // Preview pane only appears for media (images / video / audio).
@@ -275,6 +282,7 @@ impl Launcher {
             let suppress_select = suppress_select.clone();
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
+            let row_pool = row_pool.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
@@ -295,6 +303,7 @@ impl Launcher {
                 let suppress_select = suppress_select.clone();
                 let ui_icon_size = ui_icon_size.clone();
                 let ui_symbolic = ui_symbolic.clone();
+                let row_pool = row_pool.clone();
                 // Longer settle only for auto CJK paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -309,6 +318,7 @@ impl Launcher {
                             &engine,
                             &q,
                             &list,
+                            &row_pool,
                             &empty,
                             &results,
                             &selected,
@@ -363,6 +373,7 @@ impl Launcher {
             let suppress_select = suppress_select.clone();
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
+            let row_pool = row_pool.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
@@ -375,6 +386,7 @@ impl Launcher {
                     &engine,
                     &search.text(),
                     &list,
+                    &row_pool,
                     &empty,
                     &results,
                     &selected,
@@ -625,6 +637,7 @@ impl Launcher {
             window,
             search,
             list,
+            row_pool,
             empty,
             results,
             selected,
@@ -667,6 +680,7 @@ impl Launcher {
             &self.engine,
             "",
             &self.list,
+            &self.row_pool,
             &self.empty,
             &self.results,
             &self.selected,
@@ -740,6 +754,7 @@ fn refresh_results(
     engine: &Arc<Engine>,
     query: &str,
     list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
@@ -753,7 +768,7 @@ fn refresh_results(
     ui_icon_size: &Rc<Cell<i32>>,
     ui_symbolic: &Rc<Cell<bool>>,
 ) {
-    // Never tear down rows mid-drag — that cancels the DnD session.
+    // Never rebind rows mid-drag — that would cancel the DnD session.
     if drag_session.is_active() {
         return;
     }
@@ -764,24 +779,25 @@ fn refresh_results(
     let gen = deep_gen.get().wrapping_add(1);
     deep_gen.set(gen);
 
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
-
     let found = engine.search(query);
-    empty.set_visible(found.is_empty());
-    list.set_visible(!found.is_empty());
+    let no_hits = found.is_empty();
+    empty.set_visible(no_hits);
+    empty.set_vexpand(no_hits);
+    list.set_visible(!no_hits);
 
-    for (i, item) in found.iter().enumerate() {
-        let row = build_row(item, i == 0, drag_session, icon_size, symbolic_icons);
-        list.append(&row);
+    {
+        let mut pool = row_pool.borrow_mut();
+        if found.is_empty() {
+            pool.clear(list);
+        } else {
+            pool.apply(list, &found, icon_size, symbolic_icons);
+        }
     }
 
     selected.set(0);
     *results.borrow_mut() = found;
 
-    if let Some(row) = list.row_at_index(0) {
-        // select_row fires row_selected — suppress duplicate footer/preview work.
+    if let Some(row) = row_pool.borrow().row_at(0).map(|r| r.clone()) {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -789,11 +805,11 @@ fn refresh_results(
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
     } else {
+        list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
     }
 
-    // Async live deep: schedule only when index results are weak / specific query.
     let q = query.to_string();
     if q.trim().is_empty() {
         return;
@@ -803,6 +819,7 @@ fn refresh_results(
     if engine.should_translate_network(&q) {
         let engine_t = engine.clone();
         let list_t = list.clone();
+        let row_pool_t = row_pool.clone();
         let empty_t = empty.clone();
         let results_t = results.clone();
         let selected_t = selected.clone();
@@ -835,6 +852,7 @@ fn refresh_results(
             apply_translate_hits(
                 &hits,
                 &list_t,
+                &row_pool_t,
                 &empty_t,
                 &results_t,
                 &selected_t,
@@ -856,6 +874,7 @@ fn refresh_results(
 
     let engine = engine.clone();
     let list = list.clone();
+    let row_pool = row_pool.clone();
     let empty = empty.clone();
     let results = results.clone();
     let selected = selected.clone();
@@ -869,8 +888,6 @@ fn refresh_results(
     let ui_icon_size = ui_icon_size.clone();
     let ui_symbolic = ui_symbolic.clone();
 
-    // Worker → main thread (event-driven; no 16 ms poll waking the UI loop).
-    // Single-flight: only one deep walk at a time; latest query wins.
     let (tx, rx) = async_channel::bounded::<Vec<SearchResult>>(1);
     schedule_deep_job(engine.clone(), q.clone(), gen, tx);
 
@@ -878,7 +895,6 @@ fn refresh_results(
         let Ok(deep_hits) = rx.recv().await else {
             return;
         };
-        // Stale generation or user already typed something else.
         if deep_gen.get() != gen {
             return;
         }
@@ -891,6 +907,7 @@ fn refresh_results(
         apply_deep_hits(
             &deep_hits,
             &list,
+            &row_pool,
             &empty,
             &results,
             &selected,
@@ -935,7 +952,6 @@ fn schedule_deep_job(
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
-        // Worker already running; it will pick up LATEST when free.
         return;
     }
 
@@ -946,7 +962,6 @@ fn schedule_deep_job(
         };
         let Some(job) = job else {
             BUSY.store(false, Ordering::Release);
-            // Race: a schedule may have stored after take and before BUSY clear.
             if LATEST.get().unwrap().lock().unwrap().is_some()
                 && BUSY
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -1015,11 +1030,11 @@ fn schedule_translate_job(
     });
 }
 
-
 /// Replace pending translate row with network result (success or soft-fail).
 fn apply_translate_hits(
     hits: &[SearchResult],
     list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
@@ -1036,9 +1051,7 @@ fn apply_translate_hits(
     }
 
     let mut merged = results.borrow().clone();
-    // Drop pending translate rows; keep everything else.
     merged.retain(|r| !crate::providers::translate::is_pending_result(r));
-    // Prepend translate hits (own the query).
     let mut out = hits.to_vec();
     let mut seen: std::collections::HashSet<String> = out.iter().map(|r| r.id.clone()).collect();
     for r in merged {
@@ -1048,19 +1061,22 @@ fn apply_translate_hits(
     }
     out.truncate(25);
 
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
-    empty.set_visible(out.is_empty());
-    list.set_visible(!out.is_empty());
-    for item in out.iter() {
-        let row = build_row(item, false, drag_session, icon_size, symbolic_icons);
-        list.append(&row);
+    let no_hits = out.is_empty();
+    empty.set_visible(no_hits);
+    empty.set_vexpand(no_hits);
+    list.set_visible(!no_hits);
+    {
+        let mut pool = row_pool.borrow_mut();
+        if out.is_empty() {
+            pool.clear(list);
+        } else {
+            pool.apply(list, &out, icon_size, symbolic_icons);
+        }
     }
     selected.set(0);
     *results.borrow_mut() = out;
 
-    if let Some(row) = list.row_at_index(0) {
+    if let Some(row) = row_pool.borrow().row_at(0).map(|r| r.clone()) {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -1068,6 +1084,7 @@ fn apply_translate_hits(
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
     } else {
+        list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
     }
@@ -1078,6 +1095,7 @@ fn apply_translate_hits(
 fn apply_deep_hits(
     deep_hits: &[SearchResult],
     list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
@@ -1089,7 +1107,6 @@ fn apply_deep_hits(
     icon_size: i32,
     symbolic_icons: bool,
 ) {
-    // Rebuilding rows would cancel an active drag.
     if drag_session.is_active() {
         return;
     }
@@ -1113,7 +1130,6 @@ fn apply_deep_hits(
         return;
     }
 
-    // Re-sort like Engine::search (score, kind, title).
     merged.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
@@ -1122,25 +1138,26 @@ fn apply_deep_hits(
     });
     merged.truncate(25);
 
-    // Rebuild list rows.
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
-    empty.set_visible(merged.is_empty());
-    list.set_visible(!merged.is_empty());
-    for item in merged.iter() {
-        let row = build_row(item, false, drag_session, icon_size, symbolic_icons);
-        list.append(&row);
+    let no_hits = merged.is_empty();
+    empty.set_visible(no_hits);
+    empty.set_vexpand(no_hits);
+    list.set_visible(!no_hits);
+    {
+        let mut pool = row_pool.borrow_mut();
+        if merged.is_empty() {
+            pool.clear(list);
+        } else {
+            pool.apply(list, &merged, icon_size, symbolic_icons);
+        }
     }
 
-    // Restore selection by id when possible.
     let new_sel = prev_id
         .and_then(|id| merged.iter().position(|r| r.id == id))
         .unwrap_or(0);
     selected.set(new_sel);
     *results.borrow_mut() = merged;
 
-    if let Some(row) = list.row_at_index(new_sel as i32) {
+    if let Some(row) = row_pool.borrow().row_at(new_sel).map(|r| r.clone()) {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -1148,6 +1165,7 @@ fn apply_deep_hits(
         let item = results.borrow().get(new_sel).cloned();
         preview.update(item.as_ref());
     } else {
+        list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
     }

@@ -1,93 +1,316 @@
-use super::dnd::{attach_path_drag, DragSession};
+//! Result list rows + a fixed pool so searches rebind widgets instead of
+//! allocating new trees every keystroke.
+//!
+//! Unused slots are **removed** from the ListBox (not merely hidden): GTK4
+//! ListBox still reserves height for invisible children.
+//!
+//! Each slot keeps both a standard row widget and a conversion card; we
+//! `set_child` the active one. A Stack is avoided because both children can
+//! inflate the row's natural height.
+
+use super::dnd::{DragSession, PathDragBinding};
 use crate::providers::{ResultKind, SearchResult};
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Label, ListBoxRow, Orientation};
+use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+/// Matches engine result cap — pool never needs more than this.
+pub(crate) const ROW_POOL_CAP: usize = 25;
+
 thread_local! {
-    /// Resolved icon name cache for this GTK thread (main).
-    /// Key: "{symbolic_flag}\0{requested_name}\0{kind_u8}"
     static ICON_RESOLVE_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 
-/// Drop cached icon resolutions (call if icon theme / symbolic preference changes).
-#[allow(dead_code)]
 pub(crate) fn clear_icon_resolve_cache() {
     ICON_RESOLVE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
-pub(crate) fn build_row(
-    item: &SearchResult,
-    _selected: bool,
-    drag_session: &DragSession,
-    icon_size: i32,
-    symbolic_icons: bool,
-) -> ListBoxRow {
-    let row = ListBoxRow::new();
-    row.set_activatable(true);
-
-    if let Some(conv) = &item.conversion {
-        row.add_css_class("blink-conv-row");
-        row.set_child(Some(&build_conversion_card(conv, item.kind)));
-        return row;
-    }
-
-    // Files, folders, and apps (via .desktop path) can be dragged out.
-    if let Some(path) = item.action.drag_path() {
-        attach_path_drag(&row, path, drag_session);
-    }
-
-    let hbox = GtkBox::new(Orientation::Horizontal, 10);
-    hbox.add_css_class("blink-row-inner");
-    hbox.set_margin_start(2);
-    hbox.set_margin_end(2);
-
-    let requested = item.icon.as_deref().unwrap_or(default_icon_for_kind(item.kind));
-    let resolved = resolve_row_icon(requested, item.kind, symbolic_icons);
-    let icon = gtk::Image::from_icon_name(&resolved);
-    icon.add_css_class("blink-row-icon");
-    icon.set_pixel_size(icon_size.clamp(18, 36));
-    icon.set_valign(gtk::Align::Center);
-    icon.set_opacity(1.0);
-
-    let text = GtkBox::new(Orientation::Vertical, 2);
-    text.set_hexpand(true);
-    text.set_valign(gtk::Align::Center);
-
-    let title = Label::new(Some(&item.title));
-    title.add_css_class("blink-title");
-    title.set_halign(gtk::Align::Start);
-    title.set_valign(gtk::Align::Center);
-    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    title.set_xalign(0.0);
-    title.set_wrap(false);
-    title.set_single_line_mode(true);
-
-    let subtitle = Label::new(Some(&item.subtitle));
-    subtitle.add_css_class("blink-subtitle");
-    subtitle.set_halign(gtk::Align::Start);
-    subtitle.set_valign(gtk::Align::Center);
-    subtitle.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    subtitle.set_xalign(0.0);
-    subtitle.set_wrap(false);
-    subtitle.set_single_line_mode(true);
-
-    text.append(&title);
-    text.append(&subtitle);
-
-    let badge = Label::new(Some(kind_label(item.kind)));
-    badge.add_css_class("blink-badge");
-    badge.set_valign(gtk::Align::Center);
-
-    hbox.append(&icon);
-    hbox.append(&text);
-    hbox.append(&badge);
-    row.set_child(Some(&hbox));
-    row
+pub(crate) struct ResultRowPool {
+    slots: Vec<PooledRow>,
+    /// How many slots are currently attached to the list.
+    attached: usize,
 }
 
+struct PooledRow {
+    row: ListBoxRow,
+    // standard layout (owned widgets; reparented via set_child)
+    std_root: GtkBox,
+    icon: Image,
+    title: Label,
+    subtitle: Label,
+    badge: Label,
+    drag: PathDragBinding,
+    // conversion layout
+    conv_root: GtkBox,
+    conv_header: Label,
+    conv_left_title: Label,
+    conv_left_badge: Label,
+    conv_right_title: Label,
+    conv_right_badge: Label,
+    badge_kind: ResultKind,
+    showing_conv: bool,
+}
 
+impl ResultRowPool {
+    pub fn new(drag_session: &DragSession) -> Self {
+        let mut slots = Vec::with_capacity(ROW_POOL_CAP);
+        for _ in 0..ROW_POOL_CAP {
+            slots.push(PooledRow::new(drag_session));
+        }
+        Self {
+            slots,
+            attached: 0,
+        }
+    }
+
+    pub fn apply(
+        &mut self,
+        list: &ListBox,
+        items: &[SearchResult],
+        icon_size: i32,
+        symbolic_icons: bool,
+    ) {
+        let n = items.len().min(ROW_POOL_CAP);
+
+        for i in 0..n {
+            self.slots[i].bind(&items[i], icon_size, symbolic_icons);
+        }
+
+        while self.attached < n {
+            list.append(&self.slots[self.attached].row);
+            self.attached += 1;
+        }
+
+        while self.attached > n {
+            self.attached -= 1;
+            let row = &self.slots[self.attached].row;
+            list.remove(row);
+            self.slots[self.attached].drag.set_path(None);
+        }
+    }
+
+    pub fn clear(&mut self, list: &ListBox) {
+        while self.attached > 0 {
+            self.attached -= 1;
+            let row = &self.slots[self.attached].row;
+            list.remove(row);
+            self.slots[self.attached].drag.set_path(None);
+        }
+    }
+
+    pub fn row_at(&self, index: usize) -> Option<&ListBoxRow> {
+        if index < self.attached {
+            Some(&self.slots[index].row)
+        } else {
+            None
+        }
+    }
+}
+
+impl PooledRow {
+    fn new(drag_session: &DragSession) -> Self {
+        let row = ListBoxRow::new();
+        row.set_activatable(true);
+        // Don't let the row expand to fill leftover list height.
+        row.set_vexpand(false);
+        row.set_hexpand(true);
+
+        // ── standard row ──────────────────────────────────────────────
+        let std_root = GtkBox::new(Orientation::Horizontal, 10);
+        std_root.add_css_class("blink-row-inner");
+        std_root.set_margin_start(2);
+        std_root.set_margin_end(2);
+        std_root.set_vexpand(false);
+
+        let icon = Image::from_icon_name("text-x-generic");
+        icon.add_css_class("blink-row-icon");
+        icon.set_pixel_size(26);
+        icon.set_valign(gtk::Align::Center);
+
+        let text = GtkBox::new(Orientation::Vertical, 2);
+        text.set_hexpand(true);
+        text.set_valign(gtk::Align::Center);
+
+        let title = Label::new(None);
+        title.add_css_class("blink-title");
+        title.set_halign(gtk::Align::Start);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title.set_xalign(0.0);
+        title.set_wrap(false);
+        title.set_single_line_mode(true);
+
+        let subtitle = Label::new(None);
+        subtitle.add_css_class("blink-subtitle");
+        subtitle.set_halign(gtk::Align::Start);
+        subtitle.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        subtitle.set_xalign(0.0);
+        subtitle.set_wrap(false);
+        subtitle.set_single_line_mode(true);
+
+        text.append(&title);
+        text.append(&subtitle);
+
+        let badge = Label::new(None);
+        badge.add_css_class("blink-badge");
+        badge.set_valign(gtk::Align::Center);
+
+        std_root.append(&icon);
+        std_root.append(&text);
+        std_root.append(&badge);
+
+        // ── conversion card ───────────────────────────────────────────
+        let conv_root = GtkBox::new(Orientation::Vertical, 6);
+        conv_root.add_css_class("blink-conv-card");
+        conv_root.set_hexpand(true);
+        conv_root.set_vexpand(false);
+
+        let conv_header = Label::new(None);
+        conv_header.add_css_class("blink-conv-header");
+        conv_header.set_halign(gtk::Align::Start);
+        conv_root.append(&conv_header);
+
+        let panels = GtkBox::new(Orientation::Horizontal, 0);
+        panels.add_css_class("blink-conv-panels");
+        panels.set_hexpand(true);
+
+        let (left, conv_left_title, conv_left_badge) = conv_panel_widgets(true);
+        let arrow = Label::new(Some("→"));
+        arrow.add_css_class("blink-conv-arrow");
+        arrow.set_valign(gtk::Align::Center);
+        arrow.set_halign(gtk::Align::Center);
+        let (right, conv_right_title, conv_right_badge) = conv_panel_widgets(false);
+
+        panels.append(&left);
+        panels.append(&arrow);
+        panels.append(&right);
+        conv_root.append(&panels);
+
+        // Default child: standard layout.
+        row.set_child(Some(&std_root));
+
+        let drag = PathDragBinding::new(drag_session.clone());
+        drag.attach(&row);
+
+        Self {
+            row,
+            std_root,
+            icon,
+            title,
+            subtitle,
+            badge,
+            drag,
+            conv_root,
+            conv_header,
+            conv_left_title,
+            conv_left_badge,
+            conv_right_title,
+            conv_right_badge,
+            badge_kind: ResultKind::File,
+            showing_conv: false,
+        }
+    }
+
+    fn set_mode_std(&mut self) {
+        if self.showing_conv {
+            self.row.set_child(Some(&self.std_root));
+            self.showing_conv = false;
+        }
+        self.row.remove_css_class("blink-conv-row");
+    }
+
+    fn set_mode_conv(&mut self) {
+        if !self.showing_conv {
+            self.row.set_child(Some(&self.conv_root));
+            self.showing_conv = true;
+        }
+        self.row.add_css_class("blink-conv-row");
+    }
+
+    fn bind(&mut self, item: &SearchResult, icon_size: i32, symbolic_icons: bool) {
+        if let Some(conv) = &item.conversion {
+            self.set_mode_conv();
+            self.conv_header.set_text(kind_label(item.kind));
+            self.conv_left_title.set_text(&conv.left_title);
+            self.conv_left_badge.set_text(&conv.left_badge);
+            self.conv_right_title.set_text(&conv.right_title);
+            self.conv_right_badge.set_text(&conv.right_badge);
+            self.drag.set_path(None);
+            return;
+        }
+
+        self.set_mode_std();
+
+        let requested = item
+            .icon
+            .as_deref()
+            .unwrap_or(default_icon_for_kind(item.kind));
+        let resolved = resolve_row_icon(requested, item.kind, symbolic_icons);
+        self.icon.set_icon_name(Some(resolved.as_str()));
+        self.icon.set_pixel_size(icon_size.clamp(18, 36));
+
+        self.title.set_text(&item.title);
+        self.subtitle.set_text(&item.subtitle);
+
+        self.badge.set_text(kind_label(item.kind));
+        if self.badge_kind != item.kind {
+            remove_badge_kind_class(&self.badge, self.badge_kind);
+            add_badge_kind_class(&self.badge, item.kind);
+            self.badge_kind = item.kind;
+        }
+
+        if let Some(path) = item.action.drag_path() {
+            self.drag.set_path(Some(path.to_path_buf()));
+        } else {
+            self.drag.set_path(None);
+        }
+
+    }
+}
+
+fn conv_panel_widgets(is_left: bool) -> (GtkBox, Label, Label) {
+    let col = GtkBox::new(Orientation::Vertical, 8);
+    col.add_css_class("blink-conv-panel");
+    if is_left {
+        col.add_css_class("blink-conv-left");
+    } else {
+        col.add_css_class("blink-conv-right");
+    }
+    col.set_hexpand(true);
+    col.set_halign(gtk::Align::Fill);
+
+    let t = Label::new(None);
+    t.add_css_class("blink-conv-title");
+    t.set_halign(gtk::Align::Start);
+    t.set_wrap(true);
+    t.set_xalign(0.0);
+
+    let b = Label::new(None);
+    b.add_css_class("blink-conv-badge");
+    b.set_halign(gtk::Align::Start);
+
+    col.append(&t);
+    col.append(&b);
+    (col, t, b)
+}
+
+fn add_badge_kind_class(badge: &Label, kind: ResultKind) {
+    match kind {
+        ResultKind::Calc | ResultKind::Conversion => badge.add_css_class("calc"),
+        ResultKind::File => badge.add_css_class("file"),
+        ResultKind::Folder => badge.add_css_class("folder"),
+        ResultKind::App | ResultKind::Command => {}
+    }
+}
+
+fn remove_badge_kind_class(badge: &Label, kind: ResultKind) {
+    match kind {
+        ResultKind::Calc | ResultKind::Conversion => badge.remove_css_class("calc"),
+        ResultKind::File => badge.remove_css_class("file"),
+        ResultKind::Folder => badge.remove_css_class("folder"),
+        ResultKind::App | ResultKind::Command => {}
+    }
+}
 
 fn default_icon_for_kind(kind: ResultKind) -> &'static str {
     match kind {
@@ -129,7 +352,6 @@ fn fallback_icon(kind: ResultKind, icon_name: &str) -> &'static str {
     }
 }
 
-/// Resolve icon once per unique (name, kind, symbolic) for this process/thread.
 fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> String {
     let key = format!("{}\0{}\0{}", symbolic_icons as u8, requested, kind_key(kind));
     ICON_RESOLVE_CACHE.with(|cache| {
@@ -138,7 +360,6 @@ fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> 
         }
         let resolved = resolve_row_icon_uncached(requested, kind, symbolic_icons);
         cache.borrow_mut().insert(key, resolved.clone());
-        // Soft cap so a long session with wild mime names cannot grow forever.
         if cache.borrow().len() > 512 {
             cache.borrow_mut().clear();
             cache.borrow_mut().insert(
@@ -171,7 +392,6 @@ fn resolve_row_icon_uncached(requested: &str, kind: ResultKind, symbolic_icons: 
     }
 }
 
-
 fn kind_key(kind: ResultKind) -> u8 {
     match kind {
         ResultKind::App => 0,
@@ -182,82 +402,14 @@ fn kind_key(kind: ResultKind) -> u8 {
         ResultKind::Command => 5,
     }
 }
-pub(crate) fn build_conversion_card(
-    conv: &crate::providers::ConversionView,
-    kind: ResultKind,
-) -> GtkBox {
-    let outer = GtkBox::new(Orientation::Vertical, 6);
-    outer.add_css_class("blink-conv-card");
-    outer.set_hexpand(true);
 
-    let header = Label::new(Some(kind_label(kind)));
-    header.add_css_class("blink-conv-header");
-    header.set_halign(gtk::Align::Start);
-    outer.append(&header);
-
-    let panels = GtkBox::new(Orientation::Horizontal, 0);
-    panels.add_css_class("blink-conv-panels");
-    panels.set_hexpand(true);
-
-    let left = conv_panel(&conv.left_title, &conv.left_badge, true);
-    let arrow = Label::new(Some("→"));
-    arrow.add_css_class("blink-conv-arrow");
-    arrow.set_valign(gtk::Align::Center);
-    arrow.set_halign(gtk::Align::Center);
-    let right = conv_panel(&conv.right_title, &conv.right_badge, false);
-
-    panels.append(&left);
-    panels.append(&arrow);
-    panels.append(&right);
-    outer.append(&panels);
-    outer
-}
-
-
-fn conv_panel(title: &str, badge: &str, is_left: bool) -> GtkBox {
-    let col = GtkBox::new(Orientation::Vertical, 8);
-    col.add_css_class("blink-conv-panel");
-    if is_left {
-        col.add_css_class("blink-conv-left");
-    } else {
-        col.add_css_class("blink-conv-right");
-    }
-    col.set_hexpand(true);
-    col.set_halign(gtk::Align::Fill);
-    col.set_valign(gtk::Align::Center);
-
-    let t = Label::new(Some(title));
-    t.add_css_class("blink-conv-title");
-    t.set_halign(if is_left {
-        gtk::Align::Start
-    } else {
-        gtk::Align::End
-    });
-    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    t.set_xalign(if is_left { 0.0 } else { 1.0 });
-
-    let b = Label::new(Some(badge));
-    b.add_css_class("blink-conv-badge");
-    b.set_halign(if is_left {
-        gtk::Align::Start
-    } else {
-        gtk::Align::End
-    });
-    b.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
-    col.append(&t);
-    col.append(&b);
-    col
-}
-
-
-pub(crate) fn kind_label(kind: ResultKind) -> &'static str {
+fn kind_label(kind: ResultKind) -> &'static str {
     match kind {
-        ResultKind::App => "Application",
+        ResultKind::App => "App",
         ResultKind::File => "File",
         ResultKind::Folder => "Folder",
-        ResultKind::Calc => "Calculator",
-        ResultKind::Conversion => "Conversion",
+        ResultKind::Calc => "Calc",
+        ResultKind::Conversion => "Convert",
         ResultKind::Command => "Command",
     }
 }

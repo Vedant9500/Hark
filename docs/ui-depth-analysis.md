@@ -428,5 +428,9 @@ SettingsPanel::new (boot)
 | U6 ui_icon_size / ui_symbolic cells (no full config clone per search) | **done** |
 | U4 Single-flight deep + translate workers (latest-wins) | **done** |
 | Clear icon cache on symbolic toggle | **done** |
+| U1 Result row pool (25 slots, PathDragBinding, std/conv stack) | **done (Phase 2)** |
 
-Still open: U1 row pool (Phase 2), U7 lazy settings.
+
+**Phase 2 fix:** unused pool slots must be `list.remove`’d, not `set_visible(false)` — GTK4 ListBox still allocates height for invisible children (caused huge empty gaps).
+
+Still open: U7 lazy settings.
