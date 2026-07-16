@@ -22,7 +22,9 @@ use rows::build_row;
 use settings::SettingsPanel;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Compact fixed outer width. Preview never grows the window — it takes
 /// horizontal space from the list column instead.
@@ -56,6 +58,11 @@ pub struct Launcher {
     /// Pending search debounce timer (cancelled on each keystroke / hide).
     search_debounce: Rc<RefCell<Option<glib::SourceId>>>,
     drag_session: DragSession,
+    /// Skip footer/preview side-effects while we programmatically select a row.
+    suppress_select: Rc<Cell<bool>>,
+    /// Cached appearance knobs (avoid full config clone on every search).
+    ui_icon_size: Rc<Cell<i32>>,
+    ui_symbolic: Rc<Cell<bool>>,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
 }
@@ -242,6 +249,10 @@ impl Launcher {
 
         let results: Rc<RefCell<Vec<SearchResult>>> = Rc::new(RefCell::new(Vec::new()));
         let selected: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let suppress_select: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let ui_cfg0 = engine.config().get().ui;
+        let ui_icon_size: Rc<Cell<i32>> = Rc::new(Cell::new(ui_cfg0.icon_size as i32));
+        let ui_symbolic: Rc<Cell<bool>> = Rc::new(Cell::new(ui_cfg0.symbolic_icons));
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
@@ -261,6 +272,9 @@ impl Launcher {
             let search_for_deep = search.clone();
             let drag_session = drag_session.clone();
             let search_debounce = search_debounce.clone();
+            let suppress_select = suppress_select.clone();
+            let ui_icon_size = ui_icon_size.clone();
+            let ui_symbolic = ui_symbolic.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
@@ -278,6 +292,9 @@ impl Launcher {
                 let search_for_deep = search_for_deep.clone();
                 let drag_session = drag_session.clone();
                 let debounce_slot = search_debounce.clone();
+                let suppress_select = suppress_select.clone();
+                let ui_icon_size = ui_icon_size.clone();
+                let ui_symbolic = ui_symbolic.clone();
                 // Longer settle only for auto CJK paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -301,6 +318,9 @@ impl Launcher {
                             &deep_gen,
                             &search_for_deep,
                             &drag_session,
+                            &suppress_select,
+                            &ui_icon_size,
+                            &ui_symbolic,
                         );
                         glib::ControlFlow::Break
                     },
@@ -340,10 +360,17 @@ impl Launcher {
             let preview = preview.clone();
             let deep_gen = deep_gen.clone();
             let drag_session = drag_session.clone();
+            let suppress_select = suppress_select.clone();
+            let ui_icon_size = ui_icon_size.clone();
+            let ui_symbolic = ui_symbolic.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
                 search.grab_focus();
+                // Settings may have changed icon prefs.
+                let ui = engine.config().get().ui;
+                ui_icon_size.set(ui.icon_size as i32);
+                ui_symbolic.set(ui.symbolic_icons);
                 refresh_results(
                     &engine,
                     &search.text(),
@@ -357,6 +384,9 @@ impl Launcher {
                     &deep_gen,
                     &search,
                     &drag_session,
+                    &suppress_select,
+                    &ui_icon_size,
+                    &ui_symbolic,
                 );
             })
         };
@@ -391,7 +421,14 @@ impl Launcher {
             let footer_action = footer_action.clone();
             let footer_term = footer_term.clone();
             let preview = preview.clone();
+            let suppress_select = suppress_select.clone();
             list.connect_row_selected(move |_, row| {
+                if suppress_select.get() {
+                    if let Some(row) = row {
+                        selected.set(row.index() as usize);
+                    }
+                    return;
+                }
                 if let Some(row) = row {
                     let idx = row.index() as usize;
                     selected.set(idx);
@@ -602,6 +639,9 @@ impl Launcher {
             deep_gen,
             search_debounce,
             drag_session,
+            suppress_select,
+            ui_icon_size,
+            ui_symbolic,
             theme: theme.clone(),
         }
     }
@@ -619,6 +659,10 @@ impl Launcher {
         self.in_settings.set(false);
         self.stack.set_visible_child_name("search");
         self.search.set_text("");
+        // Refresh cached appearance from config (settings may have changed while hidden).
+        let ui = self.engine.config().get().ui;
+        self.ui_icon_size.set(ui.icon_size as i32);
+        self.ui_symbolic.set(ui.symbolic_icons);
         refresh_results(
             &self.engine,
             "",
@@ -632,6 +676,9 @@ impl Launcher {
             &self.deep_gen,
             &self.search,
             &self.drag_session,
+            &self.suppress_select,
+            &self.ui_icon_size,
+            &self.ui_symbolic,
         );
         self.settings.refresh_status();
         self.window.set_visible(true);
@@ -702,17 +749,18 @@ fn refresh_results(
     deep_gen: &Rc<Cell<u64>>,
     search_entry: &Entry,
     drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
+    ui_icon_size: &Rc<Cell<i32>>,
+    ui_symbolic: &Rc<Cell<bool>>,
 ) {
     // Never tear down rows mid-drag — that cancels the DnD session.
     if drag_session.is_active() {
         return;
     }
-    let ui = engine.config().get().ui;
-    let icon_size = ui.icon_size as i32;
-    let symbolic_icons = ui.symbolic_icons;
+    let icon_size = ui_icon_size.get();
+    let symbolic_icons = ui_symbolic.get();
 
-
-    // Invalidate any in-flight async deep walk for a previous query.
+    // Invalidate any in-flight async deep/translate for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
     deep_gen.set(gen);
 
@@ -733,8 +781,10 @@ fn refresh_results(
     *results.borrow_mut() = found;
 
     if let Some(row) = list.row_at_index(0) {
+        // select_row fires row_selected — suppress duplicate footer/preview work.
+        suppress_select.set(true);
         list.select_row(Some(&row));
-        // Explicitly refresh chrome even if selection signal is coalesced.
+        suppress_select.set(false);
         update_footer(results, 0, footer_action, footer_term);
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
@@ -762,15 +812,13 @@ fn refresh_results(
         let deep_gen_t = deep_gen.clone();
         let search_entry_t = search_entry.clone();
         let drag_session_t = drag_session.clone();
+        let suppress_t = suppress_select.clone();
+        let icon_size_t = ui_icon_size.clone();
+        let symbolic_t = ui_symbolic.clone();
         let q_t = q.clone();
         let gen_t = gen;
         let (tx_t, rx_t) = async_channel::bounded::<Vec<SearchResult>>(1);
-        let engine_worker = engine_t.clone();
-        let q_worker = q_t.clone();
-        std::thread::spawn(move || {
-            let hits = engine_worker.search_translate_network(&q_worker);
-            let _ = tx_t.send_blocking(hits);
-        });
+        schedule_translate_job(engine_t.clone(), q_t.clone(), gen_t, tx_t);
         glib::spawn_future_local(async move {
             let Ok(hits) = rx_t.recv().await else {
                 return;
@@ -784,7 +832,6 @@ fn refresh_results(
             if hits.is_empty() {
                 return;
             }
-            let ui = engine_t.config().get().ui;
             apply_translate_hits(
                 &hits,
                 &list_t,
@@ -795,8 +842,9 @@ fn refresh_results(
                 &footer_term_t,
                 &preview_t,
                 &drag_session_t,
-                ui.icon_size as i32,
-                ui.symbolic_icons,
+                &suppress_t,
+                icon_size_t.get(),
+                symbolic_t.get(),
             );
         });
     }
@@ -817,15 +865,14 @@ fn refresh_results(
     let deep_gen = deep_gen.clone();
     let search_entry = search_entry.clone();
     let drag_session = drag_session.clone();
+    let suppress_select = suppress_select.clone();
+    let ui_icon_size = ui_icon_size.clone();
+    let ui_symbolic = ui_symbolic.clone();
 
     // Worker → main thread (event-driven; no 16 ms poll waking the UI loop).
+    // Single-flight: only one deep walk at a time; latest query wins.
     let (tx, rx) = async_channel::bounded::<Vec<SearchResult>>(1);
-    let q_worker = q.clone();
-    let engine_worker = engine.clone();
-    std::thread::spawn(move || {
-        let deep = engine_worker.search_files_deep(&q_worker);
-        let _ = tx.send_blocking(deep);
-    });
+    schedule_deep_job(engine.clone(), q.clone(), gen, tx);
 
     glib::spawn_future_local(async move {
         let Ok(deep_hits) = rx.recv().await else {
@@ -841,7 +888,6 @@ fn refresh_results(
         if deep_hits.is_empty() {
             return;
         }
-        let ui = engine.config().get().ui;
         apply_deep_hits(
             &deep_hits,
             &list,
@@ -852,9 +898,120 @@ fn refresh_results(
             &footer_term,
             &preview,
             &drag_session,
-            ui.icon_size as i32,
-            ui.symbolic_icons,
+            &suppress_select,
+            ui_icon_size.get(),
+            ui_symbolic.get(),
         );
+    });
+}
+
+/// Single-flight deep walk: coalesce concurrent requests; worker always runs latest.
+fn schedule_deep_job(
+    engine: Arc<Engine>,
+    query: String,
+    gen: u64,
+    reply: async_channel::Sender<Vec<SearchResult>>,
+) {
+    #[derive(Clone)]
+    struct Job {
+        engine: Arc<Engine>,
+        query: String,
+        #[allow(dead_code)]
+        gen: u64,
+        reply: async_channel::Sender<Vec<SearchResult>>,
+    }
+    static LATEST: OnceLock<Mutex<Option<Job>>> = OnceLock::new();
+    static BUSY: AtomicBool = AtomicBool::new(false);
+
+    let slot = LATEST.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap() = Some(Job {
+        engine,
+        query,
+        gen,
+        reply,
+    });
+
+    if BUSY
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        // Worker already running; it will pick up LATEST when free.
+        return;
+    }
+
+    std::thread::spawn(move || loop {
+        let job = {
+            let mut g = LATEST.get().unwrap().lock().unwrap();
+            g.take()
+        };
+        let Some(job) = job else {
+            BUSY.store(false, Ordering::Release);
+            // Race: a schedule may have stored after take and before BUSY clear.
+            if LATEST.get().unwrap().lock().unwrap().is_some()
+                && BUSY
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+            {
+                continue;
+            }
+            break;
+        };
+        let hits = job.engine.search_files_deep(&job.query);
+        let _ = job.reply.send_blocking(hits);
+    });
+}
+
+/// Single-flight translate network fetch (latest query wins).
+fn schedule_translate_job(
+    engine: Arc<Engine>,
+    query: String,
+    gen: u64,
+    reply: async_channel::Sender<Vec<SearchResult>>,
+) {
+    #[derive(Clone)]
+    struct Job {
+        engine: Arc<Engine>,
+        query: String,
+        #[allow(dead_code)]
+        gen: u64,
+        reply: async_channel::Sender<Vec<SearchResult>>,
+    }
+    static LATEST: OnceLock<Mutex<Option<Job>>> = OnceLock::new();
+    static BUSY: AtomicBool = AtomicBool::new(false);
+
+    let slot = LATEST.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap() = Some(Job {
+        engine,
+        query,
+        gen,
+        reply,
+    });
+
+    if BUSY
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    std::thread::spawn(move || loop {
+        let job = {
+            let mut g = LATEST.get().unwrap().lock().unwrap();
+            g.take()
+        };
+        let Some(job) = job else {
+            BUSY.store(false, Ordering::Release);
+            if LATEST.get().unwrap().lock().unwrap().is_some()
+                && BUSY
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+            {
+                continue;
+            }
+            break;
+        };
+        let hits = job.engine.search_translate_network(&job.query);
+        let _ = job.reply.send_blocking(hits);
     });
 }
 
@@ -870,6 +1027,7 @@ fn apply_translate_hits(
     footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
     icon_size: i32,
     symbolic_icons: bool,
 ) {
@@ -903,7 +1061,9 @@ fn apply_translate_hits(
     *results.borrow_mut() = out;
 
     if let Some(row) = list.row_at_index(0) {
+        suppress_select.set(true);
         list.select_row(Some(&row));
+        suppress_select.set(false);
         update_footer(results, 0, footer_action, footer_term);
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
@@ -925,6 +1085,7 @@ fn apply_deep_hits(
     footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
     icon_size: i32,
     symbolic_icons: bool,
 ) {
@@ -980,7 +1141,9 @@ fn apply_deep_hits(
     *results.borrow_mut() = merged;
 
     if let Some(row) = list.row_at_index(new_sel as i32) {
+        suppress_select.set(true);
         list.select_row(Some(&row));
+        suppress_select.set(false);
         update_footer(results, new_sel, footer_action, footer_term);
         let item = results.borrow().get(new_sel).cloned();
         preview.update(item.as_ref());
@@ -1045,6 +1208,19 @@ fn center_on_active_monitor(window: &ApplicationWindow) {
 
 #[cfg(feature = "layer-shell")]
 fn hypr_focused_monitor() -> Option<(i32, i32, i32, i32)> {
+    // hyprctl is a process spawn — cache a few seconds across rapid toggles.
+    const TTL: Duration = Duration::from_secs(2);
+    static CACHE: OnceLock<Mutex<Option<(Instant, (i32, i32, i32, i32))>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let g = cache.lock().unwrap();
+        if let Some((at, geom)) = *g {
+            if at.elapsed() < TTL {
+                return Some(geom);
+            }
+        }
+    }
+
     let out = std::process::Command::new("hyprctl")
         .args(["monitors", "-j"])
         .output()
@@ -1058,10 +1234,12 @@ fn hypr_focused_monitor() -> Option<(i32, i32, i32, i32)> {
         .iter()
         .find(|m| m.get("focused").and_then(|f| f.as_bool()) == Some(true))
         .or_else(|| arr.first())?;
-    Some((
+    let geom = (
         mon.get("x")?.as_i64()? as i32,
         mon.get("y")?.as_i64()? as i32,
         mon.get("width")?.as_i64()? as i32,
         mon.get("height")?.as_i64()? as i32,
-    ))
+    );
+    *cache.lock().unwrap() = Some((Instant::now(), geom));
+    Some(geom)
 }

@@ -1797,6 +1797,7 @@ fn build_appearance_page(
         sym_cb.connect_toggled(move |btn| {
             let on = btn.is_active();
             engine.config().update(|c| c.ui.symbolic_icons = on);
+            super::rows::clear_icon_resolve_cache();
             theme.reload();
         });
     }

@@ -2,6 +2,20 @@ use super::dnd::{attach_path_drag, DragSession};
 use crate::providers::{ResultKind, SearchResult};
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Label, ListBoxRow, Orientation};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    /// Resolved icon name cache for this GTK thread (main).
+    /// Key: "{symbolic_flag}\0{requested_name}\0{kind_u8}"
+    static ICON_RESOLVE_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// Drop cached icon resolutions (call if icon theme / symbolic preference changes).
+#[allow(dead_code)]
+pub(crate) fn clear_icon_resolve_cache() {
+    ICON_RESOLVE_CACHE.with(|c| c.borrow_mut().clear());
+}
 
 pub(crate) fn build_row(
     item: &SearchResult,
@@ -29,64 +43,9 @@ pub(crate) fn build_row(
     hbox.set_margin_start(2);
     hbox.set_margin_end(2);
 
-    let mut icon_name = item.icon.as_deref().unwrap_or(match item.kind {
-        ResultKind::App => "application-x-executable",
-        ResultKind::File => "text-x-generic",
-        ResultKind::Folder => "folder",
-        ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
-        ResultKind::Command => "preferences-system",
-    }).to_string();
-    if symbolic_icons && !icon_name.ends_with("-symbolic") {
-        // Prefer symbolic variant when the icon theme provides it.
-        let candidate = format!("{icon_name}-symbolic");
-        if let Some(display) = gtk::gdk::Display::default() {
-            let theme = gtk::IconTheme::for_display(&display);
-            if theme.has_icon(&candidate) {
-                icon_name = candidate;
-            }
-        }
-    }
-    let icon_name = icon_name.as_str();
-    // Resolve through the display icon theme so missing specific names fall back cleanly.
-    let display = gtk::gdk::Display::default();
-    let icon = if let Some(display) = display {
-        let theme = gtk::IconTheme::for_display(&display);
-        if theme.has_icon(icon_name) {
-            gtk::Image::from_icon_name(icon_name)
-        } else {
-            // Fallbacks when a specific mime icon isn't installed.
-            let fallback = match item.kind {
-                ResultKind::App => "application-x-executable",
-                ResultKind::Folder => "folder",
-                ResultKind::File => {
-                    if icon_name.starts_with("image-") {
-                        "image-x-generic"
-                    } else if icon_name.starts_with("video-") {
-                        "video-x-generic"
-                    } else if icon_name.starts_with("audio-") {
-                        "audio-x-generic"
-                    } else if icon_name.contains("pdf") {
-                        "application-pdf"
-                    } else if icon_name.contains("zip")
-                        || icon_name.contains("tar")
-                        || icon_name.contains("gzip")
-                        || icon_name.contains("package")
-                    {
-                        "package-x-generic"
-                    } else if icon_name.starts_with("text-x-") || icon_name.starts_with("text-") {
-                        "text-x-script"
-                    } else {
-                        "text-x-generic"
-                    }
-                }
-                ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
-                ResultKind::Command => "preferences-system",
-            };
-            gtk::Image::from_icon_name(fallback)
-        }
-    } else {
-        gtk::Image::from_icon_name(icon_name)
-    };
+    let requested = item.icon.as_deref().unwrap_or(default_icon_for_kind(item.kind));
+    let resolved = resolve_row_icon(requested, item.kind, symbolic_icons);
+    let icon = gtk::Image::from_icon_name(&resolved);
     icon.add_css_class("blink-row-icon");
     icon.set_pixel_size(icon_size.clamp(18, 36));
     icon.set_valign(gtk::Align::Center);
@@ -129,6 +88,100 @@ pub(crate) fn build_row(
 }
 
 
+
+fn default_icon_for_kind(kind: ResultKind) -> &'static str {
+    match kind {
+        ResultKind::App => "application-x-executable",
+        ResultKind::File => "text-x-generic",
+        ResultKind::Folder => "folder",
+        ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
+        ResultKind::Command => "preferences-system",
+    }
+}
+
+fn fallback_icon(kind: ResultKind, icon_name: &str) -> &'static str {
+    match kind {
+        ResultKind::App => "application-x-executable",
+        ResultKind::Folder => "folder",
+        ResultKind::File => {
+            if icon_name.starts_with("image-") {
+                "image-x-generic"
+            } else if icon_name.starts_with("video-") {
+                "video-x-generic"
+            } else if icon_name.starts_with("audio-") {
+                "audio-x-generic"
+            } else if icon_name.contains("pdf") {
+                "application-pdf"
+            } else if icon_name.contains("zip")
+                || icon_name.contains("tar")
+                || icon_name.contains("gzip")
+                || icon_name.contains("package")
+            {
+                "package-x-generic"
+            } else if icon_name.starts_with("text-x-") || icon_name.starts_with("text-") {
+                "text-x-script"
+            } else {
+                "text-x-generic"
+            }
+        }
+        ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
+        ResultKind::Command => "preferences-system",
+    }
+}
+
+/// Resolve icon once per unique (name, kind, symbolic) for this process/thread.
+fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> String {
+    let key = format!("{}\0{}\0{}", symbolic_icons as u8, requested, kind_key(kind));
+    ICON_RESOLVE_CACHE.with(|cache| {
+        if let Some(hit) = cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let resolved = resolve_row_icon_uncached(requested, kind, symbolic_icons);
+        cache.borrow_mut().insert(key, resolved.clone());
+        // Soft cap so a long session with wild mime names cannot grow forever.
+        if cache.borrow().len() > 512 {
+            cache.borrow_mut().clear();
+            cache.borrow_mut().insert(
+                format!("{}\0{}\0{}", symbolic_icons as u8, requested, kind_key(kind)),
+                resolved.clone(),
+            );
+        }
+        resolved
+    })
+}
+
+fn resolve_row_icon_uncached(requested: &str, kind: ResultKind, symbolic_icons: bool) -> String {
+    let mut icon_name = requested.to_string();
+    let Some(display) = gtk::gdk::Display::default() else {
+        return icon_name;
+    };
+    let theme = gtk::IconTheme::for_display(&display);
+
+    if symbolic_icons && !icon_name.ends_with("-symbolic") {
+        let candidate = format!("{icon_name}-symbolic");
+        if theme.has_icon(&candidate) {
+            icon_name = candidate;
+        }
+    }
+
+    if theme.has_icon(&icon_name) {
+        icon_name
+    } else {
+        fallback_icon(kind, &icon_name).to_string()
+    }
+}
+
+
+fn kind_key(kind: ResultKind) -> u8 {
+    match kind {
+        ResultKind::App => 0,
+        ResultKind::File => 1,
+        ResultKind::Folder => 2,
+        ResultKind::Calc => 3,
+        ResultKind::Conversion => 4,
+        ResultKind::Command => 5,
+    }
+}
 pub(crate) fn build_conversion_card(
     conv: &crate::providers::ConversionView,
     kind: ResultKind,
