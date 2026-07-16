@@ -24,6 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(feature = "layer-shell")]
 use std::time::{Duration, Instant};
 
 /// Compact fixed outer width. Preview never grows the window — it takes

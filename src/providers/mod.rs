@@ -66,6 +66,3 @@ impl Action {
     }
 }
 
-pub trait Provider: Send + Sync {
-    fn search(&self, query: &str) -> Vec<SearchResult>;
-}

@@ -1,4 +1,4 @@
-use super::{Action, Provider, ResultKind, SearchResult};
+use super::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::cmp::Reverse;
@@ -73,9 +73,10 @@ impl AppProvider {
     }
 
     pub fn resolve_id(&self, id: &str) -> Option<SearchResult> {
+        let key = id.strip_prefix("app:").unwrap_or(id);
         let apps = self.apps.read().unwrap();
         apps.iter()
-            .find(|a| format!("app:{}", a.id) == id)
+            .find(|a| a.id == key)
             .map(|a| to_result(a, 1000))
     }
 
@@ -135,8 +136,8 @@ fn normalize_desktop_id(id: &str) -> String {
     id.strip_suffix(".desktop").unwrap_or(&id).to_string()
 }
 
-impl Provider for AppProvider {
-    fn search(&self, query: &str) -> Vec<SearchResult> {
+impl AppProvider {
+    pub fn search(&self, query: &str) -> Vec<SearchResult> {
         let apps = self.apps.read().unwrap();
         let q = query.trim();
         if q.is_empty() {
@@ -252,7 +253,6 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     let mut terminal = false;
     let mut no_display = false;
     let mut hidden = false;
-    let mut try_exec = String::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -274,7 +274,6 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
             "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
             "NoDisplay" => no_display = value.eq_ignore_ascii_case("true"),
             "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
-            "TryExec" => try_exec = value.to_string(),
             "Type" if value != "Application" => return None,
             _ => {}
         }
@@ -282,9 +281,6 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
 
     if hidden || name.is_empty() {
         return None;
-    }
-    if !try_exec.is_empty() && which(&try_exec).is_none() {
-        // Keep entries without resolvable TryExec if Exec exists — many are fine
     }
 
     let id = path

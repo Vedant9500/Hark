@@ -6,7 +6,7 @@
 
 use crate::config::{ConfigStore, TranslateConfig};
 use crate::providers::files::{is_path_glob_query, is_scoped_file_query};
-use crate::providers::{Action, ConversionView, Provider, ResultKind, SearchResult};
+use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -137,11 +137,9 @@ impl TranslateProvider {
             }
         }
     }
-}
 
-impl Provider for TranslateProvider {
     /// UI-thread safe: cache hit, recent fail, or "Translating…" placeholder. **No curl.**
-    fn search(&self, query: &str) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str) -> Vec<SearchResult> {
         let cfg = self.cfg();
         if !cfg.enabled {
             return Vec::new();

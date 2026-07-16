@@ -17,7 +17,7 @@ use timezone::{try_timezone, try_timezone_predict};
 use units::{try_conversion, try_conversion_predict};
 
 use super::fx::FxStore;
-use super::{Provider, SearchResult};
+use super::SearchResult;
 use std::sync::Arc;
 
 pub struct CalcProvider {
@@ -31,14 +31,7 @@ impl CalcProvider {
         }
     }
 
-    #[allow(dead_code)] // was used for boot-time warm; FX now lazy on convert
-    pub fn fx_store(&self) -> Arc<FxStore> {
-        self.fx.clone()
-    }
-}
-
-impl Provider for CalcProvider {
-    fn search(&self, query: &str) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str) -> Vec<SearchResult> {
         let q = query.trim();
         if q.is_empty() {
             return Vec::new();

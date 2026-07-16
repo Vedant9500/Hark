@@ -3,7 +3,7 @@ mod live_cache;
 mod search;
 
 use crate::config::{pretty_path, ConfigStore};
-use crate::providers::{Action, Provider, ResultKind, SearchResult};
+use crate::providers::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gio::prelude::*;
 pub use index::{cache_bytes_on_disk, MAX_INDEX};
@@ -166,13 +166,6 @@ impl FileProvider {
             .trim();
         let index = self.state.index.read().unwrap();
         search::parse_scoped_for_query(q, &index).is_some()
-    }
-}
-
-impl Provider for FileProvider {
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        // Default provider path: sync deep (bench / isolated). UI uses Engine.
-        self.search_with(query, true, DeepMode::Sync)
     }
 }
 

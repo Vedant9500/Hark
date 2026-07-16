@@ -44,21 +44,6 @@ impl FxStore {
         }
     }
 
-    /// Blocking refresh (tests / explicit warm). Prefer `convert` which never blocks.
-    #[allow(dead_code)]
-    pub fn ensure_fresh(&self) {
-        if !self.is_stale() {
-            return;
-        }
-        if let Some(c) = fetch_rates() {
-            save_disk(&c);
-            *self.shared.cache.write().unwrap() = Some(c);
-            self.shared
-                .last_attempt_secs
-                .store(now_secs(), Ordering::Relaxed);
-        }
-    }
-
     /// Convert using memory/disk rates only. Never blocks on network.
     /// Stale rates still convert; a background refresh is scheduled when needed.
     pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<(f64, String)> {

@@ -3,7 +3,7 @@ use crate::providers::apps::AppProvider;
 use crate::providers::calc::CalcProvider;
 use crate::providers::files::{FileProvider, IndexProgress};
 use crate::providers::translate::TranslateProvider;
-use crate::providers::{Action, Provider, ResultKind, SearchResult};
+use crate::providers::{Action, ResultKind, SearchResult};
 use crate::usage::UsageStore;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -324,14 +324,6 @@ impl Engine {
     /// Isolated provider search (for `blink --bench` only).
     pub fn search_apps_only(&self, query: &str) -> Vec<SearchResult> {
         self.apps.search(query)
-    }
-
-    /// Isolated provider search — includes sync deep (live cache may apply).
-    /// Bench uses `search_files_index_only` for honest index timings.
-    #[allow(dead_code)]
-    pub fn search_files_only(&self, query: &str) -> Vec<SearchResult> {
-        use crate::providers::files::DeepMode;
-        self.files.search_with(query, true, DeepMode::Sync)
     }
 
     /// Async deep walk (worker thread). Larger budget than sync; fills live cache.

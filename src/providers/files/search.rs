@@ -33,7 +33,8 @@ const DEEP_SCORE_PENALTY: i64 = 500;
 pub enum DeepMode {
     /// Index only — main-thread UI path (deep runs async separately).
     Skip,
-    /// Tight budget; used by bench and fallbacks.
+    /// Tight budget; unit tests + optional sync deep (not used on GTK main).
+    #[allow(dead_code)] // constructed in tests; production uses Skip/Async only
     Sync,
     /// Larger budget; worker thread only.
     Async,
