@@ -22,9 +22,10 @@ pub(crate) fn looks_like_math(q: &str) -> bool {
 
 pub(crate) fn try_math(q: &str) -> Option<SearchResult> {
     let expr = q.trim().trim_start_matches('=').trim();
-    let expr = expr.replace('^', "**").replace('×', "*").replace('÷', "/");
-    let expr = expr.replace("π", "pi").replace("log10(", "log(");
-    let value = meval::eval_str(&expr).ok()?;
+    let expr = expr.replace('×', "*").replace('÷', "/");
+    let expr = expr.replace("π", "pi");
+    // Accept both ^ and **; evaluator treats both as power.
+    let value = super::expr::eval_str(&expr)?;
     let formatted = format_number(value);
     let display_expr = q.trim().trim_start_matches('=').trim().to_string();
     Some(SearchResult {

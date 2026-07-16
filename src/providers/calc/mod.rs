@@ -1,11 +1,14 @@
+mod battery;
 mod currency;
 mod datetime;
 mod duration;
+mod expr;
 mod math;
 mod timezone;
 mod units;
 mod util;
 
+use battery::try_battery;
 use currency::{normalize_money_query, try_currency, try_currency_predict};
 use datetime::try_datetime;
 use duration::try_duration_expr;
@@ -49,6 +52,9 @@ impl Provider for CalcProvider {
 
         let q_norm = normalize_money_query(q);
 
+        if let Some(r) = try_battery(&q_norm) {
+            return vec![r];
+        }
         if let Some(r) = try_duration_expr(&q_norm) {
             return vec![r];
         }
@@ -104,6 +110,9 @@ fn looks_like_plain_text(q: &str) -> bool {
             | "index"
             | "config"
     ) {
+        return false;
+    }
+    if battery::is_battery_keyword(&lower) {
         return false;
     }
 

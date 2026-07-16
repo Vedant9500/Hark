@@ -357,6 +357,25 @@ impl Engine {
         if self.translate.is_enabled() && self.translate.should_handle(query) {
             return false;
         }
+        // Calc/conversion already answered (battery, math, `now`, …) and Engine::search
+        // skipped the file index for this query — don't bury it under a deep walk.
+        let calc_hit = current
+            .iter()
+            .any(|r| matches!(r.kind, ResultKind::Calc | ResultKind::Conversion));
+        if calc_hit {
+            let force_files = query.starts_with("f ")
+                || query.starts_with("file ")
+                || query.starts_with("folder ")
+                || query.starts_with('/')
+                || query.starts_with("~/")
+                || query.starts_with("./")
+                || query.starts_with('.')
+                || crate::providers::files::is_path_glob_query(query)
+                || self.files.is_scoped_query(query);
+            if !force_files {
+                return false;
+            }
+        }
         // Only consider file/folder strength from current mixed results.
         let fileish: Vec<_> = current
             .iter()

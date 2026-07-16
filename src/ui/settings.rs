@@ -337,16 +337,8 @@ impl SettingsPanel {
         *self.on_done.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Close nested settings UI (app picker, etc.). `true` if something was dismissed.
-    pub fn dismiss_overlay(&self) -> bool {
-        self.dismiss_overlay
-            .borrow()
-            .as_ref()
-            .map(|cb| cb())
-            .unwrap_or(false)
-    }
-
     /// Cloneable handle for window-level key capture (Esc).
+    /// Closes nested settings UI (app picker, etc.); returns true if something was dismissed.
     pub fn dismiss_overlay_handle(&self) -> impl Fn() -> bool + 'static {
         let dismiss = self.dismiss_overlay.clone();
         move || {

@@ -90,7 +90,7 @@
 
 ### Math
 
-- Expressions: `2+2`, `sqrt(144)`, `sin` / `cos` / `tan`, `log`, `pi` / `π`, `^`, factorials (via meval)
+- Expressions: `2+2`, `sqrt(144)`, `sin` / `cos` / `tan`, `log`, `pi` / `π`, `^` / `**`, factorials
 - Natural language: `15% of 80`, `tip 20% on 45`
 - Bases: `0xFF`, `0b1010` → decimal / hex / binary
 
@@ -117,6 +117,12 @@ Examples:
 - `now in tokyo`, `time in london`
 - `12pm here in london`, `4pm est to pst`, `16:00 cet to ist`
 - City / abbreviation resolve + prediction
+
+### Power / battery (Linux sysfs)
+
+- Queries: `battery`, `power`, `ac power`, `charging`, `on battery`, `plugged in`, …
+- Shows **On AC power** vs **On battery**, charge %, status, optional W draw and ETA
+- Read only when you search (no background poll)
 
 ### Date / time
 
