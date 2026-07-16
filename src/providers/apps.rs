@@ -37,6 +37,10 @@ impl AppProvider {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.apps.read().unwrap().len()
+    }
+
     pub fn reload(&self) {
         let mut apps = Vec::new();
         let mut seen = HashSet::new();

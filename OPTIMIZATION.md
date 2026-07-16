@@ -428,6 +428,7 @@ Rebuild when: TTL > 30m **or** fingerprint ≠ current (roots / depth / excludes
 | 2026-07-14 | **E track:** compact cache v6, atomic write, bench rebuild metrics, defaults docs | cache **423→114 KB** (−73%); rebuild ~17ms @ 1798 |
 | 2026-07-14 | **Preview:** off-thread scaled decode + LRU + debounce | main free during decode; ~15–60× less texture RAM |
 | 2026-07-14 | **Preview follow-up:** single-flight decode, mtime/size cache, off-main thumbs | latest-wins worker; no stale cache after edit |
+| 2026-07-16 | **Regression fix:** refuse home deep-pin; FX non-blocking; honest --bench; de-pin $HOME | index 8.2k→2.0k; file ~200→59µs; FX ~5.5ms→2µs |
 
 ### 2026-07-14 — E track (index / IO)
 

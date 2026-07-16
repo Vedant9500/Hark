@@ -8,6 +8,7 @@
 | **[preview-optimization.md](./preview-optimization.md)** | Preview pane decode / cache optimization tracker |
 | **[translation.md](../translation.md)** | Translate-on-paste (CJK) implementation plan |
 | **[depth-index-benchmark.json](./depth-index-benchmark.json)** | Raw depth 2/3/4 measurement (2026-07-14) |
+| **[index-regression-depth-analysis.md](./index-regression-depth-analysis.md)** | Why index hit ~8k without changing scan depth; deep_roots auto-promote; bench caveats (2026-07-16) |
 
 Also see repo root:
 

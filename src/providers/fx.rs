@@ -3,10 +3,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Prefer last-known rates over blocking search on network.
 const TTL_SECS: u64 = 12 * 3600;
+/// After a failed (or completed) background fetch, wait before trying again.
+const REFRESH_BACKOFF_SECS: u64 = 15 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RatesCache {
@@ -16,30 +21,46 @@ struct RatesCache {
     fetched_at: u64,
 }
 
-pub struct FxStore {
+struct FxShared {
     cache: RwLock<Option<RatesCache>>,
+    /// Background curl in flight.
+    inflight: AtomicBool,
+    /// Last spawn attempt (success or fail) — throttles retries.
+    last_attempt_secs: AtomicU64,
+}
+
+pub struct FxStore {
+    shared: Arc<FxShared>,
 }
 
 impl FxStore {
     pub fn new() -> Self {
-        let store = Self {
-            cache: RwLock::new(load_disk()),
-        };
-        store
-    }
-
-    /// Force-check rates (network if stale). Not called at daemon boot —
-    /// `convert` refreshes lazily for battery life.
-    #[allow(dead_code)]
-    pub fn ensure_fresh(&self) {
-        if self.is_stale() {
-            if let Some(c) = fetch_rates() {
-                save_disk(&c);
-                *self.cache.write().unwrap() = Some(c);
-            }
+        Self {
+            shared: Arc::new(FxShared {
+                cache: RwLock::new(load_disk()),
+                inflight: AtomicBool::new(false),
+                last_attempt_secs: AtomicU64::new(0),
+            }),
         }
     }
 
+    /// Blocking refresh (tests / explicit warm). Prefer `convert` which never blocks.
+    #[allow(dead_code)]
+    pub fn ensure_fresh(&self) {
+        if !self.is_stale() {
+            return;
+        }
+        if let Some(c) = fetch_rates() {
+            save_disk(&c);
+            *self.shared.cache.write().unwrap() = Some(c);
+            self.shared
+                .last_attempt_secs
+                .store(now_secs(), Ordering::Relaxed);
+        }
+    }
+
+    /// Convert using memory/disk rates only. Never blocks on network.
+    /// Stale rates still convert; a background refresh is scheduled when needed.
     pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<(f64, String)> {
         let from = from.to_uppercase();
         let to = to.to_uppercase();
@@ -47,22 +68,20 @@ impl FxStore {
             return Some((amount, "same currency".into()));
         }
 
-        // Try memory, then disk, then fetch
         if self.is_stale() {
-            if let Some(c) = fetch_rates() {
-                save_disk(&c);
-                *self.cache.write().unwrap() = Some(c);
-            }
+            self.schedule_background_refresh();
         }
 
-        let g = self.cache.read().unwrap();
+        let g = self.shared.cache.read().unwrap();
         let cache = g.as_ref()?;
         let from_rate = rate_vs_base(cache, &from)?;
         let to_rate = rate_vs_base(cache, &to)?;
-        // amount in FROM → base → TO
         let in_base = amount / from_rate;
         let out = in_base * to_rate;
-        let meta = if now_secs().saturating_sub(cache.fetched_at) > 300 {
+        let age = now_secs().saturating_sub(cache.fetched_at);
+        let meta = if age > TTL_SECS {
+            format!("ECB {} · stale cache", cache.date)
+        } else if age > 300 {
             format!("ECB {} · cached", cache.date)
         } else {
             format!("ECB {}", cache.date)
@@ -71,11 +90,43 @@ impl FxStore {
     }
 
     fn is_stale(&self) -> bool {
-        let g = self.cache.read().unwrap();
+        let g = self.shared.cache.read().unwrap();
         match g.as_ref() {
             None => true,
             Some(c) => now_secs().saturating_sub(c.fetched_at) > TTL_SECS,
         }
+    }
+
+    /// Fire-and-forget curl. Coalesced + backoff so typing FX queries cannot
+    /// spawn a process storm when offline.
+    fn schedule_background_refresh(&self) {
+        let now = now_secs();
+        let last = self.shared.last_attempt_secs.load(Ordering::Relaxed);
+        // Always allow first attempt (last==0). After that, back off.
+        if last != 0 && now.saturating_sub(last) < REFRESH_BACKOFF_SECS {
+            return;
+        }
+        if self
+            .shared
+            .inflight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        // Reserve the attempt slot before spawn so concurrent converts don't all pass backoff.
+        self.shared
+            .last_attempt_secs
+            .store(now, Ordering::Relaxed);
+
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            if let Some(c) = fetch_rates() {
+                save_disk(&c);
+                *shared.cache.write().unwrap() = Some(c);
+            }
+            shared.inflight.store(false, Ordering::Release);
+        });
     }
 }
 
@@ -221,4 +272,20 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convert_uses_disk_without_network_when_present() {
+        // If disk cache exists from the machine, convert must return Some quickly.
+        // This does not assert network; only that convert does not require success.
+        let store = FxStore::new();
+        if store.shared.cache.read().unwrap().is_some() {
+            let r = store.convert(100.0, "USD", "EUR");
+            assert!(r.is_some(), "stale disk cache should still convert");
+        }
+    }
 }

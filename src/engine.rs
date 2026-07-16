@@ -96,6 +96,17 @@ impl Engine {
         crate::providers::files::cache_bytes_on_disk()
     }
 
+    /// Loaded desktop app count (for `blink --bench` readiness).
+    pub fn apps_len(&self) -> usize {
+        self.apps.len()
+    }
+
+    /// Isolated provider search — index only (no live deep / live cache).
+    pub fn search_files_index_only(&self, query: &str) -> Vec<SearchResult> {
+        use crate::providers::files::DeepMode;
+        self.files.search_with(query, true, DeepMode::Skip)
+    }
+
     pub fn format_index_status(&self) -> String {
         let p = self.index_progress();
         if p.running {
@@ -315,7 +326,9 @@ impl Engine {
         self.apps.search(query)
     }
 
-    /// Isolated provider search (for `blink --bench` only) — includes sync deep.
+    /// Isolated provider search — includes sync deep (live cache may apply).
+    /// Bench uses `search_files_index_only` for honest index timings.
+    #[allow(dead_code)]
     pub fn search_files_only(&self, query: &str) -> Vec<SearchResult> {
         use crate::providers::files::DeepMode;
         self.files.search_with(query, true, DeepMode::Sync)
@@ -387,6 +400,7 @@ impl Engine {
 
     /// Pin a folder as a deep root (always indexed to depth 6). Triggers reindex.
     /// Cap is small — deep roots are intentional project pins, not an open-ended list.
+    /// Refuses `$HOME`, `/`, and other overly broad roots (see `is_forbidden_deep_root`).
     pub fn promote_deep_root(&self, path: &std::path::Path) {
         const MAX_DEEP_ROOTS: usize = 32;
         // Prefer absolute path so config is stable across shells.
@@ -397,6 +411,11 @@ impl Engine {
                 .map(|cwd| cwd.join(path))
                 .unwrap_or_else(|_| path.to_path_buf())
         };
+        // Canonicalize when possible so `/home/foo/../foo` matches home checks.
+        let abs = abs.canonicalize().unwrap_or(abs);
+        if is_forbidden_deep_root(&abs) {
+            return;
+        }
         let s = abs.to_string_lossy().to_string();
         if s.is_empty() {
             return;
@@ -449,6 +468,8 @@ pub enum ExecuteOutcome {
 /// When the user opens a file deeper than the global index depth, promote a
 /// nearby project root so future deep walks prefer it. Never writes live hits
 /// into the persistent index — only pins a folder as a deep root.
+///
+/// Never promotes `$HOME` / `/` even if a stray `package.json` (etc.) sits there.
 fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
     // Prefer the directory containing the file; if already a dir, use it.
     let start = if path.is_dir() {
@@ -473,6 +494,10 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
     ];
     let mut cur = start;
     for _ in 0..6 {
+        // Stop before promoting home / filesystem root even if they have markers.
+        if is_forbidden_deep_root(&cur) {
+            break;
+        }
         for m in MARKERS {
             if cur.join(m).exists() {
                 engine.promote_deep_root(&cur);
@@ -482,6 +507,55 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
         match cur.parent() {
             Some(p) if p != cur => cur = p.to_path_buf(),
             _ => break,
+        }
+    }
+}
+
+/// Roots that must never become deep pins — they re-index huge trees to depth 6.
+fn is_forbidden_deep_root(path: &std::path::Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return true;
+    }
+    // Filesystem root.
+    if path == std::path::Path::new("/") {
+        return true;
+    }
+    // User home (and rare non-canonical equality after canonicalize in promote).
+    if let Some(home) = dirs::home_dir() {
+        let home = home.canonicalize().unwrap_or(home);
+        let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if p == home {
+            return true;
+        }
+    }
+    // Common multi-user roots.
+    if matches!(
+        path.to_string_lossy().as_ref(),
+        "/home" | "/Users" | "/var" | "/usr" | "/opt" | "/mnt" | "/media"
+    ) {
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod deep_root_tests {
+    use super::is_forbidden_deep_root;
+    use std::path::Path;
+
+    #[test]
+    fn forbids_slash_and_home() {
+        assert!(is_forbidden_deep_root(Path::new("/")));
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_forbidden_deep_root(&home));
+        }
+    }
+
+    #[test]
+    fn allows_project_subdir() {
+        if let Some(home) = dirs::home_dir() {
+            let project = home.join("blink");
+            assert!(!is_forbidden_deep_root(&project));
         }
     }
 }

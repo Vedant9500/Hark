@@ -187,6 +187,25 @@ fn run_bench() {
         p.count, p.capped, p.running, warm_ms, cache_b
     );
 
+    // Wait for desktop apps (loaded on a bg thread in Engine::new).
+    let apps_deadline = Instant::now() + Duration::from_secs(5);
+    while engine.apps_len() == 0 && Instant::now() < apps_deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let apps_n = engine.apps_len();
+    let cfg = engine.config().get();
+    let deep = cfg.index.deep_roots.join(", ");
+    let deep = if deep.is_empty() { "(none)".into() } else { deep };
+    println!(
+        "config: max_depth={} · deep_roots={} · apps={}",
+        cfg.index.max_depth.clamp(1, 6),
+        deep,
+        apps_n
+    );
+    if apps_n == 0 {
+        println!("warning: no desktop apps loaded — iso_apps / app cases may be empty");
+    }
+
     // E1: timed force rebuild (blocking; bench only)
     println!();
     println!("=== index rebuild (blocking) ===");
@@ -200,20 +219,23 @@ fn run_bench() {
         rebuild_ms, p2.count, cache_b2, p2.capped
     );
 
+    // App query: prefer a name likely present (chrome/firefox/blink). Fallback "a".
+    let app_q = pick_bench_app_query(&engine);
     let queries = [
         ("math", "10 + 20"),
         ("unit", "10kg to lb"),
         ("unit_partial", "10kg to pou"),
         ("fx", "100 usd to eur"),
-        ("app", "fire"),
+        ("app", app_q.as_str()),
         ("file", "doc"),
         ("file_force", "f doc"),
         ("settings", "settings"),
     ];
 
-    // Isolated provider probes (engine merge can hide provider wins)
+    // Isolated provider probes (engine merge can hide provider wins).
+    // iso_files uses index-only (DeepMode::Skip) so live-cache cannot fake µs.
     let iso = [
-        ("iso_apps", "fire", "apps"),
+        ("iso_apps", app_q.as_str(), "apps"),
         ("iso_files", "doc", "files"),
         ("iso_calc", "10 + 20", "calc"),
     ];
@@ -264,7 +286,7 @@ fn run_bench() {
     for (name, q, kind) in iso {
         let (median, p95, hits) = match kind {
             "apps" => bench_query(WARMUP, ITERS, || engine.search_apps_only(q)),
-            "files" => bench_query(WARMUP, ITERS, || engine.search_files_only(q)),
+            "files" => bench_query(WARMUP, ITERS, || engine.search_files_index_only(q)),
             _ => bench_query(WARMUP, ITERS, || engine.search_calc_only(q)),
         };
         println!(
@@ -367,6 +389,28 @@ fn run_bench() {
 
     println!();
     println!("done — paste tables into OPTIMIZATION.md Improvement log");
+}
+
+
+/// Choose a short app query that actually hits installed desktops (bench only).
+fn pick_bench_app_query(engine: &Engine) -> String {
+    // Prefer classic baselines, then anything installed, else a letter.
+    for cand in ["fire", "chrom", "chrome", "blink", "term", "code", "discord"] {
+        let hits = engine.search_apps_only(cand);
+        if !hits.is_empty() {
+            return cand.to_string();
+        }
+    }
+    // Fall back: first loaded app name prefix (2–5 chars).
+    let sample = engine.search_apps_only("");
+    if let Some(r) = sample.first() {
+        let t = r.title.to_lowercase();
+        let n = t.chars().take(4).collect::<String>();
+        if n.len() >= 2 {
+            return n;
+        }
+    }
+    "a".into()
 }
 
 fn bench_query<F>(warmup: u32, iters: u32, mut f: F) -> (u64, u64, usize)

@@ -48,6 +48,39 @@ fn default_depth() -> usize {
     2
 }
 
+/// Deep roots that re-index huge trees; strip on load + refuse in Engine.
+fn is_overbroad_deep_root(s: &str) -> bool {
+    let p = PathBuf::from(expand_user_path(s));
+    let p = p.canonicalize().unwrap_or(p);
+    if p == Path::new("/") {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        let home = home.canonicalize().unwrap_or(home);
+        if p == home {
+            return true;
+        }
+    }
+    matches!(
+        p.to_string_lossy().as_ref(),
+        "/home" | "/Users" | "/var" | "/usr" | "/opt" | "/mnt" | "/media"
+    )
+}
+
+fn expand_user_path(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
+    if s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.to_string_lossy().into_owned();
+        }
+    }
+    s.to_string()
+}
+
 fn default_excludes() -> Vec<String> {
     vec![
         // VCS / package / build
@@ -460,6 +493,12 @@ impl ConfigStore {
         // FileProvider clamps walk to 1..=6 — allow up to 6 here.
         if cfg.index.max_depth > 6 {
             cfg.index.max_depth = default_depth();
+            changed = true;
+        }
+        // Drop accidental mega-pins (home / / /home …) — depth-6 walks explode the index.
+        let before_deep = cfg.index.deep_roots.len();
+        cfg.index.deep_roots.retain(|s| !is_overbroad_deep_root(s));
+        if cfg.index.deep_roots.len() != before_deep {
             changed = true;
         }
         // Ensure important ignore names exist even on older configs
