@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -23,7 +22,7 @@ struct RatesCache {
 
 struct FxShared {
     cache: RwLock<Option<RatesCache>>,
-    /// Background curl in flight.
+    /// Background HTTP refresh in flight.
     inflight: AtomicBool,
     /// Last spawn attempt (success or fail) — throttles retries.
     last_attempt_secs: AtomicU64,
@@ -82,8 +81,8 @@ impl FxStore {
         }
     }
 
-    /// Fire-and-forget curl. Coalesced + backoff so typing FX queries cannot
-    /// spawn a process storm when offline.
+    /// Fire-and-forget HTTP refresh. Coalesced + backoff so typing FX queries
+    /// cannot spawn a worker storm when offline.
     fn schedule_background_refresh(&self) {
         let now = now_secs();
         let last = self.shared.last_attempt_secs.load(Ordering::Relaxed);
@@ -202,26 +201,15 @@ pub fn format_money(amount: f64, code: &str) -> String {
 }
 
 fn fetch_rates() -> Option<RatesCache> {
-    // Frankfurter: latest EUR-based rates
-    let out = Command::new("curl")
-        .args([
-            "-fsSL",
-            "--max-time",
-            "3",
-            "https://api.frankfurter.dev/v1/latest",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
+    // Frankfurter: latest EUR-based rates (in-process HTTP — no curl spawn).
+    let body = crate::providers::http::get_bytes("https://api.frankfurter.dev/v1/latest").ok()?;
     #[derive(Deserialize)]
     struct Api {
         base: String,
         date: String,
         rates: HashMap<String, f64>,
     }
-    let api: Api = serde_json::from_slice(&out.stdout).ok()?;
+    let api: Api = serde_json::from_slice(&body).ok()?;
     Some(RatesCache {
         base: api.base,
         date: api.date,
@@ -247,7 +235,7 @@ fn save_disk(c: &RatesCache) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Ok(data) = serde_json::to_string_pretty(c) {
+    if let Ok(data) = serde_json::to_string(c) {
         let _ = fs::write(path, data);
     }
 }

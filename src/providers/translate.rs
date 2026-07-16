@@ -10,9 +10,7 @@ use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -575,36 +573,8 @@ fn libretranslate(
         body["api_key"] = serde_json::Value::String(key.clone());
     }
     let payload = body.to_string();
-
-    let mut child = Command::new("curl")
-        .args([
-            "-fsSL",
-            "--connect-timeout",
-            "1",
-            "--max-time",
-            "2",
-            "-H",
-            "Content-Type: application/json",
-            "-X",
-            "POST",
-            "--data-binary",
-            "@-",
-            &url,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "curl not available".to_string())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(payload.as_bytes());
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|_| "translate request failed".to_string())?;
-    if !out.status.success() {
-        return Err("LibreTranslate error (check endpoint)".into());
-    }
+    let bytes = crate::providers::http::post_json(&url, &payload)
+        .map_err(|e| format!("LibreTranslate {e}"))?;
 
     #[derive(Deserialize)]
     struct LtResp {
@@ -613,7 +583,7 @@ fn libretranslate(
         #[serde(default, rename = "translatedText")]
         translated_text: String,
     }
-    let resp: LtResp = serde_json::from_slice(&out.stdout)
+    let resp: LtResp = serde_json::from_slice(&bytes)
         .map_err(|_| "Bad LibreTranslate response".to_string())?;
     let translated = if !resp.translated_text.is_empty() {
         resp.translated_text
@@ -630,32 +600,24 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
     // Unofficial free endpoint (same family as many OSS clients). No API key.
     let sl = api_source_lang(source, true);
     let tl = short_lang(target);
-    let out = Command::new("curl")
-        .args([
-            "-fsSL",
-            "--connect-timeout",
-            "1",
-            "--max-time",
-            "2",
-            "-G",
-            "https://translate.googleapis.com/translate_a/single",
-            "--data-urlencode",
-            "client=gtx",
-            "--data-urlencode",
-            &format!("sl={sl}"),
-            "--data-urlencode",
-            &format!("tl={tl}"),
-            "--data-urlencode",
-            "dt=t",
-            "--data-urlencode",
-            &format!("q={text}"),
-        ])
-        .output()
-        .map_err(|_| "curl not available".to_string())?;
-    if !out.status.success() {
-        return Err("Google translate unreachable".into());
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+    let bytes = crate::providers::http::get_bytes_query(
+        "https://translate.googleapis.com/translate_a/single",
+        &[
+            ("client", "gtx"),
+            ("sl", &sl),
+            ("tl", &tl),
+            ("dt", "t"),
+            ("q", text),
+        ],
+    )
+    .map_err(|e| {
+        if e == "unreachable" || e == "timed out" {
+            "Google translate unreachable".into()
+        } else {
+            format!("Google translate {e}")
+        }
+    })?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "Bad Google translate response".to_string())?;
     // Response: [[["Hello world","你好世界",...],...],...]
     let mut translated = String::new();
@@ -681,25 +643,17 @@ fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), 
     };
     let tgt = short_lang(target);
     let langpair = format!("{src}|{tgt}");
-    let out = Command::new("curl")
-        .args([
-            "-fsSL",
-            "--connect-timeout",
-            "1",
-            "--max-time",
-            "2",
-            "-G",
-            "https://api.mymemory.translated.net/get",
-            "--data-urlencode",
-            &format!("q={text}"),
-            "--data-urlencode",
-            &format!("langpair={langpair}"),
-        ])
-        .output()
-        .map_err(|_| "curl not available".to_string())?;
-    if !out.status.success() {
-        return Err("MyMemory unreachable".into());
-    }
+    let bytes = crate::providers::http::get_bytes_query(
+        "https://api.mymemory.translated.net/get",
+        &[("q", text), ("langpair", &langpair)],
+    )
+    .map_err(|e| {
+        if e == "unreachable" || e == "timed out" {
+            "MyMemory unreachable".into()
+        } else {
+            format!("MyMemory {e}")
+        }
+    })?;
 
     #[derive(Deserialize)]
     struct MmResp {
@@ -709,7 +663,7 @@ fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), 
     struct MmData {
         translated_text: Option<String>,
     }
-    let resp: MmResp = serde_json::from_slice(&out.stdout)
+    let resp: MmResp = serde_json::from_slice(&bytes)
         .map_err(|_| "Bad MyMemory response".to_string())?;
     let translated = resp
         .response_data
@@ -815,12 +769,18 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
     };
     if let Ok(mut g) = mem_ok().lock() {
         g.insert(key.to_string(), e.clone());
-        // Bound memory cache size.
-        if g.len() > 256 {
-            // Drop arbitrary older-ish half by clearing when huge (simple).
-            if g.len() > 400 {
-                g.clear();
-                g.insert(key.to_string(), e.clone());
+        // Bound process-local success cache (disk remains durable).
+        const MAX_MEM: usize = 256;
+        if g.len() > MAX_MEM {
+            // Drop oldest by fetched_at until under cap.
+            let mut keys: Vec<(u64, String)> = g
+                .iter()
+                .map(|(k, v)| (v.fetched_at, k.clone()))
+                .collect();
+            keys.sort_by_key(|(ts, _)| *ts);
+            let remove_n = g.len() - MAX_MEM;
+            for (_, k) in keys.into_iter().take(remove_n) {
+                g.remove(&k);
             }
         }
     }
@@ -848,10 +808,19 @@ fn fail_get(key: &str) -> Option<String> {
 
 fn fail_put(key: &str, msg: &str) {
     if let Ok(mut g) = mem_fail().lock() {
-        g.insert(key.to_string(), (msg.to_string(), now_secs()));
-        if g.len() > 128 {
-            g.clear();
-            g.insert(key.to_string(), (msg.to_string(), now_secs()));
+        let now = now_secs();
+        g.insert(key.to_string(), (msg.to_string(), now));
+        const MAX_FAIL: usize = 64;
+        if g.len() > MAX_FAIL {
+            let mut keys: Vec<(u64, String)> = g
+                .iter()
+                .map(|(k, (_, at))| (*at, k.clone()))
+                .collect();
+            keys.sort_by_key(|(ts, _)| *ts);
+            let remove_n = g.len() - MAX_FAIL;
+            for (_, k) in keys.into_iter().take(remove_n) {
+                g.remove(&k);
+            }
         }
     }
 }

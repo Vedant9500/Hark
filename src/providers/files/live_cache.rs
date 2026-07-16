@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 const MAX_ENTRIES: usize = 64;
 const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
+/// Empty deep results (walked, no hits) — short TTL so typos don't re-walk every keystroke.
+const NEGATIVE_TTL: Duration = Duration::from_secs(90);
 
 struct Entry {
     hits: Arc<[SearchResult]>,
@@ -83,16 +85,21 @@ impl LiveCache {
 
     pub fn put(&self, query: &str, hits: Vec<SearchResult>) {
         let key = Self::key_for(query);
-        if key.is_empty() || hits.is_empty() {
+        if key.is_empty() {
             return;
         }
         let now = Instant::now();
+        let ttl = if hits.is_empty() {
+            NEGATIVE_TTL
+        } else {
+            DEFAULT_TTL
+        };
         let mut map = self.inner.lock().unwrap();
         map.insert(
             key,
             Entry {
                 hits: hits.into(),
-                expires: now + DEFAULT_TTL,
+                expires: now + ttl,
                 last_used: now,
             },
         );
@@ -155,10 +162,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_hits_not_stored() {
+    fn empty_hits_negative_cached() {
         let c = LiveCache::new();
         c.put("x", Vec::new());
-        assert_eq!(c.len(), 0);
+        assert_eq!(c.len(), 1);
+        assert!(c.contains("x"));
+        let hits = c.get("x").unwrap();
+        assert!(hits.is_empty());
     }
 
     #[test]

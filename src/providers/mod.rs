@@ -2,6 +2,7 @@ pub mod apps;
 pub mod calc;
 pub mod files;
 pub mod fx;
+pub mod http;
 pub mod translate;
 
 use std::path::PathBuf;

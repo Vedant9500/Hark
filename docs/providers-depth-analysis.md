@@ -1,7 +1,7 @@
 # Providers depth analysis — `src/providers`
 
 **Date:** 2026-07-16  
-**Status:** diagnosis; dead/footgun + Phase 1–2 applied 2026-07-16  
+**Status:** diagnosis; dead/footgun + Phase 1–3 applied 2026-07-16  
 **Goal:** find inefficiencies, bugs, dead code, and optimizations so providers stay **fast on the search hot path**, light on CPU/IO when idle, and correct under concurrent UI + deep/translate workers — without dropping features.
 
 Related:
@@ -22,8 +22,8 @@ Related:
 | **Files index** | Good after deep-root fix | `ensure_fresh` still rediscovers mounts + recomputes FP when RAM is “fresh” |
 | **Files search** | Good structure | **Deep walk holds `index` read lock** for up to ~200 ms; live-cache clones full hit vectors |
 | **Calc** | Good | Plain-text reject + engine short-circuit; residual regex order cost on near-misses |
-| **FX** | Fixed (2026-07-16) | Non-blocking convert OK; still spawns `curl` process for refresh |
-| **Translate** | Good (async) | Multi `cfg()` clones; process-local success map unbounded; sequential `curl` backends |
+| **FX** | Fixed + Phase 3 | Non-blocking convert; in-process `ureq` refresh |
+| **Translate** | Good + Phase 3 | Async; `ureq` backends; bounded mem caches |
 | **Shared types** | OK | `SearchResult` is allocation-heavy; `ConfigStore::get()` **clones full config** on hot paths |
 
 **Top 3 fixes (if implementing next):**
@@ -320,12 +320,13 @@ Largest module: path completions, globs, scoped `in`, soft folder hints, live de
 
 ### Phase 3 — Process model & structure (optional)
 
-1. Replace worker `curl` with lightweight HTTP client (FX + translate).  
-2. Bound translate memory cache; optional negative live-cache.  
-3. Split `search.rs` for readability.  
-4. Nested `.desktop` dir walk if users miss apps.  
+1. **In-process HTTP (`ureq`)** for FX + translate workers ✅ — no `curl` process spawn; ~1–2s timeouts preserved; free backends still race.  
+2. **Bound translate mem caches** ✅ — success LRU-by-age to 256; fail to 64.  
+3. **Negative live-cache** ✅ — empty deep results cached 90s (stops re-walk on misses/typos).  
+4. **Split `search.rs`** — deferred (plan/run already isolates deep from index lock; further file split is pure maintainability).  
 
-**Expected:** battery / offline behavior; not needed for list polish.
+**Tradeoff:** release binary grows (~5.0 MB → ~6.7 MB) from rustls/TLS stack. Search hot path unchanged; only worker/network paths use HTTP.
+
 
 ---
 
@@ -367,8 +368,8 @@ Compare to post-fix baselines (~2k index, file `doc` ~60 µs, FX ~2 µs with
 | P1.4 | Fuzzy name_lower | S | Low–Med | ✅ |
 | P1.6–P1.8 | Small alloc cleanups | S | Low | ✅ resolve_id, currency, translate with |
 | P1.9 | ensure_fresh mounts | S | Low (periodic) | ✅ |
-| P2 HTTP client | M | Battery / worker | Medium (deps) |
-| Dead code cleanup | S | Hygiene | None |
+| P2 HTTP client | M | Battery / worker | ✅ ureq (~+1.7 MB binary) |
+| Dead code cleanup | S | Hygiene | ✅ earlier |
 
 ---
 
