@@ -1,5 +1,5 @@
 use super::units::{RE_CONVERT, RE_CONVERT_PARTIAL};
-use crate::providers::fx::{format_money, is_currency, normalize_currency, FxStore};
+use crate::providers::fx::{format_money, normalize_currency, FxStore};
 use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -42,9 +42,6 @@ pub(crate) fn try_currency(q: &str, fx: &FxStore) -> Option<SearchResult> {
     if to_raw.is_empty() {
         return None;
     }
-    if !is_currency(from_raw) || !is_currency(to_raw) {
-        return None;
-    }
     let from = normalize_currency(from_raw)?;
     let to = normalize_currency(to_raw)?;
     fx_result(value, from, to, fx)
@@ -55,14 +52,11 @@ pub(crate) fn try_currency_predict(q: &str, fx: &FxStore) -> Option<SearchResult
     let value: f64 = caps.get(1)?.as_str().parse().ok()?;
     let from_raw = caps.get(2)?.as_str();
     let to_prefix = caps.get(4).map(|m| m.as_str()).unwrap_or("").trim();
-    if !is_currency(from_raw) {
-        return None;
-    }
-    // Exact already handled
-    if !to_prefix.is_empty() && is_currency(to_prefix) {
-        return None;
-    }
     let from = normalize_currency(from_raw)?;
+    // Exact already handled
+    if !to_prefix.is_empty() && normalize_currency(to_prefix).is_some() {
+        return None;
+    }
     let to = predict_currency(to_prefix, from)?;
     if to == from && !to_prefix.is_empty() {
         return None;

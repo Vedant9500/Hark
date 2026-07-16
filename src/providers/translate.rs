@@ -47,32 +47,33 @@ impl TranslateProvider {
     }
 
     pub fn cfg(&self) -> TranslateConfig {
-        self.config.get().translate
+        self.config.with(|c| c.translate.clone())
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.cfg().enabled
+        self.config.with(|c| c.translate.enabled)
     }
 
     pub fn should_handle(&self, query: &str) -> bool {
-        let cfg = self.cfg();
-        if !cfg.enabled {
-            return false;
-        }
-        is_translate_query(query, &cfg)
+        self.config.with(|c| {
+            let cfg = &c.translate;
+            cfg.enabled && is_translate_query(query, cfg)
+        })
     }
 
     /// Auto-detect CJK (no `tr` prefix) — longer UI debounce; forced prefix stays snappy.
     pub fn is_auto_query(&self, query: &str) -> bool {
-        let cfg = self.cfg();
-        if !cfg.enabled || !cfg.auto_detect {
-            return false;
-        }
-        let (forced, _) = strip_translate_prefix(query.trim());
-        if forced {
-            return false;
-        }
-        is_translate_query(query, &cfg)
+        self.config.with(|c| {
+            let cfg = &c.translate;
+            if !cfg.enabled || !cfg.auto_detect {
+                return false;
+            }
+            let (forced, _) = strip_translate_prefix(query.trim());
+            if forced {
+                return false;
+            }
+            is_translate_query(query, cfg)
+        })
     }
 
     /// True when UI should spawn a worker: enabled, matches, not already cached.

@@ -43,6 +43,25 @@ impl LiveCache {
         q
     }
 
+    /// True when a non-expired entry exists (no hit vector clone).
+    pub fn contains(&self, query: &str) -> bool {
+        let key = Self::key_for(query);
+        if key.is_empty() {
+            return false;
+        }
+        let mut map = self.inner.lock().unwrap();
+        let now = Instant::now();
+        let Some(entry) = map.get_mut(&key) else {
+            return false;
+        };
+        if entry.expires <= now {
+            map.remove(&key);
+            return false;
+        }
+        entry.last_used = now;
+        true
+    }
+
     pub fn get(&self, query: &str) -> Option<Vec<SearchResult>> {
         let key = Self::key_for(query);
         if key.is_empty() {
@@ -135,5 +154,14 @@ mod tests {
         let c = LiveCache::new();
         c.put("x", Vec::new());
         assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn contains_true_when_present() {
+        let c = LiveCache::new();
+        assert!(!c.contains("x"));
+        c.put("x", vec![hit("a")]);
+        assert!(c.contains("x"));
+        assert!(c.contains("f x"));
     }
 }

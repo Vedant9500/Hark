@@ -50,6 +50,321 @@ impl DeepMode {
     }
 }
 
+/// Live deep walk planned under the index lock, executed after the lock is dropped.
+#[derive(Debug, Clone)]
+pub(crate) struct DeepJob {
+    roots: Vec<PathBuf>,
+    segments: Vec<String>,
+    name_pat: Option<String>,
+    dir_scope: bool,
+    deep: DeepMode,
+}
+
+/// Plan live deep work from the index snapshot only (no WalkDir).
+/// Mirrors the gates in `maybe_deep_*` used by unit tests.
+pub(crate) fn plan_deep_jobs(
+    index: &[IndexedPath],
+    query: &str,
+    results: &[SearchResult],
+    deep: DeepMode,
+    deep_roots: &[String],
+    mounts: &[MountInfo],
+) -> Vec<DeepJob> {
+    if deep == DeepMode::Skip {
+        return Vec::new();
+    }
+
+    let q = query.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+
+    // Absolute / home / drive path globs
+    if q.starts_with('/')
+        || q.starts_with('~')
+        || q.starts_with("./")
+        || is_drive_path_query(q)
+    {
+        if q.contains('*') || q.contains('?') {
+            return plan_deep_absolute_glob(q, results, deep, mounts);
+        }
+        return Vec::new();
+    }
+
+    let q = q
+        .strip_prefix("f ")
+        .or_else(|| q.strip_prefix("file "))
+        .or_else(|| q.strip_prefix("folder "))
+        .unwrap_or(q)
+        .trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+
+    // Soft scope hints never deep-walk.
+    if parse_scope_hint_query(q).is_some() && parse_scoped_query(q, Some(index)).is_none() {
+        return Vec::new();
+    }
+
+    if let Some(sq) = parse_scoped_query(q, Some(index)) {
+        return plan_deep_for_scoped(&sq, index, results, deep, deep_roots);
+    }
+
+    if let Some(gq) = parse_glob_query(q) {
+        return plan_deep_for_glob(&gq, index, results, deep, deep_roots);
+    }
+
+    let q_lower = q.to_lowercase();
+    plan_deep_for_name(&q_lower, index, results, deep, deep_roots)
+}
+
+/// Execute planned deep walks and merge into `results` (no index lock).
+pub(crate) fn run_deep_jobs(
+    jobs: Vec<DeepJob>,
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+    excludes: &[String],
+    results: &mut Vec<SearchResult>,
+) {
+    for job in jobs {
+        let existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
+        let live = live_deep_under_roots(
+            &job.roots,
+            &job.segments,
+            job.name_pat.as_deref(),
+            job.dir_scope,
+            path_style,
+            mounts,
+            excludes,
+            existing,
+            job.deep,
+        );
+        merge_live(results, live);
+        // Named-root walks may already answer strongly — skip remaining jobs.
+        if index_is_strong(results) {
+            break;
+        }
+    }
+}
+
+fn job_from_roots(
+    roots: Vec<PathBuf>,
+    segments: Vec<String>,
+    name_pat: Option<String>,
+    dir_scope: bool,
+    deep: DeepMode,
+) -> Option<DeepJob> {
+    if roots.is_empty() {
+        return None;
+    }
+    Some(DeepJob {
+        roots,
+        segments,
+        name_pat,
+        dir_scope,
+        deep,
+    })
+}
+
+fn plan_deep_for_name(
+    q_lower: &str,
+    index: &[IndexedPath],
+    results: &[SearchResult],
+    deep: DeepMode,
+    deep_roots: &[String],
+) -> Vec<DeepJob> {
+    if index_is_strong(results) || !looks_specific_for_deep(q_lower) {
+        return Vec::new();
+    }
+
+    let mut jobs = Vec::new();
+    let pinned = pinned_deep_roots(deep_roots);
+
+    let named_roots = roots_from_index_name(index, q_lower);
+    if !named_roots.is_empty() {
+        if let Some(j) = job_from_roots(
+            named_roots,
+            Vec::new(),
+            Some(q_lower.to_string()),
+            false,
+            deep,
+        ) {
+            jobs.push(j);
+        }
+    }
+
+    let has_ext = q_lower.contains('.')
+        && q_lower
+            .rsplit_once('.')
+            .map(|(_, e)| {
+                !e.is_empty()
+                    && e.len() <= 8
+                    && e.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+            .unwrap_or(false);
+    let specific_glob = (q_lower.contains('*') || q_lower.contains('?'))
+        && !is_broad_extension_glob(q_lower)
+        && looks_specific_for_deep(q_lower);
+
+    if !has_ext && !specific_glob && pinned.is_empty() {
+        return jobs;
+    }
+
+    let mut hv = high_value_shallow_roots(index);
+    prepend_unique(&mut hv, &pinned);
+    if hv.is_empty() {
+        return jobs;
+    }
+    if let Some(j) = job_from_roots(hv, Vec::new(), Some(q_lower.to_string()), false, deep) {
+        jobs.push(j);
+    }
+    jobs
+}
+
+fn plan_deep_for_glob(
+    gq: &GlobQuery,
+    index: &[IndexedPath],
+    results: &[SearchResult],
+    deep: DeepMode,
+    deep_roots: &[String],
+) -> Vec<DeepJob> {
+    if index_is_strong(results) && !(gq.recursive && !gq.segments.is_empty()) {
+        return Vec::new();
+    }
+    if gq.segments.is_empty() {
+        if let Some(pat) = &gq.name_pat {
+            if is_broad_extension_glob(pat) {
+                return Vec::new();
+            }
+            if !looks_specific_for_deep(pat) {
+                return Vec::new();
+            }
+        } else {
+            return Vec::new();
+        }
+    }
+
+    let pinned = pinned_deep_roots(deep_roots);
+    let roots = if !gq.segments.is_empty() {
+        let mut r = roots_from_segments(index, &gq.segments);
+        if r.is_empty() && pinned.is_empty() {
+            return Vec::new();
+        }
+        prepend_unique(&mut r, &pinned);
+        r
+    } else if gq.name_pat.is_some() {
+        let mut r = high_value_shallow_roots(index);
+        if r.is_empty() && pinned.is_empty() {
+            return Vec::new();
+        }
+        prepend_unique(&mut r, &pinned);
+        r
+    } else {
+        return Vec::new();
+    };
+
+    job_from_roots(
+        roots,
+        gq.segments.clone(),
+        gq.name_pat.clone(),
+        gq.dir_scope,
+        deep,
+    )
+    .into_iter()
+    .collect()
+}
+
+fn plan_deep_for_scoped(
+    sq: &ScopedQuery,
+    index: &[IndexedPath],
+    results: &[SearchResult],
+    deep: DeepMode,
+    deep_roots: &[String],
+) -> Vec<DeepJob> {
+    if index_is_strong(results) {
+        return Vec::new();
+    }
+    let pinned = pinned_deep_roots(deep_roots);
+
+    // Absolute / `~/` scope → walk that root directly (best case).
+    if let Some(abs) = &sq.abs_root {
+        let root = if abs.is_dir() {
+            abs.clone()
+        } else {
+            abs.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| abs.clone())
+        };
+        let mut roots = vec![root];
+        prepend_unique(&mut roots, &pinned);
+        return job_from_roots(
+            roots,
+            sq.segments.clone(),
+            Some(sq.name_pat.clone()),
+            false,
+            deep,
+        )
+        .into_iter()
+        .collect();
+    }
+
+    // Relative scope segments → same as glob deep, but always prefer pins.
+    let mut roots = roots_from_segments(index, &sq.segments);
+    if roots.is_empty() {
+        // Segment not in shallow index — try high-value + pins, still filter by segments.
+        roots = high_value_shallow_roots(index);
+    }
+    prepend_unique(&mut roots, &pinned);
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    job_from_roots(
+        roots,
+        sq.segments.clone(),
+        Some(sq.name_pat.clone()),
+        false,
+        deep,
+    )
+    .into_iter()
+    .collect()
+}
+
+fn plan_deep_absolute_glob(
+    query: &str,
+    results: &[SearchResult],
+    deep: DeepMode,
+    mounts: &[MountInfo],
+) -> Vec<DeepJob> {
+    if index_is_strong(results) || results.len() >= FILE_RESULT_LIMIT {
+        // still allow absolute deep? original: return if strong OR full
+        return Vec::new();
+    }
+    let expanded = strip_double_star_components(&expand_path_query(query, mounts));
+    let (dir, pat) = split_glob_path(&expanded);
+    let pat_l = pat.to_lowercase();
+    if pat.is_empty() {
+        return Vec::new();
+    }
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    // Broad extension under absolute dir: original still deep-walks that dir.
+    job_from_roots(
+        vec![dir],
+        Vec::new(),
+        if pat_l.is_empty() {
+            None
+        } else {
+            Some(pat_l)
+        },
+        false,
+        deep,
+    )
+    .into_iter()
+    .collect()
+}
+
+
 /// True for path segments, globs, or extension shorthand (e.g. `foo/bar`, `*.md`, `.rs`).
 /// Used by the engine to force files-only mode (skip apps).
 pub fn is_path_glob_query(query: &str) -> bool {
@@ -2035,18 +2350,19 @@ fn score_name_only(item: &IndexedPath, q_lower: &str) -> Option<i64> {
 
 fn score_fuzzy(
     item: &IndexedPath,
-    q: &str,
+    _q: &str,
     q_lower: &str,
     matcher: &SkimMatcherV2,
     allow_path_fuzzy: bool,
 ) -> Option<i64> {
-    let score = if let Some(s) = matcher.fuzzy_match(&item.name, q) {
+    // Prefer pre-lowercased name (matcher is ignore_case; avoids re-folding).
+    let score = if let Some(s) = matcher.fuzzy_match(&item.name_lower, q_lower) {
         if s < 40 {
             return None;
         }
         5_000 + s
     } else if allow_path_fuzzy {
-        let s = matcher.fuzzy_match(&item.path_lower, q)?;
+        let s = matcher.fuzzy_match(&item.path_lower, q_lower)?;
         if s < 60 {
             return None;
         }

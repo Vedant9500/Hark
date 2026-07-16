@@ -545,6 +545,11 @@ impl ConfigStore {
         self.inner.read().unwrap().clone()
     }
 
+    /// Borrow config without cloning the full snapshot (hot paths).
+    pub fn with<R>(&self, f: impl FnOnce(&BlinkConfig) -> R) -> R {
+        f(&self.inner.read().unwrap())
+    }
+
     pub fn update<F: FnOnce(&mut BlinkConfig)>(&self, f: F) {
         {
             let mut g = self.inner.write().unwrap();

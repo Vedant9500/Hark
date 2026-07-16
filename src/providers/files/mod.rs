@@ -105,22 +105,55 @@ impl FileProvider {
             }
         }
 
-        let index = self.state.index.read().unwrap();
-        let cfg = self.state.config.get();
-        let mounts = self.state.mounts.read().unwrap();
-        let mut results = search::search_index(
-            &index,
-            query,
-            &cfg.index.path_style,
-            &mounts,
-            &cfg.index.exclude,
-            &self.matcher,
-            allow_fuzzy,
-            deep,
-            &cfg.index.deep_roots,
-        );
-        drop(mounts);
-        drop(index);
+        // Snapshot config/mounts without holding the index lock across disk walks.
+        let (path_style, excludes, deep_roots) = self.state.config.with(|cfg| {
+            (
+                cfg.index.path_style.clone(),
+                cfg.index.exclude.clone(),
+                cfg.index.deep_roots.clone(),
+            )
+        });
+        let mounts = self.state.mounts.read().unwrap().clone();
+
+        // Phase 1: index-only search under a short read lock (no WalkDir).
+        let (mut results, deep_jobs) = {
+            let index = self.state.index.read().unwrap();
+            let results = search::search_index(
+                &index,
+                query,
+                &path_style,
+                &mounts,
+                &excludes,
+                &self.matcher,
+                allow_fuzzy,
+                DeepMode::Skip,
+                &deep_roots,
+            );
+            let jobs = if deep != DeepMode::Skip {
+                search::plan_deep_jobs(
+                    &index,
+                    query,
+                    &results,
+                    deep,
+                    &deep_roots,
+                    &mounts,
+                )
+            } else {
+                Vec::new()
+            };
+            (results, jobs)
+        }; // index RwLock released before any live walk
+
+        // Phase 2: live deep walks without holding the index lock.
+        if !deep_jobs.is_empty() {
+            search::run_deep_jobs(
+                deep_jobs,
+                &path_style,
+                &mounts,
+                &excludes,
+                &mut results,
+            );
+        }
 
         if deep != DeepMode::Skip {
             // Store full file-result set so retypes / async re-runs skip the walk.
@@ -134,7 +167,7 @@ impl FileProvider {
 
     /// Whether async deep is worth scheduling for this query + current index hits.
     pub fn should_deep_search(&self, query: &str, index_results: &[SearchResult]) -> bool {
-        if self.live_cache.get(query).is_some() {
+        if self.live_cache.contains(query) {
             // Cache already has live hits; no need to re-walk.
             return false;
         }

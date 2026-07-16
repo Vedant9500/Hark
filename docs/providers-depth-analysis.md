@@ -1,7 +1,7 @@
 # Providers depth analysis — `src/providers`
 
 **Date:** 2026-07-16  
-**Status:** diagnosis; dead/footgun cleanup applied 2026-07-16  
+**Status:** diagnosis; dead/footgun cleanup + Phase 1 applied 2026-07-16  
 **Goal:** find inefficiencies, bugs, dead code, and optimizations so providers stay **fast on the search hot path**, light on CPU/IO when idle, and correct under concurrent UI + deep/translate workers — without dropping features.
 
 Related:
@@ -301,18 +301,18 @@ Largest module: path completions, globs, scoped `in`, soft folder hints, live de
 
 ### Phase 1 — Safe, high ROI (no UX change)
 
-1. **Release index lock before deep WalkDir** (P0.1).  
-2. **`LiveCache::contains`** for `should_deep_search` (P0.2).  
-3. Fuzzy on **`name_lower`** (P1.4).  
-4. **`resolve_id`** without per-app `format!` (P1.6).  
-5. Currency **normalize once** (P1.7).  
-6. Translate **one `cfg` clone** per public method chain if UI still multi-calls (or engine caches).  
+1. **Release index lock before deep WalkDir** (P0.1). ✅  
+2. **`LiveCache::contains`** for `should_deep_search` (P0.2). ✅  
+3. Fuzzy on **`name_lower`** (P1.4). ✅  
+4. **`resolve_id`** without per-app `format!` (P1.6). ✅ (dead-code pass)  
+5. Currency **normalize once** (P1.7). ✅  
+6. Translate hot checks use **`config.with`** / single `cfg` clone (P1.8). ✅  
 
 **Expected:** less jank when deep runs; slightly lower `iso_files` / retype CPU; no visual change.
 
 ### Phase 2 — Config & cache ownership
 
-1. `Arc<BlinkConfig>` or `with(|cfg|)` on hot paths (P1.1).  
+1. `Arc<BlinkConfig>` or full hot-path `with(|cfg|)` (P1.1) — **`ConfigStore::with` added**; files search already snapshots path_style/exclude/deep_roots without full clone thrash patterns still possible elsewhere.  
 2. Live cache stores `Arc<Vec<SearchResult>>` (P1.2).  
 3. Avoid double scoped parse (P1.3).  
 4. `ensure_fresh` skip mount discovery when config fingerprint unchanged (P1.9).  
@@ -360,13 +360,13 @@ Compare to post-fix baselines (~2k index, file `doc` ~60 µs, FX ~2 µs with
 
 | ID | Item | Effort | Impact | Risk |
 |----|------|--------|--------|------|
-| P0.1 | Drop index lock around deep walk | M | **High** (concurrent UX) | Medium — careful root snapshot |
-| P0.2 | LiveCache::contains | S | Medium | Low |
+| P0.1 | Drop index lock around deep walk | M | **High** (concurrent UX) | ✅ plan_deep_jobs + run unlocked |
+| P0.2 | LiveCache::contains | S | Medium | ✅ |
 | P1.1 | Config Arc / with | M | High (alloc) | Medium |
 | P1.2 | Arc live-cache hits | S–M | Medium | Low |
 | P1.3 | Scoped parse once | S–M | Low–Med | Low |
-| P1.4 | Fuzzy name_lower | S | Low–Med | Low |
-| P1.6–P1.8 | Small alloc cleanups | S | Low | Low |
+| P1.4 | Fuzzy name_lower | S | Low–Med | ✅ |
+| P1.6–P1.8 | Small alloc cleanups | S | Low | ✅ resolve_id, currency, translate with |
 | P1.9 | ensure_fresh mounts | S | Low (periodic) | Low |
 | P2 HTTP client | M | Battery / worker | Medium (deps) |
 | Dead code cleanup | S | Hygiene | None |
