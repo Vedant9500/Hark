@@ -1,7 +1,8 @@
-//! Hot path set for free-text file search (Batch A).
+//! Hot path set for free-text file search.
 //!
-//! Built from usage `path:` ids ∩ current index. Batch A still runs the full
-//! index scan after scoring the hot subset (no short-circuit yet — Batch B).
+//! Built from usage `path:` ids ∩ current index (cap [`HOT_CAP`]).
+//! Free-text scoring may short-circuit on a strong hot hit when the query is
+//! long enough; short queries use the full index only (baseline cost).
 //!
 //! Design: `docs/hot-path-file-search.md`.
 
@@ -12,24 +13,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-/// Default number of frequently opened paths kept for free-text phase-1.
+/// Frequently opened paths kept for free-text hot scoring.
 pub const HOT_CAP: usize = 64;
 
 /// Indices into the current in-memory file index (valid until next index rebuild).
 #[derive(Debug, Clone, Default)]
 pub struct HotSet {
-    /// Index positions of hot paths, frecency order (best first).
+    /// Index positions, frecency order (best first).
     indices: Vec<usize>,
 }
 
-impl HotSet {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn is_empty(&self) -> bool {
-        self.indices.is_empty()
-    }
-}
-
-/// Thread-safe hot set + dirty flag for rebuild after opens / reindex.
+/// Thread-safe hot set + dirty flag (rebuild after opens / reindex).
 pub struct HotPaths {
     usage: Arc<UsageStore>,
     set: RwLock<HotSet>,
@@ -57,7 +51,7 @@ impl HotPaths {
         self.rebuild(index);
     }
 
-    /// Force rebuild (after index swap or explicit refresh).
+    /// Force rebuild (after index swap).
     pub fn rebuild(&self, index: &[IndexedPath]) {
         // Oversample: some usage paths may not be in the (shallow) index.
         let wanted = self.usage.top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
@@ -70,6 +64,7 @@ impl HotPaths {
         self.set.read().unwrap().indices.clone()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.set.read().unwrap().indices.len()
     }
@@ -97,7 +92,7 @@ pub(crate) fn build_hot_set(
         if indices.len() >= cap {
             break;
         }
-        let key = normalize_path_key(p);
+        let key = PathBuf::from(p).to_string_lossy().to_lowercase();
         let Some(&idx) = by_path.get(&key) else {
             continue;
         };
@@ -107,10 +102,6 @@ pub(crate) fn build_hot_set(
     }
 
     HotSet { indices }
-}
-
-fn normalize_path_key(p: &str) -> String {
-    PathBuf::from(p).to_string_lossy().to_lowercase()
 }
 
 #[cfg(test)]
@@ -149,14 +140,14 @@ mod hot_tests {
             "/home/u/b.txt".into(),
         ];
         let set = build_hot_set(&index, &wanted, 2);
-        assert_eq!(set.indices, vec![2, 0]); // c then a
+        assert_eq!(set.indices, vec![2, 0]);
     }
 
     #[test]
     fn empty_inputs() {
-        assert!(build_hot_set(&[], &["/x".into()], 64).is_empty());
+        assert!(build_hot_set(&[], &["/x".into()], 64).indices.is_empty());
         let index = vec![item("/x", "x")];
-        assert!(build_hot_set(&index, &[], 64).is_empty());
+        assert!(build_hot_set(&index, &[], 64).indices.is_empty());
     }
 
     #[test]

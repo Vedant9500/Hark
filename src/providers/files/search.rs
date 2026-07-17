@@ -16,6 +16,11 @@ use walkdir::WalkDir;
 const FILE_RESULT_LIMIT: usize = 25;
 /// Once top-K is full of substring-or-better hits, skip fuzzy entirely.
 const STRONG_SCORE: i64 = 15_000;
+/// Batch B: skip full free-text scan when best hot name score reaches prefix band.
+const HOT_SKIP_FULL_SCORE: i64 = 30_000;
+/// Min query length (Unicode chars) for hot short-circuit.
+/// Short prefixes (`doc`, `src`) stay full-scan so cold siblings still appear.
+const HOT_SKIP_MIN_QUERY_LEN: usize = 4;
 /// Exact/prefix band — index already answered; no live walk.
 const DEEP_SKIP_IF_INDEX_SCORE: i64 = 30_000;
 /// Live walk budgets — sync (bench) stays tight; async UI worker can go deeper.
@@ -1015,8 +1020,6 @@ pub(crate) fn search_index(
         // No index yet — still allow live deep when pinned roots exist.
         Vec::new()
     } else {
-        // Free-text: Batch A scores the hot subset first, then the full index.
-        // No short-circuit yet — cold paths always participate (parity with today).
         score_free_text_full(index, q, &q_lower, matcher, allow_fuzzy, path_style, mounts, hot_indices)
     };
 
@@ -2239,8 +2242,10 @@ fn split_glob_path(path: &Path) -> (PathBuf, String) {
 }
 
 
-/// Free-text top-K over the full index, optionally seeding the heap from `hot_indices` first.
-/// Batch A: hot-first scoring only; full scan always runs afterward.
+/// Free-text top-K over the index.
+///
+/// - Short queries (< [`HOT_SKIP_MIN_QUERY_LEN`]): full scan only (baseline cost; discovery).
+/// - Longer queries with a hot set: try hot first; skip full scan if best hot ≥ prefix band.
 fn score_free_text_full(
     index: &[IndexedPath],
     q: &str,
@@ -2251,11 +2256,18 @@ fn score_free_text_full(
     mounts: &[MountInfo],
     hot_indices: &[usize],
 ) -> Vec<SearchResult> {
+    let q_chars = q_lower.chars().count();
+    let use_hot = q_chars >= HOT_SKIP_MIN_QUERY_LEN && !hot_indices.is_empty();
+
+    if !use_hot {
+        return score_free_text_baseline(index, q, q_lower, matcher, allow_fuzzy, path_style, mounts);
+    }
+
     let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
         BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
-    let mut seen = std::collections::HashSet::with_capacity(FILE_RESULT_LIMIT * 2);
+    let mut seen = std::collections::HashSet::with_capacity(hot_indices.len().max(8));
+    let mut best_hot: i64 = 0;
 
-    // Phase 1 — hot set (frecency order; same name-only scoring as full pass).
     for &idx in hot_indices {
         let Some(item) = index.get(idx) else {
             continue;
@@ -2263,65 +2275,115 @@ fn score_free_text_full(
         let Some(score) = score_name_only(item, q_lower) else {
             continue;
         };
+        if score > best_hot {
+            best_hot = score;
+        }
         if seen.insert(idx) {
             push_heap(&mut heap, score, item.depth, idx);
         }
     }
 
-    // Phase 2 — full index name match (includes hot again; seen skips re-push).
+    if best_hot >= HOT_SKIP_FULL_SCORE {
+        return heap_to_results(heap, index, path_style, mounts);
+    }
+
+    // Weak/empty hot — full scan (skip idxs already in heap via `seen`).
     for (idx, item) in index.iter().enumerate() {
         if seen.contains(&idx) {
-            // Still allow a better score from full pass if hot used a weaker path —
-            // name_only is deterministic, so re-score is identical; skip.
             continue;
         }
         let Some(score) = score_name_only(item, q_lower) else {
             continue;
         };
-        seen.insert(idx);
         push_heap(&mut heap, score, item.depth, idx);
     }
 
+    finish_free_text_fuzzy(
+        &mut heap,
+        index,
+        q,
+        q_lower,
+        matcher,
+        allow_fuzzy,
+    );
+    heap_to_results(heap, index, path_style, mounts)
+}
+
+/// Pre-hot free-text path: one name-only pass + optional fuzzy (no hot / HashSet).
+fn score_free_text_baseline(
+    index: &[IndexedPath],
+    q: &str,
+    q_lower: &str,
+    matcher: &SkimMatcherV2,
+    allow_fuzzy: bool,
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+) -> Vec<SearchResult> {
+    let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
+        BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
+
+    for (idx, item) in index.iter().enumerate() {
+        let Some(score) = score_name_only(item, q_lower) else {
+            continue;
+        };
+        push_heap(&mut heap, score, item.depth, idx);
+    }
+
+    finish_free_text_fuzzy(&mut heap, index, q, q_lower, matcher, allow_fuzzy);
+    heap_to_results(heap, index, path_style, mounts)
+}
+
+fn finish_free_text_fuzzy(
+    heap: &mut BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>>,
+    index: &[IndexedPath],
+    q: &str,
+    q_lower: &str,
+    matcher: &SkimMatcherV2,
+    allow_fuzzy: bool,
+) {
     let strong_full = heap.len() >= FILE_RESULT_LIMIT
         && heap
             .peek()
             .map(|Reverse((s, _, _))| *s >= STRONG_SCORE)
             .unwrap_or(false);
-
-    // Pass 2: fuzzy only when top-K is weak / incomplete and caller allows it.
-    if allow_fuzzy && !strong_full {
-        let first = q_lower.chars().next();
-        let mut fuzzy_left = 500usize;
-        for (idx, item) in index.iter().enumerate() {
-            if fuzzy_left == 0 {
-                break;
-            }
-            // Already have a non-fuzzy name hit in the heap pipeline for this idx.
-            if item.name_lower.contains(q_lower) {
-                continue;
-            }
-            if let Some(ch) = first {
-                if !item.name_lower.contains(ch) && !item.path_lower.contains(ch) {
-                    continue;
-                }
-            }
-            let allow_path_fuzzy = match heap.peek() {
-                Some(Reverse((min_score, _, _)))
-                    if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE =>
-                {
-                    false
-                }
-                _ => true,
-            };
-            fuzzy_left -= 1;
-            let Some(score) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
-                continue;
-            };
-            push_heap(&mut heap, score, item.depth, idx);
-        }
+    if !allow_fuzzy || strong_full {
+        return;
     }
 
-    heap_to_results(heap, index, path_style, mounts)
+    let first = q_lower.chars().next();
+    let mut fuzzy_left = 500usize;
+    for (idx, item) in index.iter().enumerate() {
+        if fuzzy_left == 0 {
+            break;
+        }
+        if item.name_lower.contains(q_lower) {
+            continue;
+        }
+        if let Some(ch) = first {
+            if !item.name_lower.contains(ch) && !item.path_lower.contains(ch) {
+                continue;
+            }
+        }
+        let allow_path_fuzzy = match heap.peek() {
+            Some(Reverse((min_score, _, _)))
+                if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE =>
+            {
+                false
+            }
+            _ => true,
+        };
+        fuzzy_left -= 1;
+        let Some(score) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
+            continue;
+        };
+        push_heap(heap, score, item.depth, idx);
+    }
+}
+
+#[cfg(test)]
+#[inline]
+fn hot_strong_enough(best_hot: i64, query_chars: usize) -> bool {
+    query_chars >= HOT_SKIP_MIN_QUERY_LEN && best_hot >= HOT_SKIP_FULL_SCORE
 }
 
 fn push_heap(
@@ -2999,4 +3061,22 @@ fn path_completions(query: &str, style: &PathStyle, mounts: &[MountInfo]) -> Vec
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     results
+}
+
+#[cfg(test)]
+mod hot_skip_tests {
+    use super::{hot_strong_enough, HOT_SKIP_FULL_SCORE, HOT_SKIP_MIN_QUERY_LEN};
+
+    #[test]
+    fn hot_strong_enough_gate() {
+        assert!(hot_strong_enough(HOT_SKIP_FULL_SCORE, HOT_SKIP_MIN_QUERY_LEN));
+        assert!(hot_strong_enough(50_000, 5));
+        // Weak contains-only (~15k band) must fall through to full index.
+        assert!(!hot_strong_enough(15_000, 5));
+        assert!(!hot_strong_enough(HOT_SKIP_FULL_SCORE - 1, 5));
+        // Short / broad queries always full scan (discovery).
+        assert!(!hot_strong_enough(50_000, 1));
+        assert!(!hot_strong_enough(50_000, 3)); // e.g. "doc"
+        assert!(!hot_strong_enough(0, 10));
+    }
 }

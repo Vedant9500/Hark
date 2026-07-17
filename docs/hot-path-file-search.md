@@ -1,7 +1,7 @@
 # Hot-path file search — design note
 
 **Date:** 2026-07-17  
-**Status:** design; **Batch A implemented 2026-07-17** (hot set + seed scoring; no short-circuit yet)  
+**Status:** design; **Batch A+B + polish 2026-07-17** (hot set; skip full free-text when best hot ≥ 30k and len ≥ 4; short queries = baseline full scan)  
 **Goal:** make **regular** free-text file searches faster by scanning a small *hot set* of paths the user actually opens, while **cold / rare / structural** queries keep today’s full-index cost and correctness.
 
 Related:
@@ -349,9 +349,9 @@ Not required for MVP (constants + compile-time caps are enough).
 - [x] `HotSet` on `FileProvider`: rebuild from usage ∩ index  
 - [x] Rebuild on index ready + usage dirty (next search / reindex)  
 - [x] Free-text: score hot first with shared scoring helpers (Batch A; full scan always follows)  
-- [ ] Skip full index only if `best_hot >= 30_000` (tunable)  
-- [ ] Path/glob/scope never use hot short-circuit  
-- [ ] Unit tests: empty hot; strong hot skip; weak hot falls through; stale path dropped  
+- [x] Skip full index only if `best_hot >= 30_000` (tunable)  
+- [x] Path/glob/scope never use hot short-circuit  
+- [x] Unit tests: hot gate; build_hot_set order/cap/case (stale dropped via miss)  
 - [ ] Bench: `file_hot` / `file_cold` + document in `docs/bench/`  
 - [ ] Manual: open same file 5×, type unique name fragment → fast path; type rare file name → still found  
 
@@ -417,3 +417,43 @@ cargo test hot_tests
 cargo build --release --features "layer-shell,bench"
 ./target/release/blink --bench   # search medians should stay flat vs core audit end
 ```
+
+---
+
+## 16. Batch B status (2026-07-17)
+
+**Shipped:** free-text short-circuit when hot name score is strong.
+
+| Constant | Value | Meaning |
+|----------|------:|---------|
+| `HOT_SKIP_FULL_SCORE` | 30_000 | Prefix / strong name band (matches app/path bands) |
+| `HOT_SKIP_MIN_QUERY_LEN` | **4** | short prefixes (`doc`, `src`) full-scan for discovery |
+
+**Flow after Batch B:**
+
+```
+hot name-only score → best_hot
+  if query_len >= 4 && best_hot >= 30_000
+    → return top-K from hot only
+  else
+    → full index name-only (+ fuzzy if weak) as before
+```
+
+Path / glob / scope / absolute: **unchanged** (never enter hot short-circuit).
+
+**Tests:** `cargo test hot_skip` · `cargo test hot_tests`
+
+**Bench:** seed usage by opening a frequent path, then compare a query that exact/prefix-matches its name vs a cold name. Expect hot path faster; cold within noise of pre-B.
+
+---
+
+## 17. Polish (2026-07-17)
+
+| Change | Why |
+|--------|-----|
+| Short queries (`len < 4`) use **baseline** free-text only | No hot seed / HashSet overhead on `doc`-style discovery |
+| Long queries try hot first; skip full if `best ≥ 30k` | Fast path for frequent named files |
+| Weak long hot still full-scans | Cold exact matches still found |
+| Shared `finish_free_text_fuzzy` | Less duplication |
+
+**Latency intent:** short free-text ≈ pre-hot baseline; long strong-hot ≪ full index.

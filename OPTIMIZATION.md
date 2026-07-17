@@ -437,6 +437,8 @@ Rebuild when: TTL > 30m **or** fingerprint ≠ current (roots / depth / excludes
 | 2026-07-17 | **Core #10+#11+#12:** ExcludeSet; search dedup/no fileish clone; shared deep-root + docs 45m | rebuild 20→18ms; search flat; `docs/bench/core-10-12-2026-07-17.md` |
 | 2026-07-17 | **Core audit rollup #1–#12** | Combined tables: `docs/bench/core-audit-2026-07-17-summary.md` |
 | 2026-07-17 | **Hot-path Batch A:** usage hot set + free-text seed (no short-circuit) | `docs/hot-path-file-search.md` §15 · `docs/bench/hot-path-batch-a-2026-07-17.md` |
+| 2026-07-17 | **Hot-path Batch B:** skip full free-text when best hot ≥ 30k | `docs/hot-path-file-search.md` §16 · `docs/bench/hot-path-batch-b-2026-07-17.md` |
+| 2026-07-17 | **Hot-path polish:** short queries = baseline full scan (no hot overhead) | `docs/hot-path-file-search.md` §17 · `docs/bench/hot-path-polish-2026-07-17.txt` |
 
 ### 2026-07-14 — E track (index / IO)
 
