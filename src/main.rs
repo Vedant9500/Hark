@@ -104,7 +104,8 @@ fn run_search_once(query: &str) {
     }
 
     println!("blink --search {q:?}");
-    let engine = Engine::new();
+    let engine = Engine::new_headless();
+    engine.spawn_warm();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let p = engine.index_progress();
@@ -162,7 +163,9 @@ fn run_bench() {
     let cpu_before = proc_cpu_self();
     let wall0 = Instant::now();
 
-    let engine = Engine::new();
+    // Headless: no 45m periodic refresh thread.
+    let engine = Engine::new_headless();
+    engine.spawn_warm();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

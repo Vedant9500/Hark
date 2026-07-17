@@ -91,12 +91,7 @@ pub(crate) fn plan_deep_jobs(
         return Vec::new();
     }
 
-    let q = q
-        .strip_prefix("f ")
-        .or_else(|| q.strip_prefix("file "))
-        .or_else(|| q.strip_prefix("folder "))
-        .unwrap_or(q)
-        .trim();
+    let q = strip_file_mode_prefix(q).trim();
     if q.is_empty() {
         return Vec::new();
     }
@@ -365,16 +360,32 @@ fn plan_deep_absolute_glob(
 }
 
 
+/// Strip optional `f`/`file`/`folder` mode prefix (ASCII case-insensitive).
+/// Requires whitespace after the keyword so `firefox` is unchanged.
+pub(crate) fn strip_file_mode_prefix(q: &str) -> &str {
+    let t = q.trim_start();
+    let bytes = t.as_bytes();
+    for pref in ["folder", "file", "f"] {
+        let pb = pref.as_bytes();
+        if bytes.len() >= pb.len() && bytes[..pb.len()].eq_ignore_ascii_case(pb) {
+            let rest = &t[pb.len()..];
+            if rest.is_empty() {
+                return rest;
+            }
+            let b0 = rest.as_bytes()[0];
+            if b0 == b' ' || b0 == b'\t' {
+                return rest.trim_start();
+            }
+        }
+    }
+    t
+}
+
 /// True for path segments, globs, or extension shorthand (e.g. `foo/bar`, `*.md`, `.rs`).
 /// Used by the engine to force files-only mode (skip apps).
 pub fn is_path_glob_query(query: &str) -> bool {
     let raw = query.trim();
-    let q = raw
-        .strip_prefix("f ")
-        .or_else(|| raw.strip_prefix("file "))
-        .or_else(|| raw.strip_prefix("folder "))
-        .unwrap_or(raw)
-        .trim();
+    let q = strip_file_mode_prefix(raw).trim();
     if q.is_empty() {
         return false;
     }
@@ -409,12 +420,7 @@ pub fn is_path_glob_query(query: &str) -> bool {
 /// (no index needed — extension / glob / path-like scope).
 pub fn is_scoped_file_query(query: &str) -> bool {
     let raw = query.trim();
-    let q = raw
-        .strip_prefix("f ")
-        .or_else(|| raw.strip_prefix("file "))
-        .or_else(|| raw.strip_prefix("folder "))
-        .unwrap_or(raw)
-        .trim();
+    let q = strip_file_mode_prefix(raw).trim();
     parse_scoped_query(q, None).is_some() || parse_scope_hint_query(q).is_some()
 }
 
@@ -945,12 +951,7 @@ pub(crate) fn search_index(
         return path_completions(q, path_style, mounts);
     }
 
-    let q = q
-        .strip_prefix("f ")
-        .or_else(|| q.strip_prefix("file "))
-        .or_else(|| q.strip_prefix("folder "))
-        .unwrap_or(q)
-        .trim();
+    let q = strip_file_mode_prefix(q).trim();
     if q.is_empty() {
         return Vec::new();
     }
@@ -1099,12 +1100,7 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
     {
         return false;
     }
-    let q = raw
-        .strip_prefix("f ")
-        .or_else(|| raw.strip_prefix("file "))
-        .or_else(|| raw.strip_prefix("folder "))
-        .unwrap_or(raw)
-        .trim();
+    let q = strip_file_mode_prefix(raw).trim();
     if q.is_empty() {
         return false;
     }

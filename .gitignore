@@ -40,6 +40,7 @@ Desktop.ini
 *.tmp
 *.temp
 .cache/
+docs/bench
 
 # Env / secrets (if added later)
 .env

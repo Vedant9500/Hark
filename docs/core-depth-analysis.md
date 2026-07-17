@@ -1,7 +1,7 @@
 # Core depth analysis — `src` (engine, config, main, usage, ipc)
 
 **Date:** 2026-07-17  
-**Status:** diagnosis; **#1–#4 applied 2026-07-17** (bench: `docs/bench/core-config-2026-07-17.md`, `docs/bench/core-3-4-2026-07-17.md`)  
+**Status:** diagnosis; **#1–#7 applied 2026-07-17** (bench under `docs/bench/core-*.md`)  
 **Scope:** `src/main.rs`, `src/engine.rs`, `src/config.rs`, `src/usage.rs`, `src/ipc.rs`  
 **Skipped (already analyzed):** `src/providers/**`, `src/ui/**`  
 **Deprioritized:** `src/theme/**` (not critical for this pass)
@@ -141,7 +141,7 @@ if target.contains("EFI") || target == "/boot" || target.ends_with("/boot") {
 
 ---
 
-### 3.4 `force_files` is case-sensitive; settings match is not
+### 3.4 `force_files` is case-sensitive; settings match is not ✅ **fixed 2026-07-17**
 
 In `Engine::search` and again in `should_deep_search`:
 
@@ -187,7 +187,7 @@ Early hotkeys after `blink --daemon` (before first activate builds the window) c
 
 ## 4. P1 — Efficiency (keep Blink light)
 
-### 4.1 `UsageStore::record` is sync, pretty, unbounded
+### 4.1 `UsageStore::record` is sync, pretty, unbounded ✅ **fixed 2026-07-17**
 
 | Issue | Detail |
 |-------|--------|
@@ -205,7 +205,7 @@ Early hotkeys after `blink --daemon` (before first activate builds the window) c
 
 ---
 
-### 4.2 `Engine::new` always spawns warm + 45‑minute periodic threads
+### 4.2 `Engine::new` always spawns warm + 45‑minute periodic threads ✅ **fixed 2026-07-17** (CLI uses `new_headless`)
 
 Even for `blink --search` / `blink --bench`:
 
@@ -363,9 +363,9 @@ Can disagree when `XDG_CACHE_HOME` is set — bench should only use the engine h
 | 2 | `ConfigStore::update` save-only-if-changed | Disk/CPU idle | **done** |
 | 3 | Fix EFI/`/boot` skip | Correctness | **done** |
 | 4 | `resolve_id` → direct app resolve | Empty-state latency | **done** |
-| 5 | Extract `is_force_files_query` + case-insensitivity | Correctness + DRY | S |
-| 6 | Usage: debounce + compact + cap entries | I/O + RAM long-term | M |
-| 7 | Headless engine without periodic threads | CLI weight | S |
+| 5 | Extract `is_force_files_query` + case-insensitivity | Correctness + DRY | **done** |
+| 6 | Usage: debounce + compact + cap entries | I/O + RAM long-term | **done** |
+| 7 | Headless engine without periodic threads | CLI weight | **done** |
 | 8 | IPC pending-toggle + stale-socket recovery | Reliability | M |
 | 9 | Gate `--bench` behind feature / separate bin | Binary size | M |
 | 10 | `is_excluded` → HashSet name lookup | Index/deep speed | M |
@@ -381,9 +381,9 @@ After items **1–8** especially:
 - [x] Removing an exclude **stays** removed after restart  *(v2 one-shot seed)*  
 - [x] Opening an already-pinned project **does not** rewrite `config.json`  *(`update` PartialEq)*  
 - [ ] Empty launcher open does **not** fuzzy-scan apps ~20×  
-- [ ] Usage file doesn’t grow without bound; saves are batched  
+- [x] Usage file doesn’t grow without bound; saves are batched  *(cap 500 + 2s debounce)*  
 - [x] Daemon idle: no surprise **config** writes from no-op updates  *(usage debounce still open)*  
-- [ ] `blink --search` doesn’t arm a 45‑minute background loop (headless)  
+- [x] `blink --search` doesn’t arm a 45‑minute background loop  *(`new_headless`)*  
 - [ ] Hotkey during early daemon start still toggles once UI is ready  
 
 **Measure:** `blink --bench` before/after for search medians (should stay flat or improve slightly). Watch RSS / disk writes under `inotifywait` on `~/.config/blink` and `~/.local/state/blink` during open/promote/settings.

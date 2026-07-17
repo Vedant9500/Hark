@@ -20,7 +20,17 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Full daemon engine: warm apps/index on a bg thread + 45m periodic refresh.
     pub fn new() -> Self {
+        let engine = Self::new_headless();
+        engine.spawn_warm();
+        engine.spawn_periodic_refresh();
+        engine
+    }
+
+    /// CLI / bench: same providers, **no** eternal periodic thread.
+    /// Still warms apps + index once on a background thread (needed for search).
+    pub fn new_headless() -> Self {
         let config = Arc::new(ConfigStore::load());
         let usage = Arc::new(UsageStore::load());
         let apps = Arc::new(AppProvider::new_empty());
@@ -28,28 +38,9 @@ impl Engine {
         let calc = Arc::new(CalcProvider::new());
         let translate = Arc::new(TranslateProvider::new(config.clone()));
 
-        // Warm apps + file index off the UI thread (disk only; no network).
-        let apps_bg = apps.clone();
-        let files_bg = files.clone();
-        thread::spawn(move || {
-            apps_bg.reload();
-            files_bg.rebuild_index();
-        });
-
         // Currency rates: use on-disk cache only at boot. Network fetch is deferred
         // until an FX conversion is actually requested (see FxStore::convert) so
         // idle daemons do not wake radios / burn CPU on curl.
-
-        // Periodic refresh: apps always light-scan; files only rebuild when
-        // TTL/fingerprint say so (ensure_fresh). Interval is long to limit
-        // battery cost — freshness still happens on Settings → Rebuild.
-        let files_periodic = files.clone();
-        let apps_periodic = apps.clone();
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(45 * 60));
-            apps_periodic.reload();
-            files_periodic.rebuild_index();
-        });
 
         Self {
             apps,
@@ -59,6 +50,27 @@ impl Engine {
             usage,
             config,
         }
+    }
+
+    /// One-shot warm (apps + file index). Used by headless CLI and daemon boot.
+    pub fn spawn_warm(&self) {
+        let apps_bg = self.apps.clone();
+        let files_bg = self.files.clone();
+        thread::spawn(move || {
+            apps_bg.reload();
+            files_bg.rebuild_index();
+        });
+    }
+
+    /// Long-lived 45m apps reload + files `ensure_fresh` (daemon only).
+    pub fn spawn_periodic_refresh(&self) {
+        let files_periodic = self.files.clone();
+        let apps_periodic = self.apps.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(45 * 60));
+            apps_periodic.reload();
+            files_periodic.rebuild_index();
+        });
     }
 
     pub fn config(&self) -> Arc<ConfigStore> {
@@ -163,16 +175,7 @@ impl Engine {
             results.extend(tr);
         }
 
-        let force_files = q.starts_with("f ")
-            || q.starts_with("file ")
-            || q.starts_with("folder ")
-            || q.starts_with('/')
-            || q.starts_with("~/")
-            || q.starts_with("./")
-            || q.starts_with('.')
-            || crate::providers::files::is_path_glob_query(q)
-            // `name in scope` (incl. bare folder scopes known to the index).
-            || self.files.is_scoped_query(q);
+        let force_files = is_force_files_query(q, &self.files);
 
         // Skip apps when calc already answered (unless path/file/glob).
         // UI path: DeepMode::Skip — live deep runs async via `search_files_deep`.
@@ -365,15 +368,7 @@ impl Engine {
             .iter()
             .any(|r| matches!(r.kind, ResultKind::Calc | ResultKind::Conversion));
         if calc_hit {
-            let force_files = query.starts_with("f ")
-                || query.starts_with("file ")
-                || query.starts_with("folder ")
-                || query.starts_with('/')
-                || query.starts_with("~/")
-                || query.starts_with("./")
-                || query.starts_with('.')
-                || crate::providers::files::is_path_glob_query(query)
-                || self.files.is_scoped_query(query);
+            let force_files = is_force_files_query(query, &self.files);
             if !force_files {
                 return false;
             }
@@ -549,6 +544,58 @@ mod deep_root_tests {
     }
 }
 
+/// Path / file-forced queries: case-insensitive `f`/`file`/`folder` prefixes,
+/// absolute/home/dot paths, globs, and scoped (`name in folder`) forms.
+fn is_force_files_query(q: &str, files: &FileProvider) -> bool {
+    let t = q.trim_start();
+    if t.is_empty() {
+        return false;
+    }
+    // Path-shaped (keep case: `/`, `~/`, `./`, `.ext` / `.hidden`).
+    if t.starts_with('/')
+        || t.starts_with("~/")
+        || t.starts_with("./")
+        || t.starts_with('.')
+    {
+        return true;
+    }
+    // Prefix modes: `f foo`, `File foo`, `FOLDER bar` (ASCII-insensitive).
+    if let Some(rest) = strip_force_files_prefix(t) {
+        // Bare `f` / `file` / `folder` still count as force (browse mode).
+        let _ = rest;
+        return true;
+    }
+    if crate::providers::files::is_path_glob_query(t) {
+        return true;
+    }
+    // `name in scope` (incl. bare folder scopes known to the index).
+    files.is_scoped_query(t)
+}
+
+/// If `q` starts with `f`/`file`/`folder` + whitespace (ASCII case-insensitive),
+/// return the remainder (may be empty).
+fn strip_force_files_prefix(q: &str) -> Option<&str> {
+    let bytes = q.as_bytes();
+    // Match longest prefix first.
+    for pref in ["folder", "file", "f"] {
+        let pb = pref.as_bytes();
+        if bytes.len() >= pb.len()
+            && bytes[..pb.len()].eq_ignore_ascii_case(pb)
+        {
+            let rest = &q[pb.len()..];
+            if rest.is_empty() {
+                return Some(rest);
+            }
+            // Require whitespace after the keyword so `firefox` is not force-files.
+            let b0 = rest.as_bytes()[0];
+            if b0 == b' ' || b0 == b'\t' {
+                return Some(rest.trim_start());
+            }
+        }
+    }
+    None
+}
+
 fn kind_rank(k: ResultKind) -> u8 {
     match k {
         ResultKind::Calc | ResultKind::Conversion => 0,
@@ -592,5 +639,25 @@ fn copy_to_clipboard(text: &str) {
             let _ = stdin.write_all(text.as_bytes());
         }
         let _ = child.wait();
+    }
+}
+
+
+#[cfg(test)]
+mod force_files_tests {
+    use super::strip_force_files_prefix;
+
+    #[test]
+    fn prefix_case_insensitive() {
+        assert!(strip_force_files_prefix("f doc").is_some());
+        assert!(strip_force_files_prefix("F doc").is_some());
+        assert!(strip_force_files_prefix("File doc").is_some());
+        assert!(strip_force_files_prefix("FILE doc").is_some());
+        assert!(strip_force_files_prefix("folder x").is_some());
+        assert!(strip_force_files_prefix("Folder x").is_some());
+        // Must not steal normal app names.
+        assert!(strip_force_files_prefix("firefox").is_none());
+        assert!(strip_force_files_prefix("files").is_none());
+        assert!(strip_force_files_prefix("folderish").is_none());
     }
 }
