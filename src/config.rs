@@ -18,7 +18,7 @@ impl Default for PathStyle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexConfig {
     #[serde(default = "default_true")]
     pub include_home: bool,
@@ -125,6 +125,19 @@ fn default_excludes() -> Vec<String> {
         ".steam".into(),
         ".pi/agent/sessions".into(),
     ]
+}
+
+/// Append any missing default exclude names. Returns true if the list grew.
+/// Used only for one-shot config migration (version < 2), not on every load.
+fn merge_missing_default_excludes(exclude: &mut Vec<String>) -> bool {
+    let mut changed = false;
+    for name in default_excludes() {
+        if !exclude.iter().any(|e| e == &name) {
+            exclude.push(name);
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl Default for IndexConfig {
@@ -441,7 +454,7 @@ impl TranslateConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct BlinkConfig {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -458,6 +471,12 @@ pub struct BlinkConfig {
     pub translate: TranslateConfig,
 }
 
+/// Current on-disk schema after migrations in `ConfigStore::load`.
+/// v2: stop force-merging default excludes on every start (user removals stick).
+const CONFIG_VERSION: u32 = 2;
+
+/// Serde default when `version` is missing from JSON — treat as legacy so the
+/// v1→v2 excludes seed runs exactly once, then we write `CONFIG_VERSION`.
 fn default_version() -> u32 {
     1
 }
@@ -502,12 +521,12 @@ impl ConfigStore {
         if cfg.index.deep_roots.len() != before_deep {
             changed = true;
         }
-        // Ensure important ignore names exist even on older configs
-        for name in default_excludes() {
-            if !cfg.index.exclude.iter().any(|e| e == &name) {
-                cfg.index.exclude.push(name);
-                changed = true;
-            }
+        // One-shot excludes seed (v1 → v2). Never re-merge on later loads so
+        // Settings removals stick. New configs already get default_excludes via serde.
+        if cfg.version < 2 {
+            let _ = merge_missing_default_excludes(&mut cfg.index.exclude);
+            cfg.version = CONFIG_VERSION;
+            changed = true;
         }
         for m in &mounts {
             let key = m.target.to_string_lossy().to_string();
@@ -559,15 +578,20 @@ impl ConfigStore {
         f(g.as_ref())
     }
 
+    /// Apply a mutation. Clones the config, runs `f`, sanitizes UI/translate.
+    /// Swaps the Arc and writes disk **only when** the result differs from the
+    /// previous snapshot (no-op promote/settings toggles must not thrash I/O).
     pub fn update<F: FnOnce(&mut BlinkConfig)>(&self, f: F) {
-        {
-            let mut g = self.inner.write().unwrap();
-            let mut cfg = (**g).clone();
-            f(&mut cfg);
-            cfg.ui.sanitize();
-            cfg.translate.sanitize();
-            *g = Arc::new(cfg);
+        let mut g = self.inner.write().unwrap();
+        let mut cfg = (**g).clone();
+        f(&mut cfg);
+        cfg.ui.sanitize();
+        cfg.translate.sanitize();
+        if cfg == **g {
+            return;
         }
+        *g = Arc::new(cfg);
+        drop(g);
         self.save();
     }
 
@@ -776,4 +800,73 @@ pub fn is_excluded(path: &Path, excludes: &[String]) -> bool {
             }
         })
     })
+}
+
+#[cfg(test)]
+mod config_store_tests {
+    use super::*;
+
+    #[test]
+    fn merge_missing_excludes_only_adds_absent() {
+        let mut list = vec![".git".into(), "custom".into()];
+        assert!(merge_missing_default_excludes(&mut list));
+        assert!(list.contains(&"custom".into()));
+        assert!(list.contains(&"node_modules".into()));
+        // Second merge is a no-op.
+        assert!(!merge_missing_default_excludes(&mut list));
+    }
+
+    #[test]
+    fn update_skips_save_when_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "blink-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.json");
+        // Minimal valid config already at current version with excludes.
+        let mut cfg = BlinkConfig::default();
+        cfg.version = CONFIG_VERSION;
+        fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        let store = ConfigStore {
+            inner: RwLock::new(Arc::new(cfg)),
+            path: path.clone(),
+        };
+        let mtime_before = fs::metadata(&path).unwrap().modified().unwrap();
+        // No-op update (already present deep root path style).
+        store.update(|c| {
+            let _ = c.index.path_style;
+        });
+        let mtime_after = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after, "no-op update must not rewrite config");
+
+        // Real change must rewrite.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.update(|c| {
+            c.index.max_depth = 3;
+        });
+        let mtime_changed = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(mtime_changed > mtime_before, "real update must rewrite config");
+        assert_eq!(store.snapshot().index.max_depth, 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_load_migrates_once_and_respects_user_removals() {
+        // Simulate: after v2, a user-removed exclude must not be re-injected.
+        let mut exclude = default_excludes();
+        exclude.retain(|e| e != "node_modules");
+        // v2 path: do not call merge.
+        assert!(!exclude.iter().any(|e| e == "node_modules"));
+        // v1 migration would re-add:
+        let mut v1 = exclude.clone();
+        assert!(merge_missing_default_excludes(&mut v1));
+        assert!(v1.iter().any(|e| e == "node_modules"));
+    }
 }

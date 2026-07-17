@@ -430,6 +430,7 @@ Rebuild when: TTL > 30m **or** fingerprint ≠ current (roots / depth / excludes
 | 2026-07-14 | **Preview follow-up:** single-flight decode, mtime/size cache, off-main thumbs | latest-wins worker; no stale cache after edit |
 | 2026-07-16 | **Regression fix:** refuse home deep-pin; FX non-blocking; honest --bench; de-pin $HOME | index 8.2k→2.0k; file ~200→59µs; FX ~5.5ms→2µs |
 | 2026-07-16 | **Providers Phase 1–3:** unlock deep walk; Arc config/live-cache; ureq FX/translate; negative live-cache | tests OK; binary ~6.7 MB |
+| 2026-07-17 | **Core #1+#2:** config excludes one-shot migrate (v2); `update` save-only-if-changed | search flat (file 60→57µs noise); see `docs/bench/core-config-2026-07-17.md` |
 
 ### 2026-07-14 — E track (index / IO)
 
