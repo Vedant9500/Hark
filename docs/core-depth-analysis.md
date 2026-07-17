@@ -1,7 +1,7 @@
 # Core depth analysis — `src` (engine, config, main, usage, ipc)
 
 **Date:** 2026-07-17  
-**Status:** diagnosis; **#1–#9 applied 2026-07-17** (bench under `docs/bench/core-*.md`)  
+**Status:** diagnosis; **#1–#12 applied 2026-07-17** (all prioritized actions; bench under `docs/bench/core-*.md`)  
 **Scope:** `src/main.rs`, `src/engine.rs`, `src/config.rs`, `src/usage.rs`, `src/ipc.rs`  
 **Skipped (already analyzed):** `src/providers/**`, `src/ui/**`  
 **Deprioritized:** `src/theme/**` (not critical for this pass)
@@ -236,7 +236,7 @@ Empty-state frecency resolves up to ~20 IDs; each app id can fuzzy-scan the whol
 
 ---
 
-### 4.4 Dedup / ranking allocations every keystroke
+### 4.4 Dedup / ranking allocations every keystroke ✅ **fixed 2026-07-17**
 
 ```text
 seen.insert(r.id.clone());  // clone every id string
@@ -254,7 +254,7 @@ results.truncate(25);
 
 ---
 
-### 4.5 `is_excluded` is O(components × excludes × strings) per walk entry
+### 4.5 `is_excluded` is O(components × excludes × strings) per walk entry ✅ **fixed 2026-07-17** (`ExcludeSet`)
 
 ```text
 pub fn is_excluded(path: &Path, excludes: &[String]) -> bool
@@ -324,8 +324,8 @@ Can disagree when `XDG_CACHE_HOME` is set — bench should only use the engine h
 |------|--------|
 | `ConfigStore::get` | `#[allow(dead_code)]` — unused; hot paths already use `snapshot` / `with` |
 | `Engine::translate_should_handle` | Dead; UI uses other translate helpers |
-| `is_forbidden_deep_root` vs `is_overbroad_deep_root` | Near-duplicate home/`/` checks in engine + config — share one fn |
-| Docs drift | FEATURES: 30m refresh; code: 45m. `OPTIMIZATION.md` module LOC map is stale |
+| `is_forbidden_deep_root` vs `is_overbroad_deep_root` | ✅ shared `config::is_forbidden_deep_root` (2026-07-17) |
+| Docs drift | FEATURES refresh **45m** aligned; LOC map still slightly stale |
 | Clippy (core) | Derive `Default` for `PathStyle`; HashMap `entry` for mounts; `sort_by_key` |
 | Settings query | `"config"` is exact-only; `settings`/`preferences`/`index` are prefix — inconsistent UX |
 | `once_cell` | Not used in core; providers use it (optional long-term `std::sync::LazyLock`) |
@@ -368,9 +368,9 @@ Can disagree when `XDG_CACHE_HOME` is set — bench should only use the engine h
 | 7 | Headless engine without periodic threads | CLI weight | **done** |
 | 8 | IPC pending-toggle + stale-socket recovery | Reliability | **done** |
 | 9 | Gate `--bench` behind feature / separate bin | Binary size | **done** |
-| 10 | `is_excluded` → HashSet name lookup | Index/deep speed | M |
-| 11 | Dedup without `id.clone()`; avoid fileish clone | Search allocs | S |
-| 12 | Docs: refresh interval + shared deep-root helper | Hygiene | S |
+| 10 | `is_excluded` → HashSet name lookup | Index/deep speed | **done** |
+| 11 | Dedup without `id.clone()`; avoid fileish clone | Search allocs | **done** |
+| 12 | Docs: refresh interval + shared deep-root helper | Hygiene | **done** |
 
 ---
 

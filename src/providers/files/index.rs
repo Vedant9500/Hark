@@ -1,4 +1,4 @@
-use crate::config::{discover_mounts, is_excluded, ConfigStore, MountInfo};
+use crate::config::{discover_mounts, ExcludeSet, ConfigStore, MountInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -192,7 +192,7 @@ impl IndexState {
     fn build_index(&self) -> Vec<IndexedPath> {
         let cfg = self.config.snapshot();
         let mounts = self.mounts.read().unwrap().clone();
-        let excludes = &cfg.index.exclude;
+        let excludes = ExcludeSet::from_list(&cfg.index.exclude);
         let max_depth = cfg.index.max_depth.clamp(1, 6);
 
         let mut roots: Vec<PathBuf> = Vec::new();
@@ -245,7 +245,7 @@ impl IndexState {
                 .follow_links(false)
                 .max_depth(depth)
                 .into_iter()
-                .filter_entry(|e| should_descend(e.path(), root, excludes))
+                .filter_entry(|e| should_descend(e.path(), root, &excludes))
                 .flatten()
             {
                 let path = entry.path().to_path_buf();
@@ -255,7 +255,7 @@ impl IndexState {
                 if !seen.insert(path.clone()) {
                     continue;
                 }
-                if should_skip_entry(&path, excludes) {
+                if should_skip_entry(&path, &excludes) {
                     continue;
                 }
                 if let Some(item) = index_entry(&path, root) {
@@ -385,7 +385,7 @@ fn is_high_value_path(path_lower: &str) -> bool {
     false
 }
 
-pub(crate) fn should_descend(path: &Path, root: &Path, excludes: &[String]) -> bool {
+pub(crate) fn should_descend(path: &Path, root: &Path, excludes: &ExcludeSet) -> bool {
     if path == root {
         return true;
     }
@@ -393,8 +393,8 @@ pub(crate) fn should_descend(path: &Path, root: &Path, excludes: &[String]) -> b
 }
 
 /// Shared with on-demand live deep search (must stay in sync with indexing).
-pub(crate) fn should_skip_entry(path: &Path, excludes: &[String]) -> bool {
-    if is_excluded(path, excludes) || should_always_skip(path) {
+pub(crate) fn should_skip_entry(path: &Path, excludes: &ExcludeSet) -> bool {
+    if excludes.matches(path) || should_always_skip(path) {
         return true;
     }
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {

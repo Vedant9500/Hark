@@ -2,7 +2,7 @@ mod index;
 mod live_cache;
 mod search;
 
-use crate::config::{pretty_path, ConfigStore};
+use crate::config::{pretty_path, ConfigStore, ExcludeSet};
 use crate::providers::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gio::prelude::*;
@@ -113,6 +113,7 @@ impl FileProvider {
         // Cheap Arc config + mounts snapshot; index lock only for scan/plan.
         let cfg = self.state.config.snapshot();
         let mounts = self.state.mounts.read().unwrap().clone();
+        let excludes = ExcludeSet::from_list(&cfg.index.exclude);
 
         // Phase 1: index-only search under a short read lock (no WalkDir).
         let (mut results, deep_jobs) = {
@@ -122,7 +123,7 @@ impl FileProvider {
                 query,
                 &cfg.index.path_style,
                 &mounts,
-                &cfg.index.exclude,
+                &excludes,
                 &self.matcher,
                 allow_fuzzy,
                 DeepMode::Skip,
@@ -149,7 +150,7 @@ impl FileProvider {
                 deep_jobs,
                 &cfg.index.path_style,
                 &mounts,
-                &cfg.index.exclude,
+                &excludes,
                 &mut results,
             );
         }

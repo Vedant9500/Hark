@@ -226,12 +226,24 @@ impl Engine {
             }
         }
 
-        let mut seen = std::collections::HashSet::with_capacity(results.len());
-        results.retain(|r| seen.insert(r.id.clone()));
+        // Dedup by id without cloning id Strings (first occurrence wins).
+        {
+            let mut seen = std::collections::HashSet::with_capacity(results.len());
+            let mut keep = Vec::with_capacity(results.len());
+            for r in &results {
+                keep.push(seen.insert(r.id.as_str()));
+            }
+            let mut i = 0;
+            results.retain(|_| {
+                let k = keep[i];
+                i += 1;
+                k
+            });
+        }
 
         // Score first so exact folder/file (50k+) outranks weak apps. Kind only
         // breaks ties (app named X still preferred over folder X at equal score).
-        results.sort_by(|a, b| {
+        results.sort_unstable_by(|a, b| {
             b.score
                 .cmp(&a.score)
                 .then_with(|| kind_rank(a.kind).cmp(&kind_rank(b.kind)))
@@ -378,13 +390,9 @@ impl Engine {
                 return false;
             }
         }
-        // Only consider file/folder strength from current mixed results.
-        let fileish: Vec<_> = current
-            .iter()
-            .filter(|r| matches!(r.kind, ResultKind::File | ResultKind::Folder))
-            .cloned()
-            .collect();
-        self.files.should_deep_search(query, &fileish)
+        // Files provider only uses score / scope-hint ids; pass mixed results
+        // (no clone of file/folder rows).
+        self.files.should_deep_search(query, current)
     }
 
     /// Pin a folder as a deep root (always indexed to depth 6). Triggers reindex.
@@ -402,7 +410,7 @@ impl Engine {
         };
         // Canonicalize when possible so `/home/foo/../foo` matches home checks.
         let abs = abs.canonicalize().unwrap_or(abs);
-        if is_forbidden_deep_root(&abs) {
+        if crate::config::is_forbidden_deep_root(&abs) {
             return;
         }
         let s = abs.to_string_lossy().to_string();
@@ -485,7 +493,7 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
     let mut cur = start;
     for _ in 0..6 {
         // Stop before promoting home / filesystem root even if they have markers.
-        if is_forbidden_deep_root(&cur) {
+        if crate::config::is_forbidden_deep_root(&cur) {
             break;
         }
         for m in MARKERS {
@@ -501,36 +509,9 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
     }
 }
 
-/// Roots that must never become deep pins — they re-index huge trees to depth 6.
-fn is_forbidden_deep_root(path: &std::path::Path) -> bool {
-    if path.as_os_str().is_empty() {
-        return true;
-    }
-    // Filesystem root.
-    if path == std::path::Path::new("/") {
-        return true;
-    }
-    // User home (and rare non-canonical equality after canonicalize in promote).
-    if let Some(home) = dirs::home_dir() {
-        let home = home.canonicalize().unwrap_or(home);
-        let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if p == home {
-            return true;
-        }
-    }
-    // Common multi-user roots.
-    if matches!(
-        path.to_string_lossy().as_ref(),
-        "/home" | "/Users" | "/var" | "/usr" | "/opt" | "/mnt" | "/media"
-    ) {
-        return true;
-    }
-    false
-}
-
 #[cfg(test)]
 mod deep_root_tests {
-    use super::is_forbidden_deep_root;
+    use crate::config::is_forbidden_deep_root;
     use std::path::Path;
 
     #[test]

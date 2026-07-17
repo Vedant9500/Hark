@@ -48,10 +48,16 @@ fn default_depth() -> usize {
     2
 }
 
-/// Deep roots that re-index huge trees; strip on load + refuse in Engine.
-fn is_overbroad_deep_root(s: &str) -> bool {
-    let p = PathBuf::from(expand_user_path(s));
-    let p = p.canonicalize().unwrap_or(p);
+/// Roots that must never be deep-pinned — depth-6 walks explode the index.
+/// Shared by config load (strip bad pins) and engine promote (refuse).
+pub fn is_forbidden_deep_root(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return true;
+    }
+    if path == Path::new("/") {
+        return true;
+    }
+    let p = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if p == Path::new("/") {
         return true;
     }
@@ -65,6 +71,11 @@ fn is_overbroad_deep_root(s: &str) -> bool {
         p.to_string_lossy().as_ref(),
         "/home" | "/Users" | "/var" | "/usr" | "/opt" | "/mnt" | "/media"
     )
+}
+
+fn is_overbroad_deep_root(s: &str) -> bool {
+    let p = PathBuf::from(expand_user_path(s));
+    is_forbidden_deep_root(&p)
 }
 
 fn expand_user_path(s: &str) -> String {
@@ -797,18 +808,60 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
     path.display().to_string()
 }
 
-pub fn is_excluded(path: &Path, excludes: &[String]) -> bool {
-    let s = path.to_string_lossy();
-    path.components().any(|c| {
-        let name = c.as_os_str().to_string_lossy();
-        excludes.iter().any(|ex| {
+/// Pre-parsed exclude list for hot walk paths (index + live deep).
+/// Simple names → `HashSet` lookup; path substrings stay as linear patterns.
+#[derive(Debug, Clone)]
+pub struct ExcludeSet {
+    /// Lowercased component names (e.g. `node_modules`, `.git`).
+    names: std::collections::HashSet<String>,
+    /// Substring patterns containing `/`.
+    patterns: Vec<String>,
+}
+
+impl ExcludeSet {
+    pub fn from_list(excludes: &[String]) -> Self {
+        let mut names = std::collections::HashSet::with_capacity(excludes.len());
+        let mut patterns = Vec::new();
+        for ex in excludes {
             if ex.contains('/') {
-                s.contains(ex.as_str())
+                patterns.push(ex.clone());
             } else {
-                name == *ex || name.eq_ignore_ascii_case(ex)
+                names.insert(ex.to_ascii_lowercase());
             }
-        })
-    })
+        }
+        Self { names, patterns }
+    }
+
+    pub fn matches(&self, path: &Path) -> bool {
+        if self.names.is_empty() && self.patterns.is_empty() {
+            return false;
+        }
+        // Component name checks first (common case) — O(components) set lookups.
+        if !self.names.is_empty() {
+            for c in path.components() {
+                let name = c.as_os_str().to_string_lossy();
+                // Set stores ascii-lowercase keys; one lower per component.
+                if self.names.contains(name.as_ref())
+                    || self.names.contains(&name.to_ascii_lowercase())
+                {
+                    return true;
+                }
+            }
+        }
+        if !self.patterns.is_empty() {
+            let s = path.to_string_lossy();
+            if self.patterns.iter().any(|p| s.contains(p.as_str())) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Convenience for one-off checks (builds a set each call — prefer [`ExcludeSet`] on hot paths).
+#[allow(dead_code)]
+pub fn is_excluded(path: &Path, excludes: &[String]) -> bool {
+    ExcludeSet::from_list(excludes).matches(path)
 }
 
 #[cfg(test)]
@@ -889,4 +942,19 @@ mod config_store_tests {
         assert!(!should_skip_mount_target("/media/alice/Data"));
         assert!(!should_skip_mount_target("/run/media/alice/USB"));
     }
+
+    #[test]
+    fn exclude_set_matches_names_and_patterns() {
+        let set = ExcludeSet::from_list(&[
+            "node_modules".into(),
+            ".Git".into(),
+            "foo/bar".into(),
+        ]);
+        assert!(set.matches(Path::new("/home/a/node_modules/x")));
+        assert!(set.matches(Path::new("/home/a/.git")));
+        assert!(set.matches(Path::new("/home/a/.Git")));
+        assert!(set.matches(Path::new("/tmp/foo/bar/baz")));
+        assert!(!set.matches(Path::new("/home/a/src/main.rs")));
+    }
 }
+

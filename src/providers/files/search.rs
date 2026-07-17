@@ -2,7 +2,7 @@ use super::index::{
     expand_user, is_encoded_session_name, make_indexed, should_descend, should_skip_entry,
     IndexedPath,
 };
-use crate::config::{pretty_path, MountInfo, PathStyle};
+use crate::config::{pretty_path, ExcludeSet, MountInfo, PathStyle};
 use crate::providers::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -118,7 +118,7 @@ pub(crate) fn run_deep_jobs(
     jobs: Vec<DeepJob>,
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     results: &mut Vec<SearchResult>,
 ) {
     for job in jobs {
@@ -916,7 +916,7 @@ pub(crate) fn search_index(
     query: &str,
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     matcher: &SkimMatcherV2,
     allow_fuzzy: bool,
     deep: DeepMode,
@@ -1186,9 +1186,11 @@ fn looks_specific_for_deep(q: &str) -> bool {
 }
 
 fn index_is_strong(results: &[SearchResult]) -> bool {
-    results
-        .iter()
-        .any(|r| r.score >= DEEP_SKIP_IF_INDEX_SCORE)
+    // Only file/folder strength — mixed engine results may include high-score apps.
+    results.iter().any(|r| {
+        matches!(r.kind, crate::providers::ResultKind::File | crate::providers::ResultKind::Folder)
+            && r.score >= DEEP_SKIP_IF_INDEX_SCORE
+    })
 }
 
 fn maybe_deep_for_name(
@@ -1196,7 +1198,7 @@ fn maybe_deep_for_name(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     deep: DeepMode,
     deep_roots: &[String],
     results: &mut Vec<SearchResult>,
@@ -1279,7 +1281,7 @@ fn maybe_deep_for_glob(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     deep: DeepMode,
     deep_roots: &[String],
     results: &mut Vec<SearchResult>,
@@ -1326,7 +1328,7 @@ fn maybe_deep_for_scoped(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     deep: DeepMode,
     deep_roots: &[String],
     results: &mut Vec<SearchResult>,
@@ -1392,7 +1394,7 @@ fn maybe_deep_absolute_glob(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     deep: DeepMode,
     _deep_roots: &[String],
     results: &mut Vec<SearchResult>,
@@ -1616,7 +1618,7 @@ fn live_deep_search(
     dir_scope: bool,
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     existing: HashSet<String>,
     deep: DeepMode,
     deep_roots: &[String],
@@ -1665,7 +1667,7 @@ fn live_deep_under_roots(
     dir_scope: bool,
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     mut existing: HashSet<String>,
     deep: DeepMode,
 ) -> Vec<SearchResult> {
@@ -2624,7 +2626,7 @@ mod tests {
         )];
         let style = PathStyle::Label;
         let mounts: Vec<MountInfo> = vec![];
-        let excludes: Vec<String> = vec![];
+        let excludes = ExcludeSet::from_list(&[]);
 
         // Segment-scoped: proj + name
         let gq = parse_glob_query("proj/optimization.md").unwrap();
@@ -2820,7 +2822,7 @@ fn maybe_live_relative_glob(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
-    excludes: &[String],
+    excludes: &ExcludeSet,
     _deep: DeepMode,
     results: &mut Vec<SearchResult>,
 ) {

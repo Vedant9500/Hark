@@ -47,7 +47,7 @@
 - Filters `NoDisplay` entries and empty exec/name
 - Launch with terminal flag support (`Terminal=true` desktop entries)
 - Drag `.desktop` path for drag-and-drop
-- Background reload on start and every **30 minutes**
+- Background reload on start and every **45 minutes**
 
 ---
 
@@ -204,7 +204,7 @@ Also:
 Other internals:
 
 - Background FX warm-up
-- App + file reindex every **30 minutes**
+- App + file reindex every **45 minutes**
 - Isolated provider benches (apps / files / calc)
 - Related docs: [docs/performance.md](docs/performance.md), [docs/preview-optimization.md](docs/preview-optimization.md), [OPTIMIZATION.md](OPTIMIZATION.md)
 
