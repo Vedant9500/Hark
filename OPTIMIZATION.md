@@ -433,6 +433,7 @@ Rebuild when: TTL > 30m **or** fingerprint ≠ current (roots / depth / excludes
 | 2026-07-17 | **Core #1+#2:** config excludes one-shot migrate (v2); `update` save-only-if-changed | search flat (file 60→57µs noise); see `docs/bench/core-config-2026-07-17.md` |
 | 2026-07-17 | **Core #3+#4:** skip EFI+/boot mounts; empty-state `resolve_id` exact only | search flat; see `docs/bench/core-3-4-2026-07-17.md` |
 | 2026-07-17 | **Core #5+#6+#7:** force-files helper; usage debounce/cap; headless engine | search flat; bench threads 2→1 / VSZ↓; `docs/bench/core-5-7-2026-07-17.md` |
+| 2026-07-17 | **Core #8+#9:** IPC stale-socket + pending toggle; `--features bench` gates micro-bench | daemon **−47 KB**; search flat; `docs/bench/core-8-9-2026-07-17.md` |
 
 ### 2026-07-14 — E track (index / IO)
 

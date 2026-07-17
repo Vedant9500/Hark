@@ -14,6 +14,8 @@ categories = ["gui"]
 [features]
 default = []
 layer-shell = ["dep:gtk4-layer-shell"]
+# Micro-bench CLI (`blink --bench`). Off by default to keep the daemon binary lean.
+bench = []
 
 [dependencies]
 gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }

@@ -582,6 +582,7 @@ fn clear_cache() {
     let _ = fs::remove_file(cache_path().with_extension("json.tmp"));
 }
 
+#[cfg(feature = "bench")]
 pub fn cache_bytes_on_disk() -> Option<u64> {
     fs::metadata(cache_path()).ok().map(|m| m.len())
 }

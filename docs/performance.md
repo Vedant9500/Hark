@@ -32,6 +32,13 @@ Day-to-day optimization tasks live in [`OPTIMIZATION.md`](../OPTIMIZATION.md).
 
 ## How to benchmark
 
+Requires a build with the **`bench`** feature (off by default so the daemon binary stays lean):
+
+```bash
+cargo build --release --features "layer-shell,bench"
+```
+
+
 ```bash
 cargo build --release --features layer-shell
 install -Dm755 target/release/blink ~/.local/bin/blink
@@ -237,5 +244,5 @@ Update [`depth-index-benchmark.json`](./depth-index-benchmark.json) and the tabl
 | File search | `src/providers/files/search.rs` |
 | Apps | `src/providers/apps.rs` |
 | Calc | `src/providers/calc/` |
-| Bench CLI | `src/main.rs` → `run_bench` |
+| Bench CLI | `src/bench.rs` (`--features bench`) |
 | Depth UI | `src/ui/settings.rs` |

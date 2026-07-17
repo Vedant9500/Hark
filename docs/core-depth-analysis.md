@@ -1,7 +1,7 @@
 # Core depth analysis — `src` (engine, config, main, usage, ipc)
 
 **Date:** 2026-07-17  
-**Status:** diagnosis; **#1–#7 applied 2026-07-17** (bench under `docs/bench/core-*.md`)  
+**Status:** diagnosis; **#1–#9 applied 2026-07-17** (bench under `docs/bench/core-*.md`)  
 **Scope:** `src/main.rs`, `src/engine.rs`, `src/config.rs`, `src/usage.rs`, `src/ipc.rs`  
 **Skipped (already analyzed):** `src/providers/**`, `src/ui/**`  
 **Deprioritized:** `src/theme/**` (not critical for this pass)
@@ -155,7 +155,7 @@ Settings uses `q.to_lowercase()` prefixes; `File foo` / `F doc` do **not** force
 
 ---
 
-### 3.5 IPC: bind failure is soft-fail; second process can become heavy
+### 3.5 IPC: bind failure is soft-fail; second process can become heavy ✅ **fixed 2026-07-17**
 
 ```text
 // spawn_listener
@@ -168,7 +168,7 @@ If an orphan socket / race exists: `request_toggle` fails → full GTK app path.
 
 ---
 
-### 3.6 Main: IPC toggle while window not built is a no-op
+### 3.6 Main: IPC toggle while window not built is a no-op ✅ **fixed 2026-07-17**
 
 ```text
 // main IPC future
@@ -301,7 +301,7 @@ Fine for rare execute; still two process strategies. Prefer one from env (`WAYLA
 
 ---
 
-### 4.10 `main.rs` bench helpers bloat the release binary
+### 4.10 `main.rs` bench helpers bloat the release binary ✅ **fixed 2026-07-17** (`--features bench`)
 
 ~ half of `main.rs` is `--bench` / resource sampling (`ps`, `nvidia-smi`, `/proc`). Always linked into the daemon binary.
 
@@ -366,8 +366,8 @@ Can disagree when `XDG_CACHE_HOME` is set — bench should only use the engine h
 | 5 | Extract `is_force_files_query` + case-insensitivity | Correctness + DRY | **done** |
 | 6 | Usage: debounce + compact + cap entries | I/O + RAM long-term | **done** |
 | 7 | Headless engine without periodic threads | CLI weight | **done** |
-| 8 | IPC pending-toggle + stale-socket recovery | Reliability | M |
-| 9 | Gate `--bench` behind feature / separate bin | Binary size | M |
+| 8 | IPC pending-toggle + stale-socket recovery | Reliability | **done** |
+| 9 | Gate `--bench` behind feature / separate bin | Binary size | **done** |
 | 10 | `is_excluded` → HashSet name lookup | Index/deep speed | M |
 | 11 | Dedup without `id.clone()`; avoid fileish clone | Search allocs | S |
 | 12 | Docs: refresh interval + shared deep-root helper | Hygiene | S |
@@ -384,7 +384,7 @@ After items **1–8** especially:
 - [x] Usage file doesn’t grow without bound; saves are batched  *(cap 500 + 2s debounce)*  
 - [x] Daemon idle: no surprise **config** writes from no-op updates  *(usage debounce still open)*  
 - [x] `blink --search` doesn’t arm a 45‑minute background loop  *(`new_headless`)*  
-- [ ] Hotkey during early daemon start still toggles once UI is ready  
+- [x] Hotkey during early daemon start still toggles once UI is ready  *(`pending_toggle`)*  
 
 **Measure:** `blink --bench` before/after for search medians (should stay flat or improve slightly). Watch RSS / disk writes under `inotifywait` on `~/.config/blink` and `~/.local/state/blink` during open/promote/settings.
 

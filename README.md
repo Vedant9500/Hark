@@ -156,5 +156,5 @@ bind = ALT, A, exec, blink
 - **[packaging/](packaging/)** — desktop entry, user installer, AUR `PKGBUILD`
 
 ```bash
-blink --bench   # latency + index rebuild + resources
+blink --bench   # needs: cargo build --release --features "layer-shell,bench"
 ```

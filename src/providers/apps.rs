@@ -37,6 +37,7 @@ impl AppProvider {
         }
     }
 
+    #[cfg(feature = "bench")]
     pub fn len(&self) -> usize {
         self.apps.read().unwrap().len()
     }

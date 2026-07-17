@@ -6,7 +6,9 @@ use crate::config::{pretty_path, ConfigStore};
 use crate::providers::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gio::prelude::*;
-pub use index::{cache_bytes_on_disk, MAX_INDEX};
+pub use index::MAX_INDEX;
+#[cfg(feature = "bench")]
+pub use index::cache_bytes_on_disk;
 use index::IndexState;
 use live_cache::LiveCache;
 pub use search::{is_path_glob_query, is_scoped_file_query, DeepMode};

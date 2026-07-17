@@ -199,7 +199,7 @@ Also:
 | `blink --daemon` | Resident process |
 | `blink` | Toggle (or start if no daemon) |
 | `blink --search "q"` | Headless search debug (index + optional deep) |
-| `blink --bench` | Latency (median / p95), index rebuild, RSS / CPU, optional daemon / GPU stats |
+| `blink --bench` | Latency (median / p95), index rebuild, RSS / CPU (build with `--features bench`) |
 
 Other internals:
 

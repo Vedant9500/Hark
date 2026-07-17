@@ -100,20 +100,24 @@ impl Engine {
     }
 
     /// Blocking rebuild for `blink --bench` only (not used by UI).
+    #[cfg(feature = "bench")]
     pub fn bench_force_reindex_blocking(&self) {
         self.files.force_rebuild();
     }
 
+    #[cfg(feature = "bench")]
     pub fn index_cache_bytes(&self) -> Option<u64> {
         crate::providers::files::cache_bytes_on_disk()
     }
 
     /// Loaded desktop app count (for `blink --bench` readiness).
+    #[cfg(feature = "bench")]
     pub fn apps_len(&self) -> usize {
         self.apps.len()
     }
 
     /// Isolated provider search — index only (no live deep / live cache).
+    #[cfg(feature = "bench")]
     pub fn search_files_index_only(&self, query: &str) -> Vec<SearchResult> {
         use crate::providers::files::DeepMode;
         self.files.search_with(query, true, DeepMode::Skip)
@@ -322,6 +326,7 @@ impl Engine {
     }
 
     /// Isolated provider search (for `blink --bench` only).
+    #[cfg(feature = "bench")]
     pub fn search_apps_only(&self, query: &str) -> Vec<SearchResult> {
         self.apps.search(query)
     }
@@ -436,6 +441,7 @@ impl Engine {
     }
 
     /// Isolated provider search (for `blink --bench` only).
+    #[cfg(feature = "bench")]
     pub fn search_calc_only(&self, query: &str) -> Vec<SearchResult> {
         self.calc.search(query)
     }
