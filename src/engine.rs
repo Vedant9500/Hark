@@ -270,11 +270,8 @@ impl Engine {
         if let Some(path) = id.strip_prefix("path:") {
             return self.files.resolve_path(&PathBuf::from(path));
         }
-        if let Some(stem) = id.strip_prefix("app:") {
-            // Try fuzzy with desktop id stem, then scan empty list
-            if let Some(r) = self.apps.search(stem).into_iter().find(|r| r.id == id) {
-                return Some(r);
-            }
+        if id.starts_with("app:") {
+            // Exact desktop id lookup — never run fuzzy search on empty-state resolve.
             return self.apps.resolve_id(id);
         }
         None

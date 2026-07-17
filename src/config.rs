@@ -666,6 +666,18 @@ pub fn discover_mounts() -> Vec<MountInfo> {
     mounts
 }
 
+/// Mount targets we never treat as user volumes (EFI / ESP / bare boot).
+fn should_skip_mount_target(target: &str) -> bool {
+    if target.contains("EFI") || target.contains("/efi") || target.contains("efi/") {
+        return true;
+    }
+    // Exact system boot mount (the old code intended this but never continued).
+    if target == "/boot" {
+        return true;
+    }
+    false
+}
+
 fn collect_findmnt(arr: &[serde_json::Value], out: &mut Vec<MountInfo>) {
     for fs in arr {
         if let Some(target) = fs.get("target").and_then(|t| t.as_str()) {
@@ -673,12 +685,9 @@ fn collect_findmnt(arr: &[serde_json::Value], out: &mut Vec<MountInfo>) {
                 || target.starts_with("/media")
                 || target.starts_with("/run/media")
             {
-                // skip EFI/boot
-                if target.contains("EFI") || target == "/boot" {
-                    // still allow /mnt/windowsEFI skip
-                    if target.contains("EFI") {
-                        continue;
-                    }
+                // Skip EFI partitions and bare /boot (never indexable launcher roots).
+                if should_skip_mount_target(target) {
+                    continue;
                 }
                 let label = fs
                     .get("label")
@@ -868,5 +877,16 @@ mod config_store_tests {
         let mut v1 = exclude.clone();
         assert!(merge_missing_default_excludes(&mut v1));
         assert!(v1.iter().any(|e| e == "node_modules"));
+    }
+
+    #[test]
+    fn skip_efi_and_boot_mount_targets() {
+        assert!(should_skip_mount_target("/boot"));
+        assert!(should_skip_mount_target("/mnt/windowsEFI"));
+        assert!(should_skip_mount_target("/mnt/EFI"));
+        assert!(should_skip_mount_target("/run/media/user/ESP_EFI"));
+        assert!(!should_skip_mount_target("/mnt/windows_d"));
+        assert!(!should_skip_mount_target("/media/alice/Data"));
+        assert!(!should_skip_mount_target("/run/media/alice/USB"));
     }
 }

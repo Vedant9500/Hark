@@ -1,7 +1,7 @@
 # Core depth analysis — `src` (engine, config, main, usage, ipc)
 
 **Date:** 2026-07-17  
-**Status:** diagnosis; **#1 excludes migrate + #2 dirty `update` applied 2026-07-17** (see `docs/bench/core-config-2026-07-17.md`)  
+**Status:** diagnosis; **#1–#4 applied 2026-07-17** (bench: `docs/bench/core-config-2026-07-17.md`, `docs/bench/core-3-4-2026-07-17.md`)  
 **Scope:** `src/main.rs`, `src/engine.rs`, `src/config.rs`, `src/usage.rs`, `src/ipc.rs`  
 **Skipped (already analyzed):** `src/providers/**`, `src/ui/**`  
 **Deprioritized:** `src/theme/**` (not critical for this pass)
@@ -119,7 +119,7 @@ Auto-promote on file open hits “already pinned” often → needless disk chur
 
 ---
 
-### 3.3 Mount EFI / `/boot` skip is wrong (dead branch)
+### 3.3 Mount EFI / `/boot` skip is wrong (dead branch) ✅ **fixed 2026-07-17**
 
 ```text
 if target.contains("EFI") || target == "/boot" {
@@ -222,7 +222,7 @@ Even for `blink --search` / `blink --bench`:
 
 ---
 
-### 4.3 `resolve_id` for apps does a full fuzzy search first
+### 4.3 `resolve_id` for apps does a full fuzzy search first ✅ **fixed 2026-07-17**
 
 ```text
 // Engine::resolve_id
@@ -361,8 +361,8 @@ Can disagree when `XDG_CACHE_HOME` is set — bench should only use the engine h
 |---|--------|--------|--------|
 | 1 | Stop force-merging default excludes on load | Correctness | **done** |
 | 2 | `ConfigStore::update` save-only-if-changed | Disk/CPU idle | **done** |
-| 3 | Fix EFI/`/boot` skip | Correctness | XS |
-| 4 | `resolve_id` → direct app resolve | Empty-state latency | XS |
+| 3 | Fix EFI/`/boot` skip | Correctness | **done** |
+| 4 | `resolve_id` → direct app resolve | Empty-state latency | **done** |
 | 5 | Extract `is_force_files_query` + case-insensitivity | Correctness + DRY | S |
 | 6 | Usage: debounce + compact + cap entries | I/O + RAM long-term | M |
 | 7 | Headless engine without periodic threads | CLI weight | S |
