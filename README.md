@@ -148,11 +148,9 @@ bind = ALT, A, exec, blink
 
 ## Docs
 
-- **[docs/performance.md](docs/performance.md)** — search latency, index depth chart, binary/RAM, how to re-bench  
-- **[docs/power_performance.md](docs/power_performance.md)** — Blink vs Rofi: power, memory, CPU, background processes  
-- **[docs/battery-optimization.md](docs/battery-optimization.md)** — battery life & low CPU spike plan  
-- **[docs/](docs/)** — performance reference + raw depth benchmark JSON  
-- **[OPTIMIZATION.md](OPTIMIZATION.md)** — modularization / optimization worklog  
+- **[docs/performance.md](docs/performance.md)** — latency snapshot, index depth chart, cache/binary, how to bench  
+- **[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md)** — short optimization tracker (done / open)  
+- **[docs/](docs/)** — index of metrics, bench logs, and archive  
 - **[packaging/](packaging/)** — desktop entry, user installer, AUR `PKGBUILD`
 
 ```bash

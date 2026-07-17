@@ -1,156 +1,119 @@
 # Blink — performance reference
 
-**Last updated:** 2026-07-14  
-**Machine (reference runs):** Linux / Hyprland · 16 CPUs · ~15 GB RAM · RTX 4060 Laptop  
-**Binary:** `cargo build --release --features layer-shell` → `~/.local/bin/blink`  
-**How to re-measure:** `blink --bench` (daemon optional for RSS rows)
+**Last updated:** 2026-07-17  
+**Machine (reference):** Linux / Hyprland · 16 CPUs · ~15 GB RAM  
+**Tracker:** [`OPTIMIZATION.md`](./OPTIMIZATION.md)  
+**Depth study (raw):** [`depth-index-benchmark.json`](./depth-index-benchmark.json)  
+**Docs index:** [`README.md`](./README.md)
 
-This doc is the **stable reference** for latency, index cost, and size.  
-Day-to-day optimization tasks live in [`OPTIMIZATION.md`](../OPTIMIZATION.md).
+Stable numbers for search latency, index cost, and binary size.  
+Work in progress and historical logs → tracker + [`bench/`](./bench/) + [archive](./archive/optimization-tracker-2026-07-full.md).
 
 ---
 
-## Quick snapshot (post-optimization, depth = 2)
+## Quick snapshot (default depth = 2)
 
-| Metric | Value | Notes |
-|--------|------:|-------|
-| Math `10 + 20` | **~2 µs** | calc short-circuit; no apps/files |
-| Unit `10kg to lb` | **~2 µs** | |
-| Apps only `fire` | **~34 µs** | `iso_apps` |
-| Files only `doc` | **~49 µs** | `iso_files` @ 1,798 items |
-| App merged `fire` | **~68 µs** | apps + cheap files policy |
-| File merged `doc` | **~34 µs** | strong app/name path |
-| Force files `f doc` | **~52 µs** | full file provider |
-| Index items (default) | **1,798** | home + windows_d, depth 2 |
-| Index rebuild | **~15 ms** | blocking full walk (bench) |
-| Cache on disk (v6) | **~114 KB** | compact rows |
-| Binary size | **~4.3 MB** | stripped + LTO + filtered chrono-tz |
-| Daemon RSS (idle) | **~60–64 MB** | GTK-dominated |
+Order-of-magnitude; re-run `--bench` on your machine after big changes.
+
+| Metric | Typical | Notes |
+|--------|--------:|-------|
+| Math / units / FX | **~1–4 µs** | calc short-circuit |
+| Apps isolated | **~1–40 µs** | query-dependent |
+| Files isolated `doc` | **~50–70 µs** | ~2k items, short query = full scan |
+| File merged `doc` | **~55–80 µs** | + engine merge |
+| Strong hot free-text (len≥4) | **≪ full** | skips full index when usage hot hits |
+| Index items (depth 2) | **~1.8–2.2k** | home + mounts; varies |
+| Index rebuild | **~15–25 ms** | blocking bench rebuild |
+| Cache on disk (v6) | **~100–150 KB** | ~2k items |
+| Binary (layer-shell, no bench) | **~6.4–6.7 MB** | stripped + LTO; grows with features |
+| Daemon RSS idle | **~60–65 MB** | GTK-dominated |
 | GPU | **~0%** | no CUDA path |
+
+Older depth-2 campaign (~1.8k items, 2026-07-14): see JSON + table below.
 
 ---
 
 ## How to benchmark
 
-Requires a build with the **`bench`** feature (off by default so the daemon binary stays lean):
-
 ```bash
 cargo build --release --features "layer-shell,bench"
+./target/release/blink --bench
 ```
 
+Daemon-only install (no micro-bench in binary):
 
 ```bash
 cargo build --release --features layer-shell
-install -Dm755 target/release/blink ~/.local/bin/blink
-
-# Optional: keep daemon up for daemon RSS section
-blink --daemon
-
-# Search + resources + index rebuild timing
-blink --bench
 ```
 
-`blink --bench` prints:
-
-1. **Engine warm** — items, warm_ms, cache_bytes  
-2. **Index rebuild** — blocking `rebuild_ms` (bench-only API)  
-3. **Merged search** — median / p95 µs per case  
-4. **Isolated providers** — `iso_apps`, `iso_files`, `iso_calc`  
-5. **Resources** — RSS/HWM/CPU/GPU/host/binary size  
-
-**Rules for fair comparisons**
-
-- Always release + `layer-shell`  
-- Same machine, same index roots  
-- Note `max_depth` and item count  
-- Prefer **iso_*** rows when judging a single provider  
+`--bench` prints: warm → blocking rebuild → merged medians → iso_* → resources.
 
 ---
 
-## Index depth chart (important)
+## Index depth chart
 
-Changing **scan depth** (Settings → Indexing → **− / +**, or `max_depth` in config) multiplies index size and cost.
+Raising `max_depth` multiplies **items, rebuild time, and cache size**. Search stays in the same ballpark longer than rebuild does.
 
-### Setup for this chart
+### Results (2026-07-14, same roots)
 
-| Knob | Value |
-|------|--------|
-| Roots | `include_home` + `/mnt/windows_d` (data/C off) |
-| Cache format | **v6** compact (`p` / `d` / `n` only on disk) |
-| Cap | 100,000 items (not hit) |
-| TTL | 30 minutes + fingerprint |
-| Date | 2026-07-14 |
+| max_depth | Items | rebuild_ms | cache | iso_files `doc` | Notes |
+|----------:|------:|-----------:|------:|----------------:|-------|
+| **2** (default) | 1,798 | 15 | 114 KB | ~49 µs | **Recommended** |
+| 3 | 7,220 | 48 | 560 KB | ~128 µs | ~4× items |
+| 4 | 14,831 | 106 | 1.2 MB | (see JSON) | ~8× items |
 
-Raw JSON: [`depth-index-benchmark.json`](./depth-index-benchmark.json)
-
-### Results
-
-| depth | items | rebuild | cache | iso_files `doc` | `f doc` | app `fire` merged | relative items |
-|------:|------:|--------:|------:|----------------:|--------:|------------------:|---------------:|
-| **2** (default) | 1,798 | **15 ms** | **114 KB** | **49 µs** | 52 µs | 68 µs | ×1.0 |
-| **3** | 7,220 | **48 ms** | **560 KB** | **128 µs** | 130 µs | 150 µs | **×4.0** |
-| **4** | 14,831 | **106 ms** | **1.2 MB** | **352 µs** | 327 µs | 347 µs | **×8.3** |
+Raw rows + relative ratios: [`depth-index-benchmark.json`](./depth-index-benchmark.json).
 
 ### Relative cost (vs depth 2)
 
-| depth | items | rebuild time | cache size | iso_files latency |
-|------:|------:|-------------:|-----------:|------------------:|
-| 2 | ×1.00 | ×1.00 | ×1.00 | ×1.00 |
-| 3 | ×4.02 | ×3.20 | ×4.90 | ×2.6 |
-| 4 | ×8.25 | ×7.07 | ×10.5 | ×7.2 |
+| Depth | Items | Rebuild | Cache |
+|------:|------:|--------:|------:|
+| 2 | 1× | 1× | 1× |
+| 3 | ~4× | ~3× | ~5× |
+| 4 | ~8× | ~7× | ~10× |
 
 ### What stays flat
 
-| Path | All depths |
-|------|------------|
-| Math / units / FX | ~1–2 µs |
-| `iso_apps` | ~34 µs |
-
-Calc short-circuit and app-only isolation do not scale with the file index.
+Math / units / FX and pure app isolation do **not** scale with the file index (calc short-circuit).
 
 ### Recommendations
 
-| Depth | When to use |
-|------:|-------------|
-| **2** | **Default** — snappy, small cache |
-| **3** | Want more files under projects; still &lt;~150 µs search, &lt;50 ms rebuild here |
-| **4** | Deep trees; ~7–10× cost — only if needed |
-| 5–6 | Allowed (clamp); re-bench before shipping as default |
+| Depth | When |
+|------:|------|
+| **2** | Default — snappy, small cache |
+| 3 | More project files; still fine on this machine |
+| 4+ | Only if needed; re-bench |
 
-**UI:** Settings → **Indexing** → **Scan depth** (− / +). Changing depth **auto-rebuilds** the index and updates `~/.config/blink/config.json`.
+**UI:** Settings → Indexing → Scan depth (clamped **1..=6**).
 
-### Pitfall (fixed 2026-07-14)
+### Pitfall (fixed)
 
-`ConfigStore::load` used to clamp `max_depth > 3` back to **2**, so depth 4 never applied. Clamp is now **1..=6** (matches the walker).
+Older builds clamped `max_depth > 3` to 2. Current clamp is **1..=6**.
+
+### Re-run depth study
+
+```bash
+# For each depth in 2 3 4:
+# 1. Set index.max_depth in ~/.config/blink/config.json
+# 2. rm ~/.cache/blink/file-index.json ~/.cache/blink/file-index.meta
+# 3. cargo build --release --features "layer-shell,bench" && ./target/release/blink --bench
+# 4. Restore max_depth=2
+```
+
+Update the JSON + table when roots or machine change.
 
 ---
 
-## Search optimization timeline (high level)
+## Techniques that mattered (search / index)
 
-Approximate **merged** / **isolated** latency at **depth 2 · ~1.8k items**:
-
-| Era | app `fire` | file `doc` / iso_files | Notes |
-|-----|----------:|-----------------------:|-------|
-| Early (pre-instrument) | — | full scan + double sort | not measured |
-| baseline_v1 (after D3/D5/D6) | ~410–450 µs merged | ~640–670 µs iso | top-K heap, calc short-circuit |
-| After D4 apps cache | iso_apps **~37 µs** | — | haystack + name_lower |
-| After file two-pass + path caches | — | iso_files **~49 µs** | path_lower + name-first pass |
-| After merged app policy + calc plain-text reject | merged **~70 µs** | merged file **~35 µs** | skip file fuzzy when apps hit |
-| Current (depth 2) | **~68 µs** | **~49 µs** iso | + compact cache v6 |
-
-Detailed before/after rows: [`OPTIMIZATION.md`](../OPTIMIZATION.md) Improvement log.
-
-### Techniques that mattered most
-
-1. **Calc short-circuit** — skip apps/files on calc/conversion hits  
-2. **Calc plain-text reject** — skip regex stack on app-like queries  
-3. **File two-pass** — name exact/prefix/substring first; fuzzy only if needed  
-4. **Path metadata cache** — `path_lower`, low/high value flags  
-5. **Top-K heaps** — keep only 25 results while scanning  
-6. **App haystack** — prebuilt search string + name_lower  
-7. **Merged policy** — if any apps match → files name-only (no path fuzzy)  
-8. **Index fingerprint + TTL** — skip useless rebuilds  
-9. **Compact cache v6** — smaller disk; derive fields on load  
+1. Calc short-circuit + plain-text reject  
+2. File two-pass (name first, fuzzy gated)  
+3. Top-K heaps (25)  
+4. App haystack / name_lower  
+5. Merged policy: apps hit → files name-only  
+6. Index fingerprint + TTL  
+7. Compact cache v6  
+8. Hot set free-text (long strong names only)  
 
 ---
 
@@ -159,79 +122,41 @@ Detailed before/after rows: [`OPTIMIZATION.md`](../OPTIMIZATION.md) Improvement 
 | Item | Value |
 |------|--------|
 | Path | `~/.cache/blink/file-index.json` |
-| Meta | `~/.cache/blink/file-index.meta` → `version ts fingerprint` |
+| Meta | `file-index.meta` → `version ts fingerprint` |
 | Version | **6** |
 | Schema | `{ "version", "fingerprint", "items": [ { "p", "d", "n" } ] }` |
-| Write | atomic: `.json.tmp` → rename |
-| Cap | `MAX_INDEX = 100_000` |
-| TTL | 30 minutes (if fingerprint still matches) |
-| Rebuild triggers | TTL expired **or** fingerprint change (roots / depth / excludes / version) |
+| Cap | 100_000 |
+| TTL | 30 min (if fingerprint matches) |
 
-### Cache size evolution (same ~1.8k items)
+### Cache size evolution (~1.8k items)
 
-| Version | Approx size | Shape |
-|--------:|------------:|-------|
+| Version | Size | Shape |
+|--------:|-----:|-------|
 | v3–v4 | ~236 KB | fuller JSON |
-| v5 | ~423 KB | + path_lower + flags on disk |
+| v5 | ~423 KB | path_lower + flags on disk |
 | **v6** | **~114 KB** | path + is_dir + depth only |
 
 ---
 
-## Binary / runtime (F track)
-
-| Metric | Approx |
-|--------|--------|
-| Binary | **~4.32 MB** (was ~4.56 MB) |
-| Change | −~236 KB (−5%) |
-| Stack | LTO, `opt-level=3`, `strip`, `panic=abort` |
-| chrono-tz | `filter-by-regex` + `CHRONO_TZ_TIMEZONE_FILTER` in `.cargo/config.toml` |
-| mimalloc | **Not used** — no allocator evidence; GTK owns RSS |
-
-Rebuild after TZ filter changes:
-
-```bash
-cargo clean -p chrono-tz
-cargo build --release --features layer-shell
-```
-
----
-
-## Resources (typical idle daemon)
+## Binary / daemon
 
 | Metric | Typical |
 |--------|--------:|
-| RSS | 60–65 MB |
-| Threads | ~7–8 |
-| CPU idle | &lt;1% |
-| GPU util | 0% (system-wide sample) |
-
-Panel open can inflate RSS (GTK/CSS); compare idle daemon for baselines.
+| Release + layer-shell | ~6.4–6.7 MB today (was ~4.3–4.5 MB early; deps/features grew) |
+| Profile | LTO, `opt-level=3`, strip, `panic=abort` |
+| Idle daemon RSS | ~60–65 MB |
+| Idle CPU | &lt;1% |
 
 ---
 
-## Defaults checklist
+## Defaults
 
-| Setting | Default | Where |
-|---------|--------:|-------|
-| Index depth | **2** | Settings → Indexing, or `config.json` `index.max_depth` |
-| Depth clamp | 1–6 | walker + config load |
-| Index cap | 100,000 | `files/index.rs` `MAX_INDEX` |
-| TTL | 30 min | `INDEX_TTL_SECS` |
-| Path style | Label / Drive | Settings → Display |
-
----
-
-## Re-running the depth study
-
-```bash
-# For each depth in 2 3 4:
-# 1. Set max_depth in ~/.config/blink/config.json
-# 2. rm ~/.cache/blink/file-index.json ~/.cache/blink/file-index.meta
-# 3. blink --bench | tee docs/bench-depth-N.txt
-# 4. Restore max_depth=2 and rebuild cache
-```
-
-Update [`depth-index-benchmark.json`](./depth-index-benchmark.json) and the table above when roots or machine change.
+| Setting | Default |
+|---------|--------:|
+| max_depth | **2** |
+| Depth clamp | 1–6 |
+| MAX_INDEX | 100_000 |
+| Index TTL | 30 min |
 
 ---
 
@@ -239,10 +164,8 @@ Update [`depth-index-benchmark.json`](./depth-index-benchmark.json) and the tabl
 
 | Area | Path |
 |------|------|
-| Engine merge / short-circuit | `src/engine.rs` |
-| File index + cache | `src/providers/files/index.rs` |
-| File search | `src/providers/files/search.rs` |
+| Engine | `src/engine.rs` |
+| File index / search / hot | `src/providers/files/` |
 | Apps | `src/providers/apps.rs` |
 | Calc | `src/providers/calc/` |
 | Bench CLI | `src/bench.rs` (`--features bench`) |
-| Depth UI | `src/ui/settings.rs` |

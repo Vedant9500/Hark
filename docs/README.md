@@ -1,21 +1,26 @@
 # Blink docs
 
+## Start here
+
 | Doc | What |
 |-----|------|
-| **[performance.md](./performance.md)** | Search latency, index depth chart, binary size, RAM/CPU, how to re-bench |
-| **[power_performance.md](./power_performance.md)** | Blink vs Rofi: power, memory, CPU spikes, background processes, which to pick |
-| **[battery-optimization.md](./battery-optimization.md)** | How to optimize Blink for battery + low CPU spikes |
-| **[preview-optimization.md](./preview-optimization.md)** | Preview pane decode / cache optimization tracker |
-| **[translation.md](../translation.md)** | Translate-on-paste (CJK) implementation plan |
-| **[depth-index-benchmark.json](./depth-index-benchmark.json)** | Raw depth 2/3/4 measurement (2026-07-14) |
-| **[index-regression-depth-analysis.md](./index-regression-depth-analysis.md)** | Why index hit ~8k without changing scan depth; deep_roots auto-promote; bench caveats (2026-07-16) |
-| **[providers-depth-analysis.md](./providers-depth-analysis.md)** | `src/providers` inefficiencies, bugs, dead code, optimization phases (2026-07-16) |
-| **[ui-depth-analysis.md](./ui-depth-analysis.md)** | `src/ui` CPU/bugs/optimization plan (lightweight, keep visuals) |
+| **[performance.md](./performance.md)** | Latency, index depth, cache, binary, how to bench |
+| **[OPTIMIZATION.md](./OPTIMIZATION.md)** | Short tracker (done / open / measure) |
+| **[../README.md](../README.md)** | Install & overview |
+| **[../FEATURES.md](../FEATURES.md)** | User-facing feature list |
+| **[../todo.md](../todo.md)** | Product backlog / known gaps |
 
-Also see repo root:
+## Data & history
 
-| File | What |
+| Path | What |
 |------|------|
-| [`OPTIMIZATION.md`](../OPTIMIZATION.md) | Workstream tracker (A–G), improvement log, module layout |
-| [`README.md`](../README.md) | User-facing features & install |
-| [`FEATURES.md`](../FEATURES.md) | Complete feature list |
+| **[bench/](./bench/)** | Before/after `blink --bench` logs (hot-path, etc.) |
+| **[depth-index-benchmark.json](./depth-index-benchmark.json)** | Raw depth 2/3/4 campaign (2026-07-14) |
+| **[archive/](./archive/)** | Full historical optimization tracker (pre-cleanup) |
+
+## Conventions
+
+- **Tracker stays short** — no full bench tables; link `bench/*.txt` instead.
+- **Metrics live in** `performance.md` — update when defaults or the reference machine change.
+- **Raw depth numbers** stay in the JSON; narrative stays in `performance.md`.
+- Old deep-dive analysis docs (core/ui/providers, power, battery, hot-path design) were removed 2026-07-17; history is in git + `archive/`.

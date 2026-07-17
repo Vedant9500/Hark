@@ -101,9 +101,14 @@
     "deep": 4,
     "notes": [
       "Items roughly double+ each depth step on this tree",
-      "Math/calc stays ~2µs at all depths (short-circuit)",
-      "iso_apps stays ~34µs; merged app slows when more file work runs",
-      "Change depth in Settings → Indexing (−/+); auto-rebuilds"
+      "Math/calc stays ~2\u00b5s at all depths (short-circuit)",
+      "iso_apps stays ~34\u00b5s; merged app slows when more file work runs",
+      "Change depth in Settings \u2192 Indexing (\u2212/+); auto-rebuilds"
     ]
-  }
+  },
+  "doc": "Raw depth 2/3/4 campaign (2026-07-14). Human summary: performance.md \u00a7 Index depth chart. Do not duplicate long narrative here \u2014 update numbers when re-running the depth study.",
+  "see_also": [
+    "docs/performance.md",
+    "docs/OPTIMIZATION.md"
+  ]
 }
