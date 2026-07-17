@@ -1,4 +1,4 @@
-use crate::config::{discover_mounts, FileOpenCategory, PathStyle, UiThemeConfig};
+use crate::config::{discover_mounts, FileOpenCategory, LayoutMode, PathStyle, UiThemeConfig};
 use crate::engine::Engine;
 use crate::theme::ThemeManager;
 use gtk::gdk::Key;
@@ -1437,7 +1437,7 @@ fn build_appearance_page(
     let (outer, body) = page_shell(
         "preferences-desktop-theme-symbolic",
         "Appearance",
-        "Tweak transparency, accent colour, type scale, and icons. Colours still follow your Caelestia scheme.",
+        "Tweak layout density, transparency, accent colour, type scale, and icons. Colours still follow your Caelestia scheme.",
     );
 
     let ui = cfg.ui.clone();
@@ -1447,6 +1447,28 @@ fn build_appearance_page(
 
     let panel_card = GtkBox::new(Orientation::Vertical, 0);
     panel_card.add_css_class("blink-settings-card");
+
+    let compact_active = matches!(ui.layout_mode, LayoutMode::Compact);
+    let (layout_row, layout_cb) = check_setting_row(
+        "Compact layout",
+        Some("Search bar + footer only until you type (Raycast compact)"),
+        compact_active,
+    );
+    {
+        let engine = engine.clone();
+        layout_cb.connect_toggled(move |btn| {
+            let compact = btn.is_active();
+            engine.config().update(|c| {
+                c.ui.layout_mode = if compact {
+                    LayoutMode::Compact
+                } else {
+                    LayoutMode::Expanded
+                };
+            });
+        });
+    }
+    panel_card.append(&layout_row);
+    panel_card.append(&Separator::new(Orientation::Horizontal));
 
     let opacity_row = setting_row(
         "Transparency",
@@ -1809,7 +1831,7 @@ fn build_appearance_page(
     body.append(&group_label("Reset"));
     let reset_card = GtkBox::new(Orientation::Vertical, 0);
     reset_card.add_css_class("blink-settings-card");
-    let reset_row = setting_row("Restore defaults", Some("Opacity, accent, font, icons, radius"));
+    let reset_row = setting_row("Restore defaults", Some("Opacity, accent, font, icons, radius, layout"));
     let reset_btn = Button::with_label("Reset appearance");
     reset_btn.add_css_class("blink-settings-btn");
     {
@@ -1820,6 +1842,7 @@ fn build_appearance_page(
         let r_val = r_val.clone();
         let f_val = f_val.clone();
         let i_val = i_val.clone();
+        let layout_cb = layout_cb.clone();
         reset_btn.connect_clicked(move |_| {
             engine.config().update(|c| c.ui = UiThemeConfig::default());
             accent_entry.set_text("");
@@ -1827,6 +1850,7 @@ fn build_appearance_page(
             r_val.set_text("16");
             f_val.set_text("100%");
             i_val.set_text("26");
+            layout_cb.set_active(true); // default Compact
             theme.reload();
         });
     }

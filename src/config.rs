@@ -321,6 +321,18 @@ impl FileOpenCategory {
     }
 }
 
+
+/// Launcher chrome density (Raycast-style).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutMode {
+    /// Search + footer only until the query is non-empty; then results expand.
+    #[default]
+    Compact,
+    /// Always show the results body (recents / empty state on idle).
+    Expanded,
+}
+
 /// Appearance tweaks layered on top of the Caelestia colour scheme.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiThemeConfig {
@@ -342,6 +354,9 @@ pub struct UiThemeConfig {
     /// Shell corner radius in px (8–24, default 16).
     #[serde(default = "default_radius")]
     pub radius: u32,
+    /// Compact = search+footer until typing; Expanded = always show results body.
+    #[serde(default)]
+    pub layout_mode: LayoutMode,
 }
 
 fn default_opacity() -> f32 {
@@ -366,6 +381,7 @@ impl Default for UiThemeConfig {
             icon_size: default_icon_size(),
             symbolic_icons: false,
             radius: default_radius(),
+            layout_mode: LayoutMode::default(),
         }
     }
 }

@@ -101,6 +101,7 @@ window.blink-window .blink-shell > stack > * {{
   box-shadow: none;
   padding: 0;
   margin: 0;
+  min-height: 0;
 }}
 
 /* --- Header / search (Raycast: flush top, no boxed field) --- */
@@ -149,6 +150,12 @@ window.blink-window .blink-body {{
   padding: 6px 8px;
   background-color: transparent;
   min-height: 120px;
+}}
+
+/* Compact idle: body is hidden; kill min-height so shell hugs search+footer */
+window.blink-window .blink-body.blink-body-collapsed {{
+  min-height: 0;
+  padding: 0;
 }}
 
 window.blink-window .blink-list-col {{

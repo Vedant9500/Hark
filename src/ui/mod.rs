@@ -65,6 +65,12 @@ pub struct Launcher {
     /// Cached appearance knobs (avoid full config clone on every search).
     ui_icon_size: Rc<Cell<i32>>,
     ui_symbolic: Rc<Cell<bool>>,
+    /// Raycast compact: hide results body until query is non-empty.
+    ui_compact: Rc<Cell<bool>>,
+    /// Results middle section + separators (toggled for compact idle).
+    body: GtkBox,
+    header_sep: gtk::Separator,
+    footer_sep: gtk::Separator,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
 }
@@ -110,12 +116,18 @@ impl Launcher {
 
         let stack = Stack::new();
         stack.set_hexpand(true);
+        // Critical for compact mode: default homogeneous=true sizes to the tallest
+        // page (settings ~400px), leaving a huge empty shell under search+footer.
+        stack.set_hhomogeneous(true);
+        stack.set_vhomogeneous(false);
         stack.set_transition_type(gtk::StackTransitionType::Crossfade);
         stack.set_transition_duration(120);
 
         // ========== SEARCH VIEW ==========
         let search_view = GtkBox::new(Orientation::Vertical, 0);
         search_view.set_hexpand(true);
+        search_view.set_vexpand(false);
+        search_view.set_valign(gtk::Align::Start);
 
         let header = GtkBox::new(Orientation::Vertical, 0);
         header.add_css_class("blink-header");
@@ -244,6 +256,15 @@ impl Launcher {
         search_view.append(&footer_sep);
         search_view.append(&footer);
 
+        // Compact idle: search + footer only (Raycast compact). Expanded when typing.
+        {
+            let compact0 = matches!(
+                engine.config().snapshot().ui.layout_mode,
+                crate::config::LayoutMode::Compact
+            );
+            apply_body_chrome(compact0, true, &body, &header_sep, &footer_sep, Some(&scroll));
+        }
+
         // ========== SETTINGS VIEW ==========
         let settings = SettingsPanel::new(engine.clone(), theme.clone());
 
@@ -261,6 +282,10 @@ impl Launcher {
         let ui_cfg0 = engine.config().snapshot().ui.clone();
         let ui_icon_size: Rc<Cell<i32>> = Rc::new(Cell::new(ui_cfg0.icon_size as i32));
         let ui_symbolic: Rc<Cell<bool>> = Rc::new(Cell::new(ui_cfg0.symbolic_icons));
+        let ui_compact: Rc<Cell<bool>> = Rc::new(Cell::new(matches!(
+            ui_cfg0.layout_mode,
+            crate::config::LayoutMode::Compact
+        )));
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
@@ -283,12 +308,26 @@ impl Launcher {
             let suppress_select = suppress_select.clone();
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
+            let ui_compact = ui_compact.clone();
             let row_pool = row_pool.clone();
+            let body_c = body.clone();
+            let header_sep_c = header_sep.clone();
+            let footer_sep_c = footer_sep.clone();
+            let scroll_c = scroll.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
                 }
                 let q = entry.text().to_string();
+                // Expand/collapse body immediately (don't wait for search debounce).
+                apply_body_chrome(
+                    ui_compact.get(),
+                    q.trim().is_empty(),
+                    &body_c,
+                    &header_sep_c,
+                    &footer_sep_c,
+                    Some(&scroll_c),
+                );
                 let engine = engine.clone();
                 let list = list.clone();
                 let empty = empty.clone();
@@ -304,7 +343,12 @@ impl Launcher {
                 let suppress_select = suppress_select.clone();
                 let ui_icon_size = ui_icon_size.clone();
                 let ui_symbolic = ui_symbolic.clone();
+                let ui_compact = ui_compact.clone();
                 let row_pool = row_pool.clone();
+                let body_c = body_c.clone();
+                let header_sep_c = header_sep_c.clone();
+                let footer_sep_c = footer_sep_c.clone();
+                let scroll_c = scroll_c.clone();
                 // Longer settle only for auto CJK paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -332,6 +376,11 @@ impl Launcher {
                             &suppress_select,
                             &ui_icon_size,
                             &ui_symbolic,
+                            &ui_compact,
+                            &body_c,
+                            &header_sep_c,
+                            &footer_sep_c,
+                            Some(&scroll_c),
                         );
                         glib::ControlFlow::Break
                     },
@@ -374,15 +423,24 @@ impl Launcher {
             let suppress_select = suppress_select.clone();
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
+            let ui_compact = ui_compact.clone();
             let row_pool = row_pool.clone();
+            let body_cs = body.clone();
+            let header_sep_cs = header_sep.clone();
+            let footer_sep_cs = footer_sep.clone();
+            let scroll_cs = scroll.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
                 search.grab_focus();
-                // Settings may have changed icon prefs.
+                // Settings may have changed icon prefs / layout.
                 let ui = engine.config().snapshot().ui.clone();
                 ui_icon_size.set(ui.icon_size as i32);
                 ui_symbolic.set(ui.symbolic_icons);
+                ui_compact.set(matches!(
+                    ui.layout_mode,
+                    crate::config::LayoutMode::Compact
+                ));
                 refresh_results(
                     &engine,
                     &search.text(),
@@ -400,6 +458,11 @@ impl Launcher {
                     &suppress_select,
                     &ui_icon_size,
                     &ui_symbolic,
+                    &ui_compact,
+                    &body_cs,
+                    &header_sep_cs,
+                    &footer_sep_cs,
+                    Some(&scroll_cs),
                 );
             })
         };
@@ -656,6 +719,10 @@ impl Launcher {
             suppress_select,
             ui_icon_size,
             ui_symbolic,
+            ui_compact,
+            body,
+            header_sep,
+            footer_sep,
             theme: theme.clone(),
         }
     }
@@ -677,6 +744,10 @@ impl Launcher {
         let ui = self.engine.config().snapshot().ui.clone();
         self.ui_icon_size.set(ui.icon_size as i32);
         self.ui_symbolic.set(ui.symbolic_icons);
+        self.ui_compact.set(matches!(
+            ui.layout_mode,
+            crate::config::LayoutMode::Compact
+        ));
         refresh_results(
             &self.engine,
             "",
@@ -694,6 +765,11 @@ impl Launcher {
             &self.suppress_select,
             &self.ui_icon_size,
             &self.ui_symbolic,
+            &self.ui_compact,
+            &self.body,
+            &self.header_sep,
+            &self.footer_sep,
+            None,
         );
         self.settings.refresh_status();
         self.window.set_visible(true);
@@ -751,6 +827,46 @@ fn activate_result<F: Fn()>(
     }
 }
 
+fn apply_body_chrome(
+    compact: bool,
+    query_empty: bool,
+    body: &GtkBox,
+    header_sep: &gtk::Separator,
+    footer_sep: &gtk::Separator,
+    scroll: Option<&ScrolledWindow>,
+) {
+    // Compact + idle query → search bar + footer only (no middle body).
+    let show_body = !(compact && query_empty);
+    body.set_visible(show_body);
+    header_sep.set_visible(show_body);
+    // Keep a hairline above the footer when body is hidden (compact bar look).
+    footer_sep.set_visible(true);
+    if show_body {
+        body.remove_css_class("blink-body-collapsed");
+        body.set_vexpand(true);
+        if let Some(s) = scroll {
+            s.set_min_content_height(120);
+            s.set_vexpand(true);
+        }
+    } else {
+        body.add_css_class("blink-body-collapsed");
+        body.set_vexpand(false);
+        if let Some(s) = scroll {
+            s.set_min_content_height(0);
+            s.set_vexpand(false);
+        }
+    }
+    // Force the window/shell to re-measure after hide/show (layer-shell surfaces
+    // often keep the previous allocation until a size request refresh).
+    if let Some(toplevel) = body.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+        // Natural height: drop any previous fixed height from expanded state.
+        toplevel.set_default_size(toplevel.default_size().0.max(1), -1);
+        toplevel.queue_resize();
+    } else {
+        body.queue_resize();
+    }
+}
+
 fn refresh_results(
     engine: &Arc<Engine>,
     query: &str,
@@ -768,6 +884,11 @@ fn refresh_results(
     suppress_select: &Rc<Cell<bool>>,
     ui_icon_size: &Rc<Cell<i32>>,
     ui_symbolic: &Rc<Cell<bool>>,
+    ui_compact: &Rc<Cell<bool>>,
+    body: &GtkBox,
+    header_sep: &gtk::Separator,
+    footer_sep: &gtk::Separator,
+    scroll: Option<&ScrolledWindow>,
 ) {
     // Never rebind rows mid-drag — that would cancel the DnD session.
     if drag_session.is_active() {
@@ -775,15 +896,26 @@ fn refresh_results(
     }
     let icon_size = ui_icon_size.get();
     let symbolic_icons = ui_symbolic.get();
+    let compact = ui_compact.get();
+    let query_empty = query.trim().is_empty();
+
+    apply_body_chrome(compact, query_empty, body, header_sep, footer_sep, scroll);
 
     // Invalidate any in-flight async deep/translate for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
     deep_gen.set(gen);
 
-    let found = engine.search(query);
+    // Compact idle: skip ranking recents — body is hidden anyway.
+    let found = if compact && query_empty {
+        Vec::new()
+    } else {
+        engine.search(query)
+    };
     let no_hits = found.is_empty();
-    empty.set_visible(no_hits);
-    empty.set_vexpand(no_hits);
+    // In compact idle the empty placeholder is not shown (body hidden).
+    let show_empty = no_hits && !(compact && query_empty);
+    empty.set_visible(show_empty);
+    empty.set_vexpand(show_empty);
     list.set_visible(!no_hits);
 
     {
