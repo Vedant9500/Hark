@@ -34,7 +34,7 @@ impl Engine {
         let config = Arc::new(ConfigStore::load());
         let usage = Arc::new(UsageStore::load());
         let apps = Arc::new(AppProvider::new_empty());
-        let files = Arc::new(FileProvider::new_empty(config.clone()));
+        let files = Arc::new(FileProvider::new_empty(config.clone(), usage.clone()));
         let calc = Arc::new(CalcProvider::new());
         let translate = Arc::new(TranslateProvider::new(config.clone()));
 
@@ -335,6 +335,9 @@ impl Engine {
 
     pub fn record_usage(&self, id: &str) {
         self.usage.record(id);
+        if id.starts_with("path:") {
+            self.files.note_usage_changed();
+        }
     }
 
     /// Isolated provider search (for `blink --bench` only).

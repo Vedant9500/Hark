@@ -1,7 +1,8 @@
 # Core depth analysis — `src` (engine, config, main, usage, ipc)
 
 **Date:** 2026-07-17  
-**Status:** diagnosis; **#1–#12 applied 2026-07-17** (all prioritized actions; bench under `docs/bench/core-*.md`)  
+**Status:** diagnosis; **#1–#12 applied 2026-07-17** (all prioritized actions).
+**Combined bench rollup:** [`docs/bench/core-audit-2026-07-17-summary.md`](./bench/core-audit-2026-07-17-summary.md)  
 **Scope:** `src/main.rs`, `src/engine.rs`, `src/config.rs`, `src/usage.rs`, `src/ipc.rs`  
 **Skipped (already analyzed):** `src/providers/**`, `src/ui/**`  
 **Deprioritized:** `src/theme/**` (not critical for this pass)
@@ -15,6 +16,7 @@ Related:
 - UI analysis: [`ui-depth-analysis.md`](./ui-depth-analysis.md)
 - Battery / wakeups: [`battery-optimization.md`](./battery-optimization.md)
 - Perf baselines: [`performance.md`](./performance.md)
+- Hot-path file search (design): [`hot-path-file-search.md`](./hot-path-file-search.md)
 
 ---
 

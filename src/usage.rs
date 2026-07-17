@@ -100,6 +100,30 @@ impl UsageStore {
         items
     }
 
+    /// Absolute filesystem paths from top frecency `path:…` usage ids (no prefix).
+    /// Used to build the file-search hot set (see `docs/hot-path-file-search.md`).
+    pub fn top_path_ids(&self, n: usize) -> Vec<String> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let g = self.inner.read().unwrap();
+        let now = now_secs();
+        let mut items: Vec<(String, i64)> = g
+            .entries
+            .iter()
+            .filter_map(|(id, e)| {
+                let path = id.strip_prefix("path:")?;
+                if path.is_empty() {
+                    return None;
+                }
+                Some((path.to_string(), frecency(e.count, e.last, now)))
+            })
+            .collect();
+        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.truncate(n);
+        items.into_iter().map(|(p, _)| p).collect()
+    }
+
     /// Flush pending writes (process exit / tests).
     pub fn flush(&self) {
         self.maybe_save(true);

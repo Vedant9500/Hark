@@ -921,6 +921,8 @@ pub(crate) fn search_index(
     allow_fuzzy: bool,
     deep: DeepMode,
     deep_roots: &[String],
+    // Indices of frequently opened paths (Batch A: seed free-text heap; no short-circuit yet).
+    hot_indices: &[usize],
 ) -> Vec<SearchResult> {
     let q = query.trim();
     if q.is_empty() {
@@ -1013,57 +1015,9 @@ pub(crate) fn search_index(
         // No index yet — still allow live deep when pinned roots exist.
         Vec::new()
     } else {
-        // Pass 1: cheap name match only (no fuzzy). Fills top-K for common queries.
-        let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
-            BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
-
-        for (idx, item) in index.iter().enumerate() {
-            let Some(score) = score_name_only(item, &q_lower) else {
-                continue;
-            };
-            push_heap(&mut heap, score, item.depth, idx);
-        }
-
-        let strong_full = heap.len() >= FILE_RESULT_LIMIT
-            && heap
-                .peek()
-                .map(|Reverse((s, _, _))| *s >= STRONG_SCORE)
-                .unwrap_or(false);
-
-        // Pass 2: fuzzy only when top-K is weak / incomplete and caller allows it.
-        // Cap work: first-char filter + max evaluations (path fuzzy is expensive).
-        if allow_fuzzy && !strong_full {
-            let first = q_lower.chars().next();
-            let mut fuzzy_left = 500usize;
-            for (idx, item) in index.iter().enumerate() {
-                if fuzzy_left == 0 {
-                    break;
-                }
-                if item.name_lower.contains(&q_lower) {
-                    continue;
-                }
-                if let Some(ch) = first {
-                    if !item.name_lower.contains(ch) && !item.path_lower.contains(ch) {
-                        continue;
-                    }
-                }
-                let allow_path_fuzzy = match heap.peek() {
-                    Some(Reverse((min_score, _, _)))
-                        if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE =>
-                    {
-                        false
-                    }
-                    _ => true,
-                };
-                fuzzy_left -= 1;
-                let Some(score) = score_fuzzy(item, q, &q_lower, matcher, allow_path_fuzzy) else {
-                    continue;
-                };
-                push_heap(&mut heap, score, item.depth, idx);
-            }
-        }
-
-        heap_to_results(heap, index, path_style, mounts)
+        // Free-text: Batch A scores the hot subset first, then the full index.
+        // No short-circuit yet — cold paths always participate (parity with today).
+        score_free_text_full(index, q, &q_lower, matcher, allow_fuzzy, path_style, mounts, hot_indices)
     };
 
     if deep != DeepMode::Skip {
@@ -2282,6 +2236,92 @@ fn split_glob_path(path: &Path) -> (PathBuf, String) {
         }
     }
     (path.to_path_buf(), String::new())
+}
+
+
+/// Free-text top-K over the full index, optionally seeding the heap from `hot_indices` first.
+/// Batch A: hot-first scoring only; full scan always runs afterward.
+fn score_free_text_full(
+    index: &[IndexedPath],
+    q: &str,
+    q_lower: &str,
+    matcher: &SkimMatcherV2,
+    allow_fuzzy: bool,
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+    hot_indices: &[usize],
+) -> Vec<SearchResult> {
+    let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
+        BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
+    let mut seen = std::collections::HashSet::with_capacity(FILE_RESULT_LIMIT * 2);
+
+    // Phase 1 — hot set (frecency order; same name-only scoring as full pass).
+    for &idx in hot_indices {
+        let Some(item) = index.get(idx) else {
+            continue;
+        };
+        let Some(score) = score_name_only(item, q_lower) else {
+            continue;
+        };
+        if seen.insert(idx) {
+            push_heap(&mut heap, score, item.depth, idx);
+        }
+    }
+
+    // Phase 2 — full index name match (includes hot again; seen skips re-push).
+    for (idx, item) in index.iter().enumerate() {
+        if seen.contains(&idx) {
+            // Still allow a better score from full pass if hot used a weaker path —
+            // name_only is deterministic, so re-score is identical; skip.
+            continue;
+        }
+        let Some(score) = score_name_only(item, q_lower) else {
+            continue;
+        };
+        seen.insert(idx);
+        push_heap(&mut heap, score, item.depth, idx);
+    }
+
+    let strong_full = heap.len() >= FILE_RESULT_LIMIT
+        && heap
+            .peek()
+            .map(|Reverse((s, _, _))| *s >= STRONG_SCORE)
+            .unwrap_or(false);
+
+    // Pass 2: fuzzy only when top-K is weak / incomplete and caller allows it.
+    if allow_fuzzy && !strong_full {
+        let first = q_lower.chars().next();
+        let mut fuzzy_left = 500usize;
+        for (idx, item) in index.iter().enumerate() {
+            if fuzzy_left == 0 {
+                break;
+            }
+            // Already have a non-fuzzy name hit in the heap pipeline for this idx.
+            if item.name_lower.contains(q_lower) {
+                continue;
+            }
+            if let Some(ch) = first {
+                if !item.name_lower.contains(ch) && !item.path_lower.contains(ch) {
+                    continue;
+                }
+            }
+            let allow_path_fuzzy = match heap.peek() {
+                Some(Reverse((min_score, _, _)))
+                    if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE =>
+                {
+                    false
+                }
+                _ => true,
+            };
+            fuzzy_left -= 1;
+            let Some(score) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
+                continue;
+            };
+            push_heap(&mut heap, score, item.depth, idx);
+        }
+    }
+
+    heap_to_results(heap, index, path_style, mounts)
 }
 
 fn push_heap(

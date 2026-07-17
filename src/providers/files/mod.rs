@@ -1,8 +1,10 @@
+mod hot;
 mod index;
 mod live_cache;
 mod search;
 
 use crate::config::{pretty_path, ConfigStore, ExcludeSet};
+use crate::usage::UsageStore;
 use crate::providers::{Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gio::prelude::*;
@@ -10,6 +12,7 @@ pub use index::MAX_INDEX;
 #[cfg(feature = "bench")]
 pub use index::cache_bytes_on_disk;
 use index::IndexState;
+use hot::HotPaths;
 use live_cache::LiveCache;
 pub use search::{is_path_glob_query, is_scoped_file_query, DeepMode};
 use std::path::{Path, PathBuf};
@@ -21,6 +24,8 @@ pub struct FileProvider {
     state: IndexState,
     matcher: SkimMatcherV2,
     live_cache: LiveCache,
+    /// Frequently opened paths ∩ index (free-text phase-1). See `hot` module.
+    hot: HotPaths,
     /// One-slot memo: normalized query → is confident scoped `in` (avoids double index parse).
     scoped_memo: Mutex<Option<(String, bool)>>,
 }
@@ -34,11 +39,12 @@ pub struct IndexProgress {
 }
 
 impl FileProvider {
-    pub fn new_empty(config: Arc<ConfigStore>) -> Self {
+    pub fn new_empty(config: Arc<ConfigStore>, usage: Arc<UsageStore>) -> Self {
         Self {
             state: IndexState::new(config),
             matcher: SkimMatcherV2::default().ignore_case(),
             live_cache: LiveCache::new(),
+            hot: HotPaths::new(usage),
             scoped_memo: Mutex::new(None),
         }
     }
@@ -57,10 +63,28 @@ impl FileProvider {
 
     pub fn rebuild_index(&self) {
         self.state.ensure_fresh();
+        self.refresh_hot();
     }
 
     pub fn force_rebuild(&self) {
         self.state.force_rebuild();
+        self.refresh_hot();
+    }
+
+    /// Mark hot set stale (e.g. after recording a path open).
+    pub fn note_usage_changed(&self) {
+        self.hot.mark_dirty();
+    }
+
+    /// Hot set size (for bench / diagnostics).
+    #[allow(dead_code)]
+    pub fn hot_len(&self) -> usize {
+        self.hot.len()
+    }
+
+    fn refresh_hot(&self) {
+        let index = self.state.index.read().unwrap();
+        self.hot.rebuild(&index);
     }
 
     pub fn resolve_path(&self, path: &Path) -> Option<SearchResult> {
@@ -118,6 +142,8 @@ impl FileProvider {
         // Phase 1: index-only search under a short read lock (no WalkDir).
         let (mut results, deep_jobs) = {
             let index = self.state.index.read().unwrap();
+            self.hot.ensure_fresh(&index);
+            let hot_indices = self.hot.snapshot_indices();
             let results = search::search_index(
                 &index,
                 query,
@@ -128,6 +154,7 @@ impl FileProvider {
                 allow_fuzzy,
                 DeepMode::Skip,
                 &cfg.index.deep_roots,
+                &hot_indices,
             );
             let jobs = if deep != DeepMode::Skip {
                 search::plan_deep_jobs(
