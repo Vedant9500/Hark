@@ -5,6 +5,8 @@
 //! v2: also consider earlier queries in the same open session (backspace /
 //!     rewrite patterns like `wats` → `whatsapp`).
 //!
+//! v3: Settings can list / add / remove aliases (and clear all).
+//!
 //! Storage mirrors [`crate::usage::UsageStore`]: small JSON, debounced save, cap.
 
 use serde::{Deserialize, Serialize};
@@ -200,6 +202,102 @@ impl TypoStore {
     pub fn flush(&self) {
         self.maybe_save(true);
     }
+
+    /// All aliases, strongest first (for Settings).
+    pub fn list(&self) -> Vec<TypoAlias> {
+        let g = self.inner.read().unwrap();
+        let now = now_secs();
+        let mut items: Vec<TypoAlias> = g
+            .aliases
+            .iter()
+            .map(|(alias, e)| TypoAlias {
+                alias: alias.clone(),
+                id: e.id.clone(),
+                count: e.count,
+                last: e.last,
+                score: alias_frecency(e.count, e.last, now),
+            })
+            .collect();
+        items.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.alias.cmp(&b.alias))
+        });
+        items
+    }
+
+    /// Remove one alias key. Returns true if it existed.
+    pub fn remove(&self, alias: &str) -> bool {
+        let key = alias.trim().to_lowercase();
+        let removed = {
+            let mut g = self.inner.write().unwrap();
+            g.aliases.remove(&key).is_some()
+        };
+        if removed {
+            self.dirty.store(true, Ordering::Relaxed);
+            self.maybe_save(true);
+        }
+        removed
+    }
+
+    /// Drop every learned alias.
+    pub fn clear_all(&self) {
+        {
+            let mut g = self.inner.write().unwrap();
+            if g.aliases.is_empty() {
+                return;
+            }
+            g.aliases.clear();
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+        self.maybe_save(true);
+    }
+
+    /// Manual pin from Settings (v3). `alias` is normalized; overwrites target.
+    pub fn set_manual(&self, alias: &str, result_id: &str) -> Result<(), String> {
+        let key = normalize_alias(alias).ok_or_else(|| {
+            "Typo must be 3–24 letters (single word, no paths/math)".to_string()
+        })?;
+        if !result_id.starts_with("app:") && !result_id.starts_with("path:") {
+            return Err("Target must be an app or file result".into());
+        }
+        let now = now_secs();
+        {
+            let mut g = self.inner.write().unwrap();
+            g.aliases.insert(
+                key,
+                AliasEntry {
+                    id: result_id.to_string(),
+                    // Manual pins start confirmed so they boost strongly.
+                    count: STRONG_COUNT.max(2),
+                    last: now,
+                },
+            );
+            if g.aliases.len() > MAX_ALIASES {
+                prune_aliases(&mut g.aliases, MAX_ALIASES, now);
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+        self.maybe_save(true);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.inner.read().unwrap().aliases.len()
+    }
+}
+
+/// Public view of one learned alias (Settings UI).
+#[derive(Debug, Clone)]
+pub struct TypoAlias {
+    pub alias: String,
+    pub id: String,
+    pub count: u64,
+    #[allow(dead_code)]
+    pub last: u64,
+    #[allow(dead_code)]
+    pub score: i64,
 }
 
 impl Drop for TypoStore {
@@ -446,6 +544,27 @@ mod tests {
         // Normal prefixes must not be stored
         assert!(store.lookup("whats").is_none());
         assert!(store.lookup("whatsapp").is_none());
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn list_remove_clear_and_manual() {
+        let store = temp_store();
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        assert_eq!(store.len(), 1);
+        let list = store.list();
+        assert_eq!(list[0].alias, "wats");
+        assert!(store.remove("wats"));
+        assert_eq!(store.len(), 0);
+        store
+            .set_manual("ffox", "app:firefox.desktop")
+            .expect("manual");
+        assert_eq!(store.lookup("ffox").map(|(id, _)| id), Some("app:firefox.desktop".into()));
+        store.clear_all();
+        assert_eq!(store.len(), 0);
+        assert!(store.set_manual("x", "app:a.desktop").is_err());
         store.flush();
         let _ = fs::remove_file(&store.path);
     }

@@ -361,6 +361,92 @@ impl Engine {
             .learn_from_launch(final_query, recent_queries, result_id, result_title);
     }
 
+    /// Settings: learned typo aliases (strongest first).
+    pub fn list_typo_aliases(&self) -> Vec<crate::typos::TypoAlias> {
+        self.typos.list()
+    }
+
+    pub fn remove_typo_alias(&self, alias: &str) -> bool {
+        self.typos.remove(alias)
+    }
+
+    pub fn clear_typo_aliases(&self) {
+        self.typos.clear_all();
+    }
+
+    /// Manual alias from Settings. `target` is an app name, desktop id, or path.
+    pub fn add_typo_alias(&self, alias: &str, target: &str) -> Result<String, String> {
+        let (id, label) = self.resolve_alias_target(target)?;
+        self.typos.set_manual(alias, &id)?;
+        Ok(label)
+    }
+
+    fn resolve_alias_target(&self, target: &str) -> Result<(String, String), String> {
+        let t = target.trim();
+        if t.is_empty() {
+            return Err("Enter an app name or file path".into());
+        }
+        // Explicit ids
+        if t.starts_with("app:") || t.starts_with("path:") {
+            if let Some(r) = self.resolve_id(t) {
+                return Ok((r.id, r.title));
+            }
+            return Err("Unknown result id".into());
+        }
+        // Path-shaped
+        let path = crate::providers::files::expand_user_path(t);
+        if path.exists() {
+            let id = format!("path:{}", path.display());
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(t)
+                .to_string();
+            return Ok((id, name));
+        }
+        // App by name / desktop id
+        let q = t.to_lowercase();
+        // Prefer exact desktop id without app: prefix
+        if let Some(r) = self.apps.resolve_id(&format!("app:{t}")) {
+            return Ok((r.id, r.title));
+        }
+        if let Some(r) = self.apps.resolve_id(&format!("app:{t}.desktop")) {
+            return Ok((r.id, r.title));
+        }
+        let hits = self.apps.search(t);
+        // Exact name first
+        if let Some(r) = hits.iter().find(|r| r.title.eq_ignore_ascii_case(t)) {
+            return Ok((r.id.clone(), r.title.clone()));
+        }
+        // Strong prefix / high score
+        if let Some(r) = hits.iter().find(|r| r.score >= 15_000) {
+            return Ok((r.id.clone(), r.title.clone()));
+        }
+        if let Some(r) = hits.first() {
+            return Ok((r.id.clone(), r.title.clone()));
+        }
+        let _ = q;
+        Err(format!("No app or path matching “{t}”"))
+    }
+
+    /// Friendly label for a stored result id (Settings list).
+    pub fn result_display_name(&self, id: &str) -> String {
+        if let Some(r) = self.resolve_id(id) {
+            return r.title;
+        }
+        if let Some(rest) = id.strip_prefix("app:") {
+            return rest.trim_end_matches(".desktop").to_string();
+        }
+        if let Some(rest) = id.strip_prefix("path:") {
+            return std::path::Path::new(rest)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(rest)
+                .to_string();
+        }
+        id.to_string()
+    }
+
     /// Boost / inject a learned alias target for `query`.
     fn apply_typo_alias(&self, query: &str, results: &mut Vec<SearchResult>) {
         let Some((id, boost)) = self.typos.lookup(query) else {

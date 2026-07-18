@@ -57,6 +57,12 @@ const CATEGORIES: &[Category] = &[
         icon: "preferences-desktop-theme-symbolic",
     },
     Category {
+        id: "typos",
+        title: "Typo aliases",
+        subtitle: "Learned search corrections",
+        icon: "input-keyboard-symbolic",
+    },
+    Category {
         id: "tools",
         title: "Tools",
         subtitle: "Translation & extras",
@@ -249,6 +255,9 @@ impl SettingsPanel {
 
         let appearance_page = build_appearance_page(&engine, &theme, &cfg);
         content_stack.add_named(&appearance_page, Some("appearance"));
+
+        let typos_page = build_typos_page(&engine);
+        content_stack.add_named(&typos_page, Some("typos"));
 
         let tools_page = build_tools_page(&engine, &cfg);
         content_stack.add_named(&tools_page, Some("tools"));
@@ -612,6 +621,206 @@ fn build_indexing_page(
     body.append(&rebuild_row);
 
     (outer, status)
+}
+
+
+fn build_typos_page(engine: &Arc<Engine>) -> GtkBox {
+    let (outer, body) = page_shell(
+        "input-keyboard-symbolic",
+        "Typo aliases",
+        "Blink learns near-miss searches (e.g. wats → WhatsApp). Manage them here.",
+    );
+
+    let hint = Label::new(Some(
+        "Aliases are learned automatically when you open a result after a typo or rewrite. \
+Manual pins always rank strongly. Stored in ~/.local/state/blink/typos.json.",
+    ));
+    hint.add_css_class("blink-hint");
+    hint.set_wrap(true);
+    hint.set_halign(gtk::Align::Start);
+    hint.set_margin_bottom(8);
+    body.append(&hint);
+
+    let list = GtkBox::new(Orientation::Vertical, 0);
+    list.add_css_class("blink-settings-card");
+    list.add_css_class("blink-settings-list");
+    refill_typo_list(&list, engine);
+
+    // Refresh when the page is shown again (after learning more typos).
+    {
+        let list = list.clone();
+        let engine = engine.clone();
+        outer.connect_map(move |_| {
+            refill_typo_list(&list, &engine);
+        });
+    }
+
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.set_margin_top(4);
+    actions.set_margin_bottom(10);
+    let clear = Button::with_label("Forget all");
+    clear.add_css_class("blink-settings-btn");
+    clear.set_tooltip_text(Some("Remove every learned and manual alias"));
+    {
+        let engine = engine.clone();
+        let list = list.clone();
+        clear.connect_clicked(move |_| {
+            engine.clear_typo_aliases();
+            refill_typo_list(&list, &engine);
+        });
+    }
+    actions.append(&clear);
+
+    body.append(&list);
+    body.append(&actions);
+
+    body.append(&group_label("Add manually"));
+    let add_hint = Label::new(Some(
+        "Pin a typo to an app name or file path (e.g. typo “wats”, open “WhatsApp”).",
+    ));
+    add_hint.add_css_class("blink-hint");
+    add_hint.set_wrap(true);
+    add_hint.set_halign(gtk::Align::Start);
+    add_hint.set_margin_bottom(6);
+    body.append(&add_hint);
+
+    let add_col = GtkBox::new(Orientation::Vertical, 6);
+    let typo_entry = Entry::builder()
+        .placeholder_text("When I type… (e.g. wats)")
+        .hexpand(true)
+        .build();
+    typo_entry.add_css_class("blink-settings-entry");
+    let target_entry = Entry::builder()
+        .placeholder_text("Open… (app name or path)")
+        .hexpand(true)
+        .build();
+    target_entry.add_css_class("blink-settings-entry");
+
+    let add_row = GtkBox::new(Orientation::Horizontal, 8);
+    let status = Label::new(None);
+    status.add_css_class("blink-hint");
+    status.set_halign(gtk::Align::Start);
+    status.set_hexpand(true);
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    status.set_xalign(0.0);
+    let add = Button::with_label("Add");
+    add.add_css_class("blink-settings-btn");
+    add.add_css_class("blink-settings-primary");
+    {
+        let engine = engine.clone();
+        let typo_entry = typo_entry.clone();
+        let target_entry = target_entry.clone();
+        let list = list.clone();
+        let status = status.clone();
+        add.connect_clicked(move |_| {
+            let alias = typo_entry.text().to_string();
+            let target = target_entry.text().to_string();
+            match engine.add_typo_alias(&alias, &target) {
+                Ok(label) => {
+                    status.set_text(&format!("Pinned → {label}"));
+                    typo_entry.set_text("");
+                    target_entry.set_text("");
+                    refill_typo_list(&list, &engine);
+                }
+                Err(e) => status.set_text(&e),
+            }
+        });
+    }
+    add_row.append(&status);
+    add_row.append(&add);
+
+    add_col.append(&typo_entry);
+    add_col.append(&target_entry);
+    add_col.append(&add_row);
+    body.append(&add_col);
+
+    outer
+}
+
+fn refill_typo_list(list: &GtkBox, engine: &Arc<Engine>) {
+    while let Some(c) = list.first_child() {
+        list.remove(&c);
+    }
+    let items = engine.list_typo_aliases();
+    if items.is_empty() {
+        let empty = Label::new(Some("No aliases yet — mistype, open the right result, and Blink will learn."));
+        empty.add_css_class("blink-hint");
+        empty.add_css_class("blink-settings-list-row");
+        empty.set_halign(gtk::Align::Start);
+        empty.set_wrap(true);
+        list.append(&empty);
+        return;
+    }
+    for (i, a) in items.iter().enumerate() {
+        if i > 0 {
+            list.append(&Separator::new(Orientation::Horizontal));
+        }
+        list.append(&typo_alias_row(a, engine));
+    }
+}
+
+fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.add_css_class("blink-settings-list-row");
+
+    let text_col = GtkBox::new(Orientation::Vertical, 2);
+    text_col.set_hexpand(true);
+    text_col.set_halign(gtk::Align::Start);
+
+    let target_name = engine.result_display_name(&alias.id);
+    let title = Label::new(Some(&format!("{}  →  {}", alias.alias, target_name)));
+    title.set_halign(gtk::Align::Start);
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title.add_css_class("blink-settings-list-label");
+
+    let strength = if alias.count >= 2 { "strong" } else { "learning" };
+    let sub = Label::new(Some(&format!(
+        "{strength} · seen {}× · {}",
+        alias.count, alias.id
+    )));
+    sub.set_halign(gtk::Align::Start);
+    sub.set_xalign(0.0);
+    sub.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    sub.add_css_class("blink-hint");
+
+    text_col.append(&title);
+    text_col.append(&sub);
+
+    let rm = Button::with_label("×");
+    rm.add_css_class("blink-settings-btn");
+    rm.add_css_class("blink-settings-icon-btn");
+    rm.set_tooltip_text(Some("Forget this alias"));
+    {
+        let engine = engine.clone();
+        let key = alias.alias.clone();
+        let row = row.clone();
+        rm.connect_clicked(move |_| {
+            engine.remove_typo_alias(&key);
+            if let Some(parent) = row.parent() {
+                if let Ok(box_) = parent.downcast::<GtkBox>() {
+                    if let Some(prev) = row.prev_sibling() {
+                        if prev.type_().name() == "GtkSeparator" {
+                            box_.remove(&prev);
+                        }
+                    } else if let Some(next) = row.next_sibling() {
+                        if next.type_().name() == "GtkSeparator" {
+                            box_.remove(&next);
+                        }
+                    }
+                    box_.remove(&row);
+                    // If list empty, refill empty state
+                    if box_.first_child().is_none() {
+                        refill_typo_list(&box_, &engine);
+                    }
+                }
+            }
+        });
+    }
+
+    row.append(&text_col);
+    row.append(&rm);
+    row
 }
 
 fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
