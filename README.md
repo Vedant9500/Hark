@@ -11,6 +11,7 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 | **Math** | `2+2`, `sqrt(144)`, `5k + 2m`, `1.5 million`, `15% of 80`, `tip 20% on 45` |
 | **Unit conversion** | `100 km to mi`, `32 f to c`, `1 gb to mb` |
 | **Bases** | `0xFF`, `0b1010` |
+| **Timezones** | `15:00 here to tokyo`, `15:00 in london to here`, `now in new york` |
 
 **Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close
 

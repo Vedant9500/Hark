@@ -4,16 +4,24 @@ use chrono_tz::Tz;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-/// `12pm here in london`, `16:00 cet to ist`, `4pm est to pst`, `now in tokyo`
+/// Timezone compare / convert.
+///
+/// Examples:
+/// - `now in tokyo`, `time in new york`
+/// - `15:00 here to london`, `3pm here in tokyo`
+/// - `15:00 in mumbai`, `3pm in paris` (local → city)
+/// - `15:00 in london to here`, `3pm tokyo to here` (city → local)
+/// - `16:00 cet to ist`, `4pm est to pst`
 pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase().trim().to_string();
 
-    // now in <tz> / time in <tz>
+    // now in <place> / time in <place>
     static RE_NOW_TZ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*(?:now|time)\s+(?:in|at)\s+([a-zA-Z_/+-]+)\s*$").unwrap()
+        Regex::new(r"(?i)^\s*(?:now|time)\s+(?:in|at)\s+(.+?)\s*$").unwrap()
     });
     if let Some(c) = RE_NOW_TZ.captures(&lower) {
-        let (tz, label) = resolve_tz(c.get(1)?.as_str())?;
+        let place = c.get(1)?.as_str().trim();
+        let (tz, label) = resolve_place(place)?;
         let local = Local::now();
         let dt = Utc::now().with_timezone(&tz);
         let left_title = format_ampm_compact(local.hour(), local.minute());
@@ -29,31 +37,40 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         ));
     }
 
-    // Natural: 12pm here in london | 12 pm here to london | 12:00 here in london
+    // TIME here|local (in|to|as) PLACE  — local → city
     static RE_HERE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to|as|->|→)\s+([a-zA-Z_/+-]+)\s*$",
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to|as|->|→)\s+(.+?)\s*$",
         )
         .unwrap()
     });
-    // 12pm in london (implies from local/here)
+    // TIME in PLACE to here|local|PLACE — city → local (or city → city)
+    // Also: TIME at PLACE to …
+    static RE_IN_FROM_TO: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(?:in|at)\s+(.+?)\s+(?:to|as|->|→)\s+(.+?)\s*$",
+        )
+        .unwrap()
+    });
+    // TIME in|to PLACE — local → city (no "here" word). Requires am/pm OR :mm so bare
+    // "15 tokyo" is not stolen.
     static RE_IN_CITY: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+(?:in|to)\s+([a-zA-Z_/+-]*)\s*$",
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+(.+?)\s*$",
         )
         .unwrap()
     });
-    // Classic: 16:00 cet to ist | 4:00 pm est -> pst
+    // Classic: TIME FROM to TO (optional am/pm; FROM/TO may be multi-word)
     static RE_TZ: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s*([a-zA-Z_/+-]+)\s+(?:to|in|as|->|→)\s+([a-zA-Z_/+-]+)\s*$",
+            r"(?i)^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s+(.+?)\s+(?:to|in|as|->|→)\s+(.+?)\s*$",
         )
         .unwrap()
     });
-    // 4pm est to pst (no colon)
+    // Compact no-colon: 4pm est to pst
     static RE_TZ_COMPACT: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+([a-zA-Z_/+-]+)\s+(?:to|in|as|->|→)\s+([a-zA-Z_/+-]+)\s*$",
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+(.+?)\s+(?:to|in|as|->|→)\s+(.+?)\s*$",
         )
         .unwrap()
     });
@@ -62,29 +79,61 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         let (hour, minute, second) = parse_clock(
             c.get(1)?.as_str(),
             c.get(2).map(|m| m.as_str()),
-            None,
             c.get(3).map(|m| m.as_str()),
+            c.get(4).map(|m| m.as_str()),
         )?;
         let (from_tz, from_label) = local_as_tz()?;
-        let to_token = c.get(5)?.as_str();
-        let (to_tz, to_label) = resolve_tz(to_token).or_else(|| predict_tz(to_token))?;
+        let to_token = c.get(6)?.as_str().trim();
+        let (to_tz, to_label) = resolve_place(to_token)?;
+        return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
+    }
+
+    if let Some(c) = RE_IN_FROM_TO.captures(&lower) {
+        let (hour, minute, second) = parse_clock(
+            c.get(1)?.as_str(),
+            c.get(2).map(|m| m.as_str()),
+            c.get(3).map(|m| m.as_str()),
+            c.get(4).map(|m| m.as_str()),
+        )?;
+        // Require a real clock signal: minutes and/or am/pm (avoid "15 in x to y")
+        if c.get(2).is_none() && c.get(4).is_none() {
+            return None;
+        }
+        let from_token = c.get(5)?.as_str().trim();
+        let to_token = c.get(6)?.as_str().trim();
+        let (from_tz, from_label) = resolve_place(from_token)?;
+        let (to_tz, to_label) = resolve_place(to_token)?;
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
 
     if let Some(c) = RE_IN_CITY.captures(&lower) {
-        let (hour, minute, second) = parse_clock(
-            c.get(1)?.as_str(),
-            c.get(2).map(|m| m.as_str()),
-            None,
-            c.get(3).map(|m| m.as_str()),
-        )?;
-        let (from_tz, from_label) = local_as_tz()?;
-        let to_token = c.get(4)?.as_str();
-        if to_token.is_empty() {
-            return None;
+        let ampm = c.get(4).map(|m| m.as_str());
+        let has_minutes = c.get(2).is_some();
+        // Need am/pm or :mm so we don't treat random "3 in foo" text as a clock.
+        if ampm.is_none() && !has_minutes {
+            // fall through
+        } else {
+            let (hour, minute, second) = parse_clock(
+                c.get(1)?.as_str(),
+                c.get(2).map(|m| m.as_str()),
+                c.get(3).map(|m| m.as_str()),
+                ampm,
+            )?;
+            let to_token = c.get(5)?.as_str().trim();
+            if to_token.is_empty() {
+                return None;
+            }
+            // "15:00 in here" is a no-op — skip
+            if matches!(to_token, "here" | "local" | "system") {
+                // fall through
+            } else {
+                let (from_tz, from_label) = local_as_tz()?;
+                let (to_tz, to_label) = resolve_place(to_token)?;
+                return build_tz_conversion(
+                    hour, minute, second, from_tz, &from_label, to_tz, &to_label,
+                );
+            }
         }
-        let (to_tz, to_label) = resolve_tz(to_token).or_else(|| predict_tz(to_token))?;
-        return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
 
     if let Some(c) = RE_TZ_COMPACT.captures(&lower) {
@@ -94,10 +143,18 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
             None,
             c.get(3).map(|m| m.as_str()),
         )?;
-        let (from_tz, from_label) = resolve_tz(c.get(4)?.as_str())?;
-        let to_token = c.get(5)?.as_str();
-        let (to_tz, to_label) = resolve_tz(to_token).or_else(|| predict_tz(to_token))?;
-        return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
+        let from_token = c.get(4)?.as_str().trim();
+        let to_token = c.get(5)?.as_str().trim();
+        // Avoid re-matching "3pm here to london" (handled by RE_HERE)
+        if matches!(from_token, "here" | "local") {
+            // fall through to RE_TZ or fail
+        } else {
+            let (from_tz, from_label) = resolve_place(from_token)?;
+            let (to_tz, to_label) = resolve_place(to_token)?;
+            return build_tz_conversion(
+                hour, minute, second, from_tz, &from_label, to_tz, &to_label,
+            );
+        }
     }
 
     let caps = RE_TZ.captures(&lower)?;
@@ -107,35 +164,42 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         caps.get(3).map(|m| m.as_str()),
         caps.get(4).map(|m| m.as_str()),
     )?;
-    let from_raw = caps.get(5)?.as_str();
-    let to_raw = caps.get(6)?.as_str();
-    let (from_tz, from_label) = resolve_tz(from_raw)?;
-    let (to_tz, to_label) = resolve_tz(to_raw).or_else(|| predict_tz(to_raw))?;
+    let from_raw = caps.get(5)?.as_str().trim();
+    let to_raw = caps.get(6)?.as_str().trim();
+    // "15:00 here to x" already handled; if we got here with here/local, resolve works.
+    let (from_tz, from_label) = resolve_place(from_raw)?;
+    let (to_tz, to_label) = resolve_place(to_raw)?;
     build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label)
 }
 
-/// Prefix match for incomplete city/zone: `lon` → London
+/// Prefix match for incomplete city/zone: `lon` → London, `new yo` → New York
 pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
-    // Only when exact timezone parse failed
     let lower = q.to_lowercase();
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to)\s+([a-zA-Z]*)\s*$",
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$",
         )
         .unwrap()
     });
     static RE2: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+(?:in|to)\s+([a-zA-Z]*)\s*$",
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$",
         )
         .unwrap()
     });
+    static RE3: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|at)\s+([a-zA-Z ]+?)\s+(?:to)\s+([a-zA-Z ]*?)\s*$",
+        )
+        .unwrap()
+    });
+
     if let Some(c) = RE.captures(&lower) {
-        let prefix = c.get(5)?.as_str();
+        let prefix = c.get(5)?.as_str().trim();
         if prefix.len() < 2 {
             return None;
         }
-        if resolve_tz(prefix).is_some() {
+        if resolve_place(prefix).is_some() {
             return None;
         }
         let (hour, minute, second) = parse_clock(
@@ -148,12 +212,42 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         let (to_tz, to_label) = predict_tz(prefix)?;
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
+    if let Some(c) = RE3.captures(&lower) {
+        let from_prefix = c.get(5)?.as_str().trim();
+        let to_prefix = c.get(6)?.as_str().trim();
+        if from_prefix.len() < 2 {
+            return None;
+        }
+        let (hour, minute, second) = parse_clock(
+            c.get(1)?.as_str(),
+            c.get(2).map(|m| m.as_str()),
+            None,
+            c.get(3).map(|m| m.as_str()),
+        )?;
+        // Need clock signal
+        if c.get(2).is_none() && c.get(3).is_none() {
+            return None;
+        }
+        let (from_tz, from_label) = resolve_place(from_prefix).or_else(|| predict_tz(from_prefix))?;
+        let (to_tz, to_label) = if to_prefix.is_empty() {
+            return None;
+        } else if to_prefix.len() < 2 {
+            return None;
+        } else {
+            resolve_place(to_prefix).or_else(|| predict_tz(to_prefix))?
+        };
+        return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
+    }
     if let Some(c) = RE2.captures(&lower) {
-        let prefix = c.get(4)?.as_str();
+        let prefix = c.get(5)?.as_str().trim();
         if prefix.len() < 2 {
             return None;
         }
-        if resolve_tz(prefix).is_some() {
+        // Require am/pm or minutes
+        if c.get(2).is_none() && c.get(3).is_none() {
+            return None;
+        }
+        if resolve_place(prefix).is_some() {
             return None;
         }
         let (hour, minute, second) = parse_clock(
@@ -169,46 +263,28 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
     None
 }
 
+/// Resolve a place/zone token (city, abbr, IANA, here/local).
+pub(crate) fn resolve_place(token: &str) -> Option<(Tz, String)> {
+    resolve_tz(token).or_else(|| predict_tz(token))
+}
+
 pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
-    const CITIES: &[(&str, &str, &str)] = &[
-        ("london", "Europe/London", "LONDON"),
-        ("paris", "Europe/Paris", "PARIS"),
-        ("berlin", "Europe/Berlin", "BERLIN"),
-        ("tokyo", "Asia/Tokyo", "TOKYO"),
-        ("mumbai", "Asia/Kolkata", "MUMBAI"),
-        ("delhi", "Asia/Kolkata", "DELHI"),
-        ("kolkata", "Asia/Kolkata", "KOLKATA"),
-        ("india", "Asia/Kolkata", "IST"),
-        ("newyork", "America/New_York", "NEW YORK"),
-        ("nyc", "America/New_York", "NYC"),
-        ("chicago", "America/Chicago", "CHICAGO"),
-        ("denver", "America/Denver", "DENVER"),
-        ("losangeles", "America/Los_Angeles", "LA"),
-        ("la", "America/Los_Angeles", "LA"),
-        ("sydney", "Australia/Sydney", "SYDNEY"),
-        ("dubai", "Asia/Dubai", "DUBAI"),
-        ("singapore", "Asia/Singapore", "SINGAPORE"),
-        ("hongkong", "Asia/Hong_Kong", "HONG KONG"),
-        ("moscow", "Europe/Moscow", "MOSCOW"),
-        ("toronto", "America/Toronto", "TORONTO"),
-        ("cet", "Europe/Paris", "CET"),
-        ("ist", "Asia/Kolkata", "IST"),
-        ("est", "America/New_York", "EST"),
-        ("pst", "America/Los_Angeles", "PST"),
-        ("gmt", "UTC", "GMT"),
-        ("utc", "UTC", "UTC"),
-    ];
-    let p = prefix.to_lowercase().replace([' ', '_', '-'], "");
+    let p = normalize_place_key(prefix);
     if p.is_empty() {
         return None;
     }
-    let mut hits: Vec<(&str, &str, &str, i32)> = CITIES
+    let mut hits: Vec<(&str, &str, &str, i32)> = CITY_ALIASES
         .iter()
-        .filter(|(alias, _, _)| alias.starts_with(&p) || p.starts_with(alias))
+        .filter(|(alias, _, _)| {
+            let a = *alias;
+            a.starts_with(&p) || p.starts_with(a) || a.replace('_', "").starts_with(&p.replace('_', ""))
+        })
         .map(|(a, iana, label)| {
-            let score = if *a == p {
+            let compact_a = a.replace('_', "");
+            let compact_p = p.replace('_', "");
+            let score = if *a == p || compact_a == compact_p {
                 1000
-            } else if a.starts_with(&p) {
+            } else if a.starts_with(&p) || compact_a.starts_with(&compact_p) {
                 500 - a.len() as i32
             } else {
                 100
@@ -216,10 +292,125 @@ pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
             (*a, *iana, *label, score)
         })
         .collect();
-    hits.sort_by(|a, b| b.3.cmp(&a.3));
+    hits.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(b.0)));
     let (_, iana, label, _) = hits.first()?;
     let tz: Tz = iana.parse().ok()?;
     Some((tz, (*label).to_string()))
+}
+
+/// Shared city / zone alias table: (lookup key, IANA, display label).
+/// Keys are normalized: lowercase, spaces → `_`.
+const CITY_ALIASES: &[(&str, &str, &str)] = &[
+    ("london", "Europe/London", "LONDON"),
+    ("paris", "Europe/Paris", "PARIS"),
+    ("berlin", "Europe/Berlin", "BERLIN"),
+    ("amsterdam", "Europe/Amsterdam", "AMSTERDAM"),
+    ("rome", "Europe/Rome", "ROME"),
+    ("madrid", "Europe/Madrid", "MADRID"),
+    ("stockholm", "Europe/Stockholm", "STOCKHOLM"),
+    ("zurich", "Europe/Zurich", "ZURICH"),
+    ("athens", "Europe/Athens", "ATHENS"),
+    ("moscow", "Europe/Moscow", "MOSCOW"),
+    ("istanbul", "Europe/Istanbul", "ISTANBUL"),
+    ("tokyo", "Asia/Tokyo", "TOKYO"),
+    ("osaka", "Asia/Tokyo", "OSAKA"),
+    ("seoul", "Asia/Seoul", "SEOUL"),
+    ("shanghai", "Asia/Shanghai", "SHANGHAI"),
+    ("beijing", "Asia/Shanghai", "BEIJING"),
+    ("hong_kong", "Asia/Hong_Kong", "HONG KONG"),
+    ("hongkong", "Asia/Hong_Kong", "HONG KONG"),
+    ("hk", "Asia/Hong_Kong", "HONG KONG"),
+    ("singapore", "Asia/Singapore", "SINGAPORE"),
+    ("dubai", "Asia/Dubai", "DUBAI"),
+    ("uae", "Asia/Dubai", "DUBAI"),
+    ("mumbai", "Asia/Kolkata", "MUMBAI"),
+    ("delhi", "Asia/Kolkata", "DELHI"),
+    ("new_delhi", "Asia/Kolkata", "DELHI"),
+    ("kolkata", "Asia/Kolkata", "KOLKATA"),
+    ("calcutta", "Asia/Kolkata", "KOLKATA"),
+    ("bangalore", "Asia/Kolkata", "BANGALORE"),
+    ("bengaluru", "Asia/Kolkata", "BANGALORE"),
+    ("chennai", "Asia/Kolkata", "CHENNAI"),
+    ("hyderabad", "Asia/Kolkata", "HYDERABAD"),
+    ("pune", "Asia/Kolkata", "PUNE"),
+    ("india", "Asia/Kolkata", "IST"),
+    ("bangkok", "Asia/Bangkok", "BANGKOK"),
+    ("jakarta", "Asia/Jakarta", "JAKARTA"),
+    ("manila", "Asia/Manila", "MANILA"),
+    ("karachi", "Asia/Karachi", "KARACHI"),
+    ("pakistan", "Asia/Karachi", "PAKISTAN"),
+    ("dhaka", "Asia/Dhaka", "DHAKA"),
+    ("kathmandu", "Asia/Kathmandu", "KATHMANDU"),
+    ("nepal", "Asia/Kathmandu", "NEPAL"),
+    ("sydney", "Australia/Sydney", "SYDNEY"),
+    ("melbourne", "Australia/Melbourne", "MELBOURNE"),
+    ("perth", "Australia/Perth", "PERTH"),
+    ("auckland", "Pacific/Auckland", "AUCKLAND"),
+    ("new_york", "America/New_York", "NEW YORK"),
+    ("newyork", "America/New_York", "NEW YORK"),
+    ("nyc", "America/New_York", "NYC"),
+    ("ny", "America/New_York", "NY"),
+    ("chicago", "America/Chicago", "CHICAGO"),
+    ("denver", "America/Denver", "DENVER"),
+    ("los_angeles", "America/Los_Angeles", "LA"),
+    ("losangeles", "America/Los_Angeles", "LA"),
+    ("la", "America/Los_Angeles", "LA"),
+    ("sf", "America/Los_Angeles", "SF"),
+    ("san_francisco", "America/Los_Angeles", "SAN FRANCISCO"),
+    ("sanfrancisco", "America/Los_Angeles", "SAN FRANCISCO"),
+    ("seattle", "America/Los_Angeles", "SEATTLE"),
+    ("toronto", "America/Toronto", "TORONTO"),
+    ("vancouver", "America/Vancouver", "VANCOUVER"),
+    ("sao_paulo", "America/Sao_Paulo", "SAO PAULO"),
+    ("saopaulo", "America/Sao_Paulo", "SAO PAULO"),
+    ("mexico_city", "America/Mexico_City", "MEXICO CITY"),
+    ("mexico", "America/Mexico_City", "MEXICO"),
+    ("cairo", "Africa/Cairo", "CAIRO"),
+    ("johannesburg", "Africa/Johannesburg", "JOHANNESBURG"),
+    ("lagos", "Africa/Lagos", "LAGOS"),
+    ("nairobi", "Africa/Nairobi", "NAIROBI"),
+    // abbreviations
+    ("cet", "Europe/Paris", "CET"),
+    ("cest", "Europe/Paris", "CEST"),
+    ("eet", "Europe/Bucharest", "EET"),
+    ("bst", "Europe/London", "BST"),
+    ("ist", "Asia/Kolkata", "IST"),
+    ("jst", "Asia/Tokyo", "JST"),
+    ("kst", "Asia/Seoul", "KST"),
+    ("hkt", "Asia/Hong_Kong", "HKT"),
+    ("sgt", "Asia/Singapore", "SGT"),
+    ("aest", "Australia/Sydney", "AEST"),
+    ("aedt", "Australia/Sydney", "AEDT"),
+    ("nzst", "Pacific/Auckland", "NZST"),
+    ("est", "America/New_York", "EST"),
+    ("edt", "America/New_York", "EDT"),
+    ("et", "America/New_York", "ET"),
+    ("eastern", "America/New_York", "EASTERN"),
+    ("cst", "America/Chicago", "CST"),
+    ("cdt", "America/Chicago", "CDT"),
+    ("ct", "America/Chicago", "CT"),
+    ("central", "America/Chicago", "CENTRAL"),
+    ("mst", "America/Denver", "MST"),
+    ("mdt", "America/Denver", "MDT"),
+    ("mt", "America/Denver", "MT"),
+    ("mountain", "America/Denver", "MOUNTAIN"),
+    ("pst", "America/Los_Angeles", "PST"),
+    ("pdt", "America/Los_Angeles", "PDT"),
+    ("pt", "America/Los_Angeles", "PT"),
+    ("pacific", "America/Los_Angeles", "PACIFIC"),
+    ("gmt", "UTC", "GMT"),
+    ("utc", "UTC", "UTC"),
+];
+
+fn normalize_place_key(token: &str) -> String {
+    token
+        .trim()
+        .to_lowercase()
+        .replace('-', "_")
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 pub(crate) fn parse_clock(
@@ -346,12 +537,29 @@ pub(crate) fn tz_result(
 }
 
 pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
-    let t = token.trim().to_lowercase().replace(' ', "_");
-    // Full IANA name
+    let t = normalize_place_key(token);
+    if t.is_empty() {
+        return None;
+    }
+    // Full IANA name (Europe/London, Asia/Kolkata, …)
     if let Ok(tz) = t.parse::<Tz>() {
         return Some((tz, display_tz_label(&t)));
     }
-    // Common aliases / abbreviations
+    // Exact city / abbr from the shared table (incl. multi-word → underscores)
+    if let Some((_, iana, label)) = CITY_ALIASES.iter().find(|(a, _, _)| *a == t) {
+        let tz: Tz = iana.parse().ok()?;
+        return Some((tz, (*label).to_string()));
+    }
+    // Compact form: "newyork" → "new_york"
+    let compact = t.replace('_', "");
+    if let Some((_, iana, label)) = CITY_ALIASES
+        .iter()
+        .find(|(a, _, _)| a.replace('_', "") == compact)
+    {
+        let tz: Tz = iana.parse().ok()?;
+        return Some((tz, (*label).to_string()));
+    }
+    // Common aliases / abbreviations not listed above
     let iana = match t.as_str() {
         "utc" | "gmt" | "z" => "UTC",
         "cet" => "Europe/Paris",       // CET/CEST with DST
@@ -456,4 +664,80 @@ pub(crate) fn local_as_tz() -> Option<(Tz, String)> {
     };
     let tz: Tz = name.parse().ok()?;
     Some((tz, "LOCAL".into()))
+}
+
+
+
+#[cfg(test)]
+mod timezone_query_tests {
+    use super::{resolve_place, try_timezone};
+
+    #[test]
+    fn local_to_many_cities() {
+        for q in [
+            "15:00 here to london",
+            "15:00 here to tokyo",
+            "15:00 here to paris",
+            "15:00 here to mumbai",
+            "15:00 here to nyc",
+            "15:00 here to dubai",
+            "15:00 here to new york",
+            "15:00 here to los angeles",
+            "15:00 here to hong kong",
+            "3pm here in tokyo",
+        ] {
+            assert!(try_timezone(q).is_some(), "expected hit for {q}");
+        }
+    }
+
+    #[test]
+    fn city_to_local_forms() {
+        for q in [
+            "15:00 london to here",
+            "15:00 tokyo to here",
+            "15:00 in london to here",
+            "15:00 in tokyo to here",
+            "15:00 in new york to here",
+            "3pm tokyo to here",
+            "3pm in paris to local",
+        ] {
+            assert!(try_timezone(q).is_some(), "expected hit for {q}");
+        }
+    }
+
+    #[test]
+    fn short_in_city_24h() {
+        for q in [
+            "15:00 in tokyo",
+            "15:00 in mumbai",
+            "15:00 in new york",
+            "3pm in paris",
+            "now in tokyo",
+            "now in new york",
+            "time in singapore",
+        ] {
+            assert!(try_timezone(q).is_some(), "expected hit for {q}");
+        }
+    }
+
+    #[test]
+    fn classic_zone_pairs() {
+        for q in [
+            "16:00 cet to ist",
+            "4pm est to pst",
+            "09:30 ist to utc",
+        ] {
+            assert!(try_timezone(q).is_some(), "expected hit for {q}");
+        }
+    }
+
+    #[test]
+    fn resolve_multiword_and_compact() {
+        assert!(resolve_place("new york").is_some());
+        assert!(resolve_place("newyork").is_some());
+        assert!(resolve_place("los angeles").is_some());
+        assert!(resolve_place("hong kong").is_some());
+        assert!(resolve_place("here").is_some());
+        assert!(resolve_place("tokyo").is_some());
+    }
 }
