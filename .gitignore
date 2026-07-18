@@ -42,6 +42,7 @@ Desktop.ini
 .cache/
 docs/bench
 docs/archive
+feature.txt
 
 # Env / secrets (if added later)
 .env

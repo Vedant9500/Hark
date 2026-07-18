@@ -12,7 +12,7 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 | **Unit conversion** | `100 km to mi`, `32 f to c`, `1 gb to mb` |
 | **Bases** | `0xFF`, `0b1010` |
 
-**Keys:** `↑/↓` navigate · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close
+**Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close
 
 ## Install (share with friends)
 

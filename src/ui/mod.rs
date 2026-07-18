@@ -630,7 +630,18 @@ impl Launcher {
                         open_settings();
                         glib::Propagation::Stop
                     }
-                    Key::Down | Key::Tab => {
+                    Key::Tab => {
+                        // Tab → autocomplete selected suggestion into the search box
+                        // (↓/↑ still navigate). Soft SetQuery scopes fill their query.
+                        tab_complete_selected(
+                            &results,
+                            &selected,
+                            &list,
+                            &search,
+                        );
+                        glib::Propagation::Stop
+                    }
+                    Key::Down => {
                         let len = results.borrow().len();
                         if len > 0 {
                             let next = (selected.get() + 1) % len;
@@ -791,6 +802,273 @@ impl Launcher {
         }
         self.deep_gen.set(self.deep_gen.get().wrapping_add(1));
         self.preview.clear();
+    }
+}
+
+/// Fill the search entry from the selected suggestion (Tab autocomplete).
+///
+/// - `Action::SetQuery` soft scopes replace the whole query (e.g. `name in folder`).
+/// - **Folders** always complete to a real path with a trailing `/` so further
+///   typing stays scoped under that directory (path browser), not free-text.
+/// - Path-shaped queries (`~/…`, `/…`, `./…`) complete files to path strings too.
+/// - Apps / plain files otherwise complete to the result title (e.g. `evo` → `evo_gsmc`).
+/// - If the box already matches the selected completion, advance selection and complete that
+///   instead (shell-style cycle through suggestions).
+fn tab_complete_selected(
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    selected: &Rc<Cell<usize>>,
+    list: &ListBox,
+    search: &Entry,
+) {
+    let current = search.text().to_string();
+
+    // Resolve completion while holding the results borrow, then drop it
+    // before touching the list (row-selected handlers re-borrow results).
+    let (idx, text) = {
+        let items = results.borrow();
+        let len = items.len();
+        if len == 0 {
+            return;
+        }
+
+        let mut idx = selected.get().min(len - 1);
+        let mut completion = completion_text_for(&current, &items[idx]);
+        // Already completed this hit → cycle to the next suggestion.
+        if completion
+            .as_ref()
+            .is_some_and(|c| c == &current || c.eq_ignore_ascii_case(&current))
+        {
+            idx = (idx + 1) % len;
+            completion = completion_text_for(&current, &items[idx]);
+        }
+        (idx, completion)
+    };
+
+    selected.set(idx);
+    if let Some(row) = list.row_at_index(idx as i32) {
+        list.select_row(Some(&row));
+    }
+
+    if let Some(text) = text {
+        // Avoid no-op set_text (would re-trigger search debounce unnecessarily).
+        if text != current {
+            search.set_text(&text);
+            search.set_position(-1);
+        }
+    }
+    search.grab_focus_without_selecting();
+}
+
+/// Best string to put in the search box for `item`, given the current query.
+fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
+    match &item.action {
+        Action::SetQuery(q) => Some(q.clone()),
+        Action::OpenPath(path) => {
+            let cur = current.trim_start();
+            // Folders: always enter path-browser mode under this directory.
+            // Free-text title completion alone (`test` → `test_fyps`) loses the
+            // parent context, so later queries like `data` match every data dir.
+            if matches!(item.kind, ResultKind::Folder) || path.is_dir() {
+                return Some(complete_path_query(cur, path));
+            }
+            // Already typing a path → complete the file to a path string.
+            if is_path_shaped_query(cur) {
+                return Some(complete_path_query(cur, path));
+            }
+            Some(item.title.clone())
+        }
+        Action::LaunchApp { .. } | Action::OpenTerminal(_) => Some(item.title.clone()),
+        Action::Copy(_) | Action::OpenSettings => {
+            // Calc / conversion / settings: title is still a useful fill-in.
+            if item.title.is_empty() {
+                None
+            } else {
+                Some(item.title.clone())
+            }
+        }
+    }
+}
+
+fn is_path_shaped_query(q: &str) -> bool {
+    q.starts_with('/')
+        || q.starts_with('~')
+        || q.starts_with("./")
+        || q.starts_with("../")
+        // Relative multi-segment paths (`test_fyps/evo`) also stay path-scoped.
+        || q.contains('/')
+}
+
+/// Format `path` for the search box, preserving path style when possible.
+///
+/// Folders always get a trailing `/` so the engine stays in path-completion
+/// mode and the next keystrokes list children of that directory.
+fn complete_path_query(query: &str, path: &std::path::Path) -> String {
+    let full = path.to_string_lossy();
+    let dir_slash = path.is_dir();
+    let with_slash = |mut s: String| -> String {
+        if dir_slash && !s.ends_with('/') {
+            s.push('/');
+        }
+        s
+    };
+
+    // Prefer `~/…` when the target lives under home, unless the user is already
+    // typing an absolute `/…` path (keep their style).
+    let prefer_tilde = !query.starts_with('/');
+    if prefer_tilde {
+        if let Some(home) = dirs::home_dir() {
+            let home_s = home.to_string_lossy();
+            if let Some(rest) = full.strip_prefix(home_s.as_ref()) {
+                // Only strip when we matched a real path prefix boundary.
+                let ok = rest.is_empty() || rest.starts_with('/');
+                if ok {
+                    let rest = rest.trim_start_matches('/');
+                    return with_slash(if rest.is_empty() {
+                        "~/".into()
+                    } else {
+                        format!("~/{rest}")
+                    });
+                }
+            }
+        }
+    }
+
+    // Absolute (or outside home): real path. Folders get a trailing `/`.
+    with_slash(full.into_owned())
+}
+
+#[cfg(test)]
+mod tab_complete_tests {
+    use super::{complete_path_query, completion_text_for, is_path_shaped_query};
+    use crate::providers::{Action, ResultKind, SearchResult};
+    use std::path::PathBuf;
+
+    fn item(title: &str, kind: ResultKind, action: Action) -> SearchResult {
+        SearchResult {
+            id: "t".into(),
+            title: title.into(),
+            subtitle: String::new(),
+            kind,
+            score: 0,
+            icon: None,
+            action,
+            conversion: None,
+        }
+    }
+
+    #[test]
+    fn path_shaped_detection() {
+        assert!(is_path_shaped_query("~/Doc"));
+        assert!(is_path_shaped_query("~"));
+        assert!(is_path_shaped_query("/usr/bi"));
+        assert!(is_path_shaped_query("./src"));
+        assert!(is_path_shaped_query("test_fyps/evo"));
+        assert!(!is_path_shaped_query("evo"));
+        assert!(!is_path_shaped_query("f evo"));
+    }
+
+    #[test]
+    fn title_completion_for_apps_and_files() {
+        let app = item(
+            "evo_gsmc",
+            ResultKind::App,
+            Action::LaunchApp {
+                exec: "evo".into(),
+                terminal: false,
+                desktop_path: None,
+            },
+        );
+        assert_eq!(
+            completion_text_for("evo", &app).as_deref(),
+            Some("evo_gsmc")
+        );
+
+        // Plain free-text file: title is enough (Enter opens it).
+        let file = item(
+            "evo_gsmc",
+            ResultKind::File,
+            Action::OpenPath(PathBuf::from("/tmp/projects/evo_gsmc")),
+        );
+        assert_eq!(
+            completion_text_for("evo", &file).as_deref(),
+            Some("evo_gsmc")
+        );
+    }
+
+    #[test]
+    fn folder_completion_scopes_under_path() {
+        // Regression: Tab on a free-text folder hit must NOT leave a bare name
+        // (`test_fyps`) that turns the next query into global free-text search.
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let folder = home.join("test_fyps");
+        let hit = item(
+            "test_fyps",
+            ResultKind::Folder,
+            Action::OpenPath(folder.clone()),
+        );
+        let completed = completion_text_for("test", &hit).expect("folder completion");
+        assert!(
+            completed.ends_with("test_fyps/") || completed.ends_with("test_fyps"),
+            "got {completed}"
+        );
+        assert!(
+            completed.starts_with("~/") || completed.starts_with('/'),
+            "folder Tab should produce a path-shaped query, got {completed}"
+        );
+        // Prefer path-browser form with trailing slash when path is a dir.
+        // (is_dir may be false if the path does not exist on this machine —
+        // still require path shape above.)
+        if folder.is_dir() {
+            assert!(
+                completed.ends_with('/'),
+                "existing folder should end with /, got {completed}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_query_soft_scope() {
+        let hint = item(
+            "glassbox",
+            ResultKind::Folder,
+            Action::SetQuery("notes in glassbox".into()),
+        );
+        assert_eq!(
+            completion_text_for("notes in gla", &hint).as_deref(),
+            Some("notes in glassbox")
+        );
+    }
+
+    #[test]
+    fn home_path_completion_preserves_tilde() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let target = home.join("Documents");
+        let completed = complete_path_query("~/Doc", &target);
+        assert!(
+            completed.starts_with("~/Documents"),
+            "got {completed}"
+        );
+    }
+
+    #[test]
+    fn free_text_folder_prefers_tilde_under_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let target = home.join("projects").join("test_fyps");
+        let completed = complete_path_query("test", &target);
+        assert!(
+            completed.starts_with("~/projects/test_fyps"),
+            "got {completed}"
+        );
+        // Trailing slash only when the path is a real directory on disk.
+        if target.is_dir() {
+            assert!(completed.ends_with('/'), "got {completed}");
+        }
     }
 }
 
