@@ -21,6 +21,7 @@ use preview::PreviewPanel;
 use rows::ResultRowPool;
 use settings::SettingsPanel;
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -59,6 +60,8 @@ pub struct Launcher {
     deep_gen: Rc<Cell<u64>>,
     /// Pending search debounce timer (cancelled on each keystroke / hide).
     search_debounce: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Queries typed this open session (v2 typo reformulation learning).
+    session_queries: Rc<RefCell<VecDeque<String>>>,
     drag_session: DragSession,
     /// Skip footer/preview side-effects while we programmatically select a row.
     suppress_select: Rc<Cell<bool>>,
@@ -291,6 +294,8 @@ impl Launcher {
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let search_debounce: Rc<RefCell<Option<glib::SourceId>>> =
             Rc::new(RefCell::new(None));
+        let session_queries: Rc<RefCell<VecDeque<String>>> =
+            Rc::new(RefCell::new(VecDeque::with_capacity(12)));
 
         {
             let engine = engine.clone();
@@ -314,11 +319,13 @@ impl Launcher {
             let header_sep_c = header_sep.clone();
             let footer_sep_c = footer_sep.clone();
             let scroll_c = scroll.clone();
+            let session_queries = session_queries.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
                 }
                 let q = entry.text().to_string();
+                note_session_query(&session_queries, &q);
                 // Expand/collapse body immediately (don't wait for search debounce).
                 apply_body_chrome(
                     ui_compact.get(),
@@ -483,11 +490,20 @@ impl Launcher {
             let results = results.clone();
             let selected = selected.clone();
             let search = search.clone();
+            let session_queries = session_queries.clone();
             let open_settings = open_settings.clone();
             list.connect_row_activated(move |_, row| {
                 let idx = row.index() as usize;
                 selected.set(idx);
-                activate_result(&engine, &results, idx, &window, &search, &open_settings);
+                activate_result(
+                    &engine,
+                    &results,
+                    idx,
+                    &window,
+                    &search,
+                    &session_queries,
+                    &open_settings,
+                );
             });
         }
 
@@ -521,6 +537,7 @@ impl Launcher {
             let results = results.clone();
             let selected = selected.clone();
             let search_for_activate = search.clone();
+            let session_queries = session_queries.clone();
             let open_settings = open_settings.clone();
             search.connect_activate(move |_| {
                 activate_result(
@@ -529,6 +546,7 @@ impl Launcher {
                     selected.get(),
                     &window,
                     &search_for_activate,
+                    &session_queries,
                     &open_settings,
                 );
             });
@@ -543,6 +561,7 @@ impl Launcher {
             let search = search.clone();
             let results = results.clone();
             let selected = selected.clone();
+            let session_queries = session_queries.clone();
             let in_settings = in_settings.clone();
             let close_settings = close_settings.clone();
             let open_settings = open_settings.clone();
@@ -622,6 +641,7 @@ impl Launcher {
                             selected.get(),
                             &window,
                             &search,
+                            &session_queries,
                             &open_settings,
                         );
                         glib::Propagation::Stop
@@ -726,6 +746,7 @@ impl Launcher {
             preview,
             deep_gen,
             search_debounce,
+            session_queries: session_queries.clone(),
             drag_session,
             suppress_select,
             ui_icon_size,
@@ -750,6 +771,7 @@ impl Launcher {
         self.ignore_focus_loss.set(true);
         self.in_settings.set(false);
         self.stack.set_visible_child_name("search");
+        self.session_queries.borrow_mut().clear();
         self.search.set_text("");
         // Refresh cached appearance from config (settings may have changed while hidden).
         let ui = self.engine.config().snapshot().ui.clone();
@@ -801,6 +823,7 @@ impl Launcher {
             id.remove();
         }
         self.deep_gen.set(self.deep_gen.get().wrapping_add(1));
+        self.session_queries.borrow_mut().clear();
         self.preview.clear();
     }
 }
@@ -1078,6 +1101,7 @@ fn activate_result<F: Fn()>(
     idx: usize,
     window: &ApplicationWindow,
     search: &Entry,
+    session_queries: &Rc<RefCell<VecDeque<String>>>,
     open_settings: &Rc<F>,
 ) {
     let item = results.borrow().get(idx).cloned();
@@ -1097,11 +1121,35 @@ fn activate_result<F: Fn()>(
                     item.kind,
                     ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
                 ) {
+                    let final_q = search.text().to_string();
+                    let recent: Vec<String> =
+                        session_queries.borrow().iter().cloned().collect();
+                    engine.learn_typos(&final_q, &recent, &item.id, &item.title);
                     engine.record_usage(&item.id);
                 }
                 window.set_visible(false);
             }
         }
+    }
+}
+
+/// Remember a query fragment for typo reformulation learning (v2).
+fn note_session_query(session: &Rc<RefCell<VecDeque<String>>>, q: &str) {
+    let q = q.trim().to_lowercase();
+    if q.chars().count() < 2 {
+        return;
+    }
+    // Skip pure path/math noise — learning only wants free-text tokens.
+    if q.contains('/') || q.contains('~') || q.contains('%') || q.contains('=') {
+        return;
+    }
+    let mut g = session.borrow_mut();
+    if g.back().map(|s| s.as_str()) == Some(q.as_str()) {
+        return;
+    }
+    g.push_back(q);
+    while g.len() > 12 {
+        g.pop_front();
     }
 }
 

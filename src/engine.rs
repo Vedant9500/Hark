@@ -4,6 +4,7 @@ use crate::providers::calc::CalcProvider;
 use crate::providers::files::{FileProvider, IndexProgress};
 use crate::providers::translate::TranslateProvider;
 use crate::providers::{Action, ResultKind, SearchResult};
+use crate::typos::TypoStore;
 use crate::usage::UsageStore;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub struct Engine {
     calc: Arc<CalcProvider>,
     translate: Arc<TranslateProvider>,
     usage: Arc<UsageStore>,
+    typos: Arc<TypoStore>,
     config: Arc<ConfigStore>,
 }
 
@@ -33,6 +35,7 @@ impl Engine {
     pub fn new_headless() -> Self {
         let config = Arc::new(ConfigStore::load());
         let usage = Arc::new(UsageStore::load());
+        let typos = Arc::new(TypoStore::load());
         let apps = Arc::new(AppProvider::new_empty());
         let files = Arc::new(FileProvider::new_empty(config.clone(), usage.clone()));
         let calc = Arc::new(CalcProvider::new());
@@ -48,6 +51,7 @@ impl Engine {
             calc,
             translate,
             usage,
+            typos,
             config,
         }
     }
@@ -226,6 +230,11 @@ impl Engine {
             }
         }
 
+        // Personal typo aliases (v1/v2): boost or inject the learned target.
+        if !force_files && !force_translate && !calc_hit {
+            self.apply_typo_alias(q, &mut results);
+        }
+
         // Dedup by id without cloning id Strings (first occurrence wins).
         {
             let mut seen = std::collections::HashSet::with_capacity(results.len());
@@ -337,6 +346,35 @@ impl Engine {
         self.usage.record(id);
         if id.starts_with("path:") {
             self.files.note_usage_changed();
+        }
+    }
+
+    /// Learn personal typo aliases from a launch (v1 final query + v2 session).
+    pub fn learn_typos(
+        &self,
+        final_query: &str,
+        recent_queries: &[String],
+        result_id: &str,
+        result_title: &str,
+    ) {
+        self.typos
+            .learn_from_launch(final_query, recent_queries, result_id, result_title);
+    }
+
+    /// Boost / inject a learned alias target for `query`.
+    fn apply_typo_alias(&self, query: &str, results: &mut Vec<SearchResult>) {
+        let Some((id, boost)) = self.typos.lookup(query) else {
+            return;
+        };
+        if let Some(r) = results.iter_mut().find(|r| r.id == id) {
+            r.score = r.score.saturating_add(boost);
+            return;
+        }
+        // Not in the current hit list — inject so the personal match still appears.
+        if let Some(mut r) = self.resolve_id(&id) {
+            r.score = crate::typos::inject_floor().saturating_add(boost);
+            r.score = r.score.saturating_add(self.usage.boost(&r.id));
+            results.push(r);
         }
     }
 

@@ -12,6 +12,7 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 | **Unit conversion** | `100 km to mi`, `32 f to c`, `1 gb to mb` |
 | **Bases** | `0xFF`, `0b1010` |
 | **Timezones** | `15:00 here to tokyo`, `15:00 in london to here`, `now in new york` |
+| **Typo learning** | Learns from launches + rewrites (`wats` → WhatsApp); stored in `~/.local/state/blink/typos.json` |
 
 **Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close
 

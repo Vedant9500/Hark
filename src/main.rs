@@ -5,6 +5,7 @@ mod providers;
 mod theme;
 mod ui;
 mod usage;
+mod typos;
 
 #[cfg(feature = "bench")]
 mod bench;
