@@ -8,7 +8,7 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 |--------|--------|
 | **App search** | Type app name — fuzzy match `.desktop` entries |
 | **File / folder search** | Type ≥2 chars, or `f query`, or path like `~/Doc` |
-| **Math** | `2+2`, `sqrt(144)`, `15% of 80`, `tip 20% on 45` |
+| **Math** | `2+2`, `sqrt(144)`, `5k + 2m`, `1.5 million`, `15% of 80`, `tip 20% on 45` |
 | **Unit conversion** | `100 km to mi`, `32 f to c`, `1 gb to mb` |
 | **Bases** | `0xFF`, `0b1010` |
 

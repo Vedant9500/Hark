@@ -2,7 +2,8 @@
 //!
 //! Replaces abandoned `meval` (which pulled ancient `nom` with future-incompat lints).
 //! Supports: + - * / % ** ^, unary ±, parentheses, factorial postfix `!`,
-//! constants `pi`/`e`, and functions `sqrt sin cos tan log ln abs floor ceil round`.
+//! constants `pi`/`e`, functions `sqrt sin cos tan log ln abs floor ceil round`,
+//! and magnitude suffixes (`5k`, `1.5m`, `2 billion`, …).
 
 use std::f64::consts::{E, PI};
 
@@ -55,21 +56,33 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
                 i += 1;
                 while i < bytes.len() {
                     let d = bytes[i] as char;
-                    if d.is_ascii_digit() || d == '.' || d == 'e' || d == 'E' {
-                        // handle scientific notation sign after e/E
-                        if (d == 'e' || d == 'E')
-                            && i + 1 < bytes.len()
-                            && matches!(bytes[i + 1] as char, '+' | '-')
-                        {
-                            i += 2;
-                            continue;
-                        }
+                    if d.is_ascii_digit() || d == '.' {
                         i += 1;
                     } else {
                         break;
                     }
                 }
-                let num: f64 = std::str::from_utf8(&bytes[start..i]).ok()?.parse().ok()?;
+                // Scientific notation only when `e`/`E` is followed by digits
+                // (optional sign). Avoids treating a bare trailing `e` as part of
+                // the number (and leaves room for magnitude suffixes).
+                if i < bytes.len() && matches!(bytes[i] as char, 'e' | 'E') {
+                    let mut j = i + 1;
+                    if j < bytes.len() && matches!(bytes[j] as char, '+' | '-') {
+                        j += 1;
+                    }
+                    let exp_start = j;
+                    while j < bytes.len() && (bytes[j] as char).is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j > exp_start {
+                        i = j;
+                    }
+                }
+                let mut num: f64 =
+                    std::str::from_utf8(&bytes[start..i]).ok()?.parse().ok()?;
+                let (scaled, ni) = apply_magnitude_suffix(bytes, i, num)?;
+                num = scaled;
+                i = ni;
                 out.push(Tok::Num(num));
             }
             'a'..='z' | 'A'..='Z' | '_' => {
@@ -247,6 +260,59 @@ fn call_fn(name: &str, args: &[f64]) -> Option<f64> {
     }
 }
 
+/// Scale factor for finance-style magnitude words/letters after a number.
+///
+/// Short letters: `k`/`m`/`b`/`t` (and `bn`/`tn`). Full words: thousand…trillion.
+/// Unknown words return `None` so unit tokens like `km` are left alone.
+fn magnitude_factor(word: &str) -> Option<f64> {
+    match word {
+        "k" | "thousand" | "thousands" => Some(1_000.0),
+        "m" | "mil" | "million" | "millions" => Some(1_000_000.0),
+        "b" | "bn" | "billion" | "billions" => Some(1_000_000_000.0),
+        "t" | "tn" | "trillion" | "trillions" => Some(1_000_000_000_000.0),
+        "hundred" | "hundreds" => Some(100.0),
+        // Common South-Asian scales (optional nicety).
+        "lakh" | "lac" | "lakhs" | "lacs" => Some(100_000.0),
+        "crore" | "crores" => Some(10_000_000.0),
+        _ => None,
+    }
+}
+
+/// After a numeric literal, consume an optional magnitude suffix.
+///
+/// Accepts glued (`5k`, `1.5m`) and spaced (`2 million`) forms. Does not steal
+/// multi-letter unit tokens (`10km` → no suffix match).
+fn apply_magnitude_suffix(bytes: &[u8], i: usize, num: f64) -> Option<(f64, usize)> {
+    // Allow optional whitespace before word forms (`5 million`).
+    let mut j = i;
+    while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+        j += 1;
+    }
+    if j >= bytes.len() {
+        return Some((num, i));
+    }
+    let c = bytes[j] as char;
+    if !c.is_ascii_alphabetic() {
+        return Some((num, i));
+    }
+
+    let start = j;
+    j += 1;
+    while j < bytes.len() && (bytes[j] as char).is_ascii_alphabetic() {
+        j += 1;
+    }
+    let word = std::str::from_utf8(&bytes[start..j])
+        .ok()?
+        .to_ascii_lowercase();
+
+    match magnitude_factor(&word) {
+        Some(factor) => Some((num * factor, j)),
+        // Leave the cursor unmoved so a later Ident token can take over
+        // (or the parse fails cleanly on unknown trailing text).
+        None => Some((num, i)),
+    }
+}
+
 fn factorial(x: f64) -> Option<f64> {
     if x < 0.0 || x > 170.0 {
         return None;
@@ -293,5 +359,28 @@ mod tests {
         assert!(eval_str("2+").is_none());
         assert!(eval_str("1/0").is_none());
         assert!(eval_str("nope").is_none());
+    }
+
+    #[test]
+    fn magnitude_suffixes() {
+        assert!((eval_str("5k").unwrap() - 5_000.0).abs() < 1e-9);
+        assert!((eval_str("1.5k").unwrap() - 1_500.0).abs() < 1e-9);
+        assert!((eval_str("2K").unwrap() - 2_000.0).abs() < 1e-9);
+        assert!((eval_str("3m").unwrap() - 3_000_000.0).abs() < 1e-6);
+        assert!((eval_str("1.5 million").unwrap() - 1_500_000.0).abs() < 1e-6);
+        assert!((eval_str("2 billion").unwrap() - 2_000_000_000.0).abs() < 1e-3);
+        assert!((eval_str("1t").unwrap() - 1_000_000_000_000.0).abs() < 1.0);
+        assert!((eval_str("1 trillion").unwrap() - 1e12).abs() < 1.0);
+        assert!((eval_str("2bn").unwrap() - 2e9).abs() < 1e-3);
+        // Expressions
+        assert!((eval_str("5k + 2k").unwrap() - 7_000.0).abs() < 1e-9);
+        assert!((eval_str("1m / 4").unwrap() - 250_000.0).abs() < 1e-6);
+        assert!((eval_str("10k * 3").unwrap() - 30_000.0).abs() < 1e-9);
+        assert!((eval_str("(2.5m + 500k) / 1k").unwrap() - 3_000.0).abs() < 1e-6);
+        // Scientific still works; not confused with magnitude
+        assert!((eval_str("1e3").unwrap() - 1_000.0).abs() < 1e-12);
+        assert!((eval_str("1e3 + 1k").unwrap() - 2_000.0).abs() < 1e-9);
+        // Unit-like tokens must not be partially eaten as magnitude
+        assert!(eval_str("10km").is_none());
     }
 }
