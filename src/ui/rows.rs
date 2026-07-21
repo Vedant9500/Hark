@@ -14,6 +14,7 @@ use gtk::prelude::*;
 use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Matches engine result cap — pool never needs more than this.
 pub(crate) const ROW_POOL_CAP: usize = 25;
@@ -241,13 +242,13 @@ impl PooledRow {
 
         self.set_mode_std();
 
-        let requested = item
-            .icon
-            .as_deref()
-            .unwrap_or(default_icon_for_kind(item.kind));
-        let resolved = resolve_row_icon(requested, item.kind, symbolic_icons);
-        self.icon.set_icon_name(Some(resolved.as_str()));
-        self.icon.set_pixel_size(icon_size.clamp(18, 36));
+        apply_result_icon(
+            &self.icon,
+            item.icon.as_deref(),
+            item.kind,
+            symbolic_icons,
+            icon_size,
+        );
 
         self.title.set_text(&item.title);
         self.subtitle.set_text(&item.subtitle);
@@ -310,6 +311,80 @@ fn remove_badge_kind_class(badge: &Label, kind: ResultKind) {
         ResultKind::Folder => badge.remove_css_class("folder"),
         ResultKind::App | ResultKind::Command => {}
     }
+}
+
+/// Paint a themed icon name **or** an absolute icon file path onto `image`.
+///
+/// Manual / AppImage installs often ship `Icon=/path/to/app.png` in their
+/// `.desktop` file. Theme lookup alone would miss those and show the generic
+/// executable icon.
+pub(crate) fn apply_result_icon(
+    image: &Image,
+    requested: Option<&str>,
+    kind: ResultKind,
+    symbolic_icons: bool,
+    icon_size: i32,
+) {
+    let size = icon_size.clamp(18, 36);
+    image.set_pixel_size(size);
+
+    let requested = requested
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default_icon_for_kind(kind));
+
+    if let Some(path) = icon_file_path(requested) {
+        // FileIcon + pixel-size keeps HiDPI scaling consistent with themed icons.
+        let gicon = gio::FileIcon::new(&gio::File::for_path(&path));
+        image.set_from_gicon(&gicon);
+        return;
+    }
+
+    // Path-looking Icon= that is missing on disk → generic fallback, not theme soup.
+    if looks_like_icon_path(requested) {
+        image.set_icon_name(Some(fallback_icon(kind, requested)));
+        return;
+    }
+
+    let resolved = resolve_row_icon(requested, kind, symbolic_icons);
+    image.set_icon_name(Some(resolved.as_str()));
+}
+
+fn looks_like_icon_path(s: &str) -> bool {
+    s.starts_with('/') || s.starts_with("~/") || s.starts_with("file:")
+}
+
+/// Resolve `Icon=` to an on-disk image path, if it points at a real file.
+fn icon_file_path(s: &str) -> Option<PathBuf> {
+    let raw = s.strip_prefix("file://").unwrap_or(s);
+    let path = if let Some(rest) = raw.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else if raw.starts_with('/') {
+        PathBuf::from(raw)
+    } else {
+        // Relative paths with a separator + image extension (rare, but valid).
+        let p = Path::new(raw);
+        if p.components().count() > 1 && is_image_path(p) {
+            p.to_path_buf()
+        } else {
+            return None;
+        }
+    };
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "svg" | "xpm" | "jpg" | "jpeg" | "webp" | "gif" | "ico")
+    )
 }
 
 fn default_icon_for_kind(kind: ResultKind) -> &'static str {

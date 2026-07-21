@@ -15,7 +15,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Entry, EventControllerKey, Label, ListBox,
-    ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack,
+    ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack, Viewport,
 };
 use preview::PreviewPanel;
 use rows::ResultRowPool;
@@ -515,15 +515,14 @@ impl Launcher {
             let preview = preview.clone();
             let suppress_select = suppress_select.clone();
             list.connect_row_selected(move |_, row| {
-                if suppress_select.get() {
-                    if let Some(row) = row {
-                        selected.set(row.index() as usize);
-                    }
-                    return;
-                }
                 if let Some(row) = row {
+                    // Keep keyboard/mouse selection in view even while focus stays on search.
+                    ensure_row_visible(&row);
                     let idx = row.index() as usize;
                     selected.set(idx);
+                    if suppress_select.get() {
+                        return;
+                    }
                     update_footer(&results, idx, &footer_action, &footer_term);
                     let item = results.borrow().get(idx).cloned();
                     preview.update(item.as_ref());
@@ -773,6 +772,10 @@ impl Launcher {
         self.stack.set_visible_child_name("search");
         self.session_queries.borrow_mut().clear();
         self.search.set_text("");
+        // Pick up apps installed while the daemon was already running.
+        // Desktop scan is cheap; without this, new .desktop entries only
+        // appear after the 45m periodic refresh or a full restart.
+        self.engine.reload_apps();
         // Refresh cached appearance from config (settings may have changed while hidden).
         let ui = self.engine.config().snapshot().ui.clone();
         self.ui_icon_size.set(ui.icon_size as i32);
@@ -1627,6 +1630,21 @@ fn apply_deep_hits(
         list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action, footer_term);
         preview.clear();
+    }
+}
+
+
+/// Scroll the highlighted result into the list viewport.
+///
+/// Arrow-key navigation keeps focus on the search entry (so typing continues
+/// uninterrupted). GTK only auto-scrolls ListBox selection when the row has
+/// focus, so we ask the surrounding Viewport to bring the row into view.
+fn ensure_row_visible(row: &ListBoxRow) {
+    if let Some(viewport) = row
+        .ancestor(Viewport::static_type())
+        .and_then(|w| w.downcast::<Viewport>().ok())
+    {
+        viewport.scroll_to(row, None);
     }
 }
 

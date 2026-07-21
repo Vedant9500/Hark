@@ -1247,12 +1247,19 @@ fn show_app_picker(
         item.set_margin_top(7);
         item.set_margin_bottom(7);
 
-        let icon = if app.icon.is_empty() {
-            Image::from_icon_name("application-x-executable")
-        } else {
-            Image::from_icon_name(&app.icon)
-        };
-        icon.set_pixel_size(18);
+        let icon = Image::from_icon_name("application-x-executable");
+        // Manual installs often use absolute Icon= paths — use shared loader.
+        super::rows::apply_result_icon(
+            &icon,
+            if app.icon.is_empty() {
+                None
+            } else {
+                Some(app.icon.as_str())
+            },
+            crate::providers::ResultKind::App,
+            false,
+            18,
+        );
         icon.set_valign(gtk::Align::Center);
 
         let name = Label::new(Some(&app.name));

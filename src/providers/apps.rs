@@ -15,6 +15,8 @@ struct DesktopApp {
     id: String,
     name: String,
     name_lower: String,
+    /// Lowercased Name + GenericName + Keywords + desktop id for matching.
+    search_blob: String,
     comment: String,
     exec: String,
     icon: String,
@@ -158,12 +160,22 @@ impl AppProvider {
             // Fast path: prefix / substring on precomputed name_lower
             // Bands must stay aligned with engine.rs (exact 50k, prefix 30k+,
             // contains 15k+). Fuzzy stays well below contains so path exacts win.
+            // Keywords / GenericName / desktop id live in search_blob at a
+            // weaker band so they surface apps without beating real name hits.
             let score = if app.name_lower == q_lower {
                 50_000
             } else if app.name_lower.starts_with(&q_lower) {
                 30_000 + (q_lower.len() as i64 * 100)
             } else if app.name_lower.contains(&q_lower) {
                 15_000 + (q_lower.len() as i64 * 50)
+            } else if app
+                .search_blob
+                .split_whitespace()
+                .any(|tok| tok == q_lower || tok.starts_with(&q_lower))
+            {
+                // Keyword / desktop-id token (e.g. Keywords=zed, id sublime_text).
+                // Keep below name-contains (15k) so real title hits still win.
+                14_000 + (q_lower.len() as i64 * 50)
             } else if let Some(s) = self.matcher.fuzzy_match(&app.name_lower, q) {
                 // Name-only fuzzy; ignore comment/keywords letter soup.
                 if s < 40 {
@@ -237,10 +249,12 @@ fn desktop_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from("/usr/share/applications"));
         dirs.push(PathBuf::from("/usr/local/share/applications"));
     }
+    // Flatpak / Snap export locations (not always present in XDG_DATA_DIRS).
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join(".local/share/flatpak/exports/share/applications"));
     }
+    dirs.push(PathBuf::from("/var/lib/snapd/desktop/applications"));
     dirs
 }
 
@@ -248,6 +262,8 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_desktop = false;
     let mut name = String::new();
+    let mut generic_name = String::new();
+    let mut keywords = String::new();
     let mut comment = String::new();
     let mut exec = String::new();
     let mut icon = String::new();
@@ -269,6 +285,11 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         };
         match key {
             "Name" if name.is_empty() => name = value.to_string(),
+            "GenericName" if generic_name.is_empty() => generic_name = value.to_string(),
+            // Keywords use semicolon separators (trailing `;` common).
+            "Keywords" if keywords.is_empty() => {
+                keywords = value.replace(';', " ").to_string();
+            }
             "Comment" if comment.is_empty() => comment = value.to_string(),
             "Exec" if exec.is_empty() => exec = clean_exec(value),
             "Icon" if icon.is_empty() => icon = value.to_string(),
@@ -291,10 +312,19 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         .to_string();
 
     let name_lower = name.to_lowercase();
+    // Include desktop id with separators normalized so `sublime_text` matches `subli`.
+    let id_tokens = id.replace(['-', '_', '.'], " ");
+    let search_blob = format!(
+        "{name_lower} {} {} {id_tokens}",
+        generic_name.to_lowercase(),
+        keywords.to_lowercase(),
+    )
+    .to_lowercase();
     Some(DesktopApp {
         id,
         name,
         name_lower,
+        search_blob,
         comment,
         exec,
         icon,
@@ -352,4 +382,43 @@ pub fn launch_app(exec: &str, terminal: bool) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let _ = cmd.spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn parses_keywords_and_matches_desktop_id() {
+        let dir = std::env::temp_dir().join(format!("blink-app-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sublime_text.desktop");
+        let mut f = fs::File::create(&path).unwrap();
+        write!(
+            f,
+            "[Desktop Entry]\n             Type=Application\n             Name=Sublime Text\n             GenericName=Text Editor\n             Comment=Sophisticated text editor\n             Exec=/usr/bin/subl %F\n             Icon=sublime-text\n             Keywords=subl;editor;\n"
+        )
+        .unwrap();
+
+        let app = parse_desktop_file(&path).expect("parse");
+        assert_eq!(app.name, "Sublime Text");
+        assert!(app.search_blob.contains("subl"));
+        assert!(app.search_blob.contains("sublime"));
+
+        let provider = AppProvider::new_empty();
+        {
+            let mut apps = provider.apps.write().unwrap();
+            apps.push(app);
+        }
+        let hits = provider.search("subli");
+        assert!(
+            hits.iter().any(|h| h.title == "Sublime Text"),
+            "expected Sublime Text in {:?}",
+            hits.iter().map(|h| h.title.clone()).collect::<Vec<_>>()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

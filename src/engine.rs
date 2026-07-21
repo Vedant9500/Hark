@@ -95,10 +95,19 @@ impl Engine {
         self.files.index_progress()
     }
 
+    /// Rescan `.desktop` files. Cheap (~ms) and safe on the UI thread.
+    pub fn reload_apps(&self) {
+        self.apps.reload();
+    }
+
     /// Always off the UI thread.
     pub fn force_reindex(&self) {
         let files = self.files.clone();
+        let apps = self.apps.clone();
         thread::spawn(move || {
+            // New installs often land while the daemon is already running;
+            // reindex should pick up apps too, not only files.
+            apps.reload();
             files.force_rebuild();
         });
     }
