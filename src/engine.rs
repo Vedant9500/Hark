@@ -337,7 +337,30 @@ impl Engine {
             }
             Action::SetQuery(q) => ExecuteOutcome::SetQuery(q.clone()),
             Action::OpenSettings => ExecuteOutcome::OpenSettings,
+            Action::RevealPath(path) => {
+                crate::providers::files::reveal_in_file_manager(path);
+                ExecuteOutcome::Launched
+            }
+            Action::TrashPath(path) => match crate::providers::files::trash_path(path) {
+                Ok(()) => {
+                    // Stale deep-cache hits can re-surface the trashed path.
+                    self.files.clear_live_cache();
+                    ExecuteOutcome::Refresh
+                }
+                Err(err) => {
+                    eprintln!("blink: trash failed: {err}");
+                    ExecuteOutcome::Failed
+                }
+            },
         }
+    }
+
+    /// Secondary actions for the action panel (`Ctrl+K`).
+    pub fn secondary_actions(
+        &self,
+        item: &SearchResult,
+    ) -> Vec<crate::providers::ActionSpec> {
+        crate::providers::secondary_actions(item)
     }
 
     /// Open terminal at selected result (folder, or parent of file).
@@ -597,6 +620,10 @@ pub enum ExecuteOutcome {
     OpenSettings,
     /// Soft completion — keep window open and replace the search query.
     SetQuery(String),
+    /// Keep the launcher open and re-run the current search (e.g. after trash).
+    Refresh,
+    /// Action did not complete; keep the launcher open.
+    Failed,
 }
 
 /// When the user opens a file deeper than the global index depth, promote a

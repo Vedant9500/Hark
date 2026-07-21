@@ -1,3 +1,4 @@
+mod action_panel;
 mod dnd;
 mod footer;
 mod preview;
@@ -6,10 +7,12 @@ mod settings;
 mod thumbnails;
 
 use crate::engine::{Engine, ExecuteOutcome};
-use crate::providers::{Action, ResultKind, SearchResult};
+use crate::providers::{Action, ActionSpec, ResultKind, SearchResult};
 use crate::theme::ThemeManager;
+use action_panel::ActionPanel;
 use dnd::DragSession;
-use footer::{action_chip, action_chip_button, footer_divider, keycap_label, update_footer};
+use footer::{action_chip_button, footer_divider, keycap_label, update_footer};
+use gio::Cancellable;
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
@@ -55,7 +58,6 @@ pub struct Launcher {
     settings: SettingsPanel,
     in_settings: Rc<Cell<bool>>,
     footer_action: Label,
-    footer_term: GtkBox,
     preview: Rc<PreviewPanel>,
     deep_gen: Rc<Cell<u64>>,
     /// Pending search debounce timer (cancelled on each keystroke / hide).
@@ -207,12 +209,17 @@ impl Launcher {
         let footer_sep = gtk::Separator::new(Orientation::Horizontal);
         footer_sep.add_css_class("blink-sep");
 
-        // Raycast-style action bar
+        // Slim footer: Settings (left) · primary Enter (center) · Actions (right)
         let footer = GtkBox::new(Orientation::Horizontal, 0);
         footer.add_css_class("blink-footer");
         footer.set_hexpand(true);
 
-        // Left: primary action + keycap
+        let settings_chip = action_chip_button("Settings", "Ctrl ,");
+        settings_chip.set_halign(gtk::Align::Start);
+        settings_chip.set_valign(gtk::Align::Center);
+
+        let left_div = footer_divider();
+
         let primary = GtkBox::new(Orientation::Horizontal, 8);
         primary.add_css_class("blink-footer-primary");
         primary.set_halign(gtk::Align::Start);
@@ -227,31 +234,17 @@ impl Launcher {
         primary.append(&footer_action);
         primary.append(&enter_key);
 
-        // Center/right divider before actions cluster
-        let mid_div = footer_divider();
+        let actions_chip = action_chip_button("Actions", "Ctrl K");
+        actions_chip.set_halign(gtk::Align::End);
+        actions_chip.set_valign(gtk::Align::Center);
+        actions_chip.add_css_class("blink-footer-actions");
 
-        // Right: secondary actions as chips (multi-keycap shortcuts)
-        let actions = GtkBox::new(Orientation::Horizontal, 2);
-        actions.add_css_class("blink-footer-actions");
-        actions.set_halign(gtk::Align::End);
-        actions.set_valign(gtk::Align::Center);
+        let action_panel = ActionPanel::new(&actions_chip);
 
-        let footer_term = action_chip("Terminal", "Ctrl Alt ↵");
-        let copy_chip = action_chip("Copy", "Ctrl C");
-        let settings_chip = action_chip_button("Settings", "Ctrl ,");
-
-        let div1 = footer_divider();
-        let div2 = footer_divider();
-
-        actions.append(&footer_term);
-        actions.append(&div1);
-        actions.append(&copy_chip);
-        actions.append(&div2);
-        actions.append(&settings_chip);
-
+        footer.append(&settings_chip);
+        footer.append(&left_div);
         footer.append(&primary);
-        footer.append(&mid_div);
-        footer.append(&actions);
+        footer.append(&actions_chip);
 
         search_view.append(&header);
         search_view.append(&header_sep);
@@ -304,7 +297,6 @@ impl Launcher {
             let results = results.clone();
             let selected = selected.clone();
             let footer_action = footer_action.clone();
-            let footer_term = footer_term.clone();
             let preview = preview.clone();
             let deep_gen = deep_gen.clone();
             let search_for_deep = search.clone();
@@ -341,7 +333,6 @@ impl Launcher {
                 let results = results.clone();
                 let selected = selected.clone();
                 let footer_action = footer_action.clone();
-                let footer_term = footer_term.clone();
                 let preview = preview.clone();
                 let deep_gen = deep_gen.clone();
                 let search_for_deep = search_for_deep.clone();
@@ -375,7 +366,6 @@ impl Launcher {
                             &results,
                             &selected,
                             &footer_action,
-                            &footer_term,
                             &preview,
                             &deep_gen,
                             &search_for_deep,
@@ -423,7 +413,6 @@ impl Launcher {
             let results = results.clone();
             let selected = selected.clone();
             let footer_action = footer_action.clone();
-            let footer_term = footer_term.clone();
             let preview = preview.clone();
             let deep_gen = deep_gen.clone();
             let drag_session = drag_session.clone();
@@ -457,7 +446,6 @@ impl Launcher {
                     &results,
                     &selected,
                     &footer_action,
-                    &footer_term,
                     &preview,
                     &deep_gen,
                     &search,
@@ -482,6 +470,88 @@ impl Launcher {
         {
             let open_settings = open_settings.clone();
             settings_chip.connect_clicked(move |_| open_settings());
+        }
+
+        // Secondary action panel: populate + run chosen action.
+        let open_action_panel = {
+            let engine = engine.clone();
+            let results = results.clone();
+            let selected = selected.clone();
+            let action_panel = action_panel.clone();
+            let window = window.clone();
+            let search = search.clone();
+            let session_queries = session_queries.clone();
+            let open_settings = open_settings.clone();
+            let list = list.clone();
+            let row_pool = row_pool.clone();
+            let empty = empty.clone();
+            let footer_action = footer_action.clone();
+            let preview = preview.clone();
+            let drag_session = drag_session.clone();
+            let suppress_select = suppress_select.clone();
+            let ui_icon_size = ui_icon_size.clone();
+            let ui_symbolic = ui_symbolic.clone();
+            let ignore_focus_loss = ignore_focus_loss.clone();
+            Rc::new(move || {
+                let idx = selected.get();
+                let item = match results.borrow().get(idx).cloned() {
+                    Some(i) => i,
+                    None => {
+                        action_panel.close();
+                        return;
+                    }
+                };
+                let specs = engine.secondary_actions(&item);
+                if !action_panel.open_for(specs) {
+                    return;
+                }
+                let engine = engine.clone();
+                let window = window.clone();
+                let search = search.clone();
+                let session_queries = session_queries.clone();
+                let open_settings = open_settings.clone();
+                let results = results.clone();
+                let selected = selected.clone();
+                let list = list.clone();
+                let row_pool = row_pool.clone();
+                let empty = empty.clone();
+                let footer_action = footer_action.clone();
+                let preview = preview.clone();
+                let drag_session = drag_session.clone();
+                let suppress_select = suppress_select.clone();
+                let ui_icon_size = ui_icon_size.clone();
+                let ui_symbolic = ui_symbolic.clone();
+                let ignore_focus_loss = ignore_focus_loss.clone();
+                let item = item.clone();
+                action_panel.set_on_activate(Rc::new(move |spec| {
+                    run_secondary_action(
+                        &engine,
+                        spec,
+                        &item,
+                        &window,
+                        &search,
+                        &session_queries,
+                        &open_settings,
+                        &results,
+                        &selected,
+                        &list,
+                        &row_pool,
+                        &empty,
+                        &footer_action,
+                        &preview,
+                        &drag_session,
+                        &suppress_select,
+                        &ui_icon_size,
+                        &ui_symbolic,
+                        &ignore_focus_loss,
+                    );
+                }));
+            })
+        };
+
+        {
+            let open_action_panel = open_action_panel.clone();
+            actions_chip.connect_clicked(move |_| open_action_panel());
         }
 
         {
@@ -511,7 +581,6 @@ impl Launcher {
             let selected = selected.clone();
             let results = results.clone();
             let footer_action = footer_action.clone();
-            let footer_term = footer_term.clone();
             let preview = preview.clone();
             let suppress_select = suppress_select.clone();
             list.connect_row_selected(move |_, row| {
@@ -523,7 +592,7 @@ impl Launcher {
                     if suppress_select.get() {
                         return;
                     }
-                    update_footer(&results, idx, &footer_action, &footer_term);
+                    update_footer(&results, idx, &footer_action);
                     let item = results.borrow().get(idx).cloned();
                     preview.update(item.as_ref());
                 }
@@ -564,6 +633,17 @@ impl Launcher {
             let in_settings = in_settings.clone();
             let close_settings = close_settings.clone();
             let open_settings = open_settings.clone();
+            let open_action_panel = open_action_panel.clone();
+            let action_panel = action_panel.clone();
+            let row_pool = row_pool.clone();
+            let empty = empty.clone();
+            let footer_action = footer_action.clone();
+            let preview = preview.clone();
+            let drag_session = drag_session.clone();
+            let suppress_select = suppress_select.clone();
+            let ui_icon_size = ui_icon_size.clone();
+            let ui_symbolic = ui_symbolic.clone();
+            let ignore_focus_loss = ignore_focus_loss.clone();
             let dismiss_settings_overlay = {
                 let settings_dismiss = settings.dismiss_overlay_handle();
                 settings_dismiss
@@ -615,6 +695,55 @@ impl Launcher {
                     return glib::Propagation::Proceed;
                 }
 
+                // Action panel captures navigation while open.
+                if action_panel.is_open() {
+                    match keyval {
+                        Key::Escape => {
+                            action_panel.close();
+                            search.grab_focus_without_selecting();
+                            return glib::Propagation::Stop;
+                        }
+                        Key::Down | Key::j | Key::J => {
+                            action_panel.move_selection(1);
+                            return glib::Propagation::Stop;
+                        }
+                        Key::Up | Key::k | Key::K => {
+                            action_panel.move_selection(-1);
+                            return glib::Propagation::Stop;
+                        }
+                        Key::Return | Key::KP_Enter => {
+                            if let Some(spec) = action_panel.activate_selected() {
+                                let idx = selected.get();
+                                if let Some(item) = results.borrow().get(idx).cloned() {
+                                    run_secondary_action(
+                                        &engine,
+                                        spec,
+                                        &item,
+                                        &window,
+                                        &search,
+                                        &session_queries,
+                                        &open_settings,
+                                        &results,
+                                        &selected,
+                                        &list,
+                                        &row_pool,
+                                        &empty,
+                                        &footer_action,
+                                        &preview,
+                                        &drag_session,
+                                        &suppress_select,
+                                        &ui_icon_size,
+                                        &ui_symbolic,
+                                        &ignore_focus_loss,
+                                    );
+                                }
+                            }
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
+
                 match keyval {
                     Key::Escape => {
                         window.set_visible(false);
@@ -647,6 +776,14 @@ impl Launcher {
                     }
                     Key::comma if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) => {
                         open_settings();
+                        glib::Propagation::Stop
+                    }
+                    Key::k | Key::K
+                        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                            && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                            && !state.contains(gtk::gdk::ModifierType::ALT_MASK) =>
+                    {
+                        open_action_panel();
                         glib::Propagation::Stop
                     }
                     Key::Tab => {
@@ -685,6 +822,42 @@ impl Launcher {
                         }
                         glib::Propagation::Stop
                     }
+                    Key::c | Key::C
+                        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                            && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                    {
+                        // Ctrl+Shift+C → copy path / desktop path
+                        let idx = selected.get();
+                        if let Some(item) = results.borrow().get(idx).cloned() {
+                            for spec in engine.secondary_actions(&item) {
+                                if spec.id == "copy_path" {
+                                    run_secondary_action(
+                                        &engine,
+                                        spec,
+                                        &item,
+                                        &window,
+                                        &search,
+                                        &session_queries,
+                                        &open_settings,
+                                        &results,
+                                        &selected,
+                                        &list,
+                                        &row_pool,
+                                        &empty,
+                                        &footer_action,
+                                        &preview,
+                                        &drag_session,
+                                        &suppress_select,
+                                        &ui_icon_size,
+                                        &ui_symbolic,
+                                        &ignore_focus_loss,
+                                    );
+                                    return glib::Propagation::Stop;
+                                }
+                            }
+                        }
+                        glib::Propagation::Proceed
+                    }
                     Key::c if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) => {
                         let idx = selected.get();
                         if let Some(item) = results.borrow().get(idx) {
@@ -697,6 +870,42 @@ impl Launcher {
                                 engine.execute(&Action::Copy(item.title.clone()));
                                 window.set_visible(false);
                                 return glib::Propagation::Stop;
+                            }
+                        }
+                        glib::Propagation::Proceed
+                    }
+                    Key::r | Key::R
+                        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                            && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                    {
+                        // Ctrl+Shift+R → reveal in file manager
+                        let idx = selected.get();
+                        if let Some(item) = results.borrow().get(idx).cloned() {
+                            for spec in engine.secondary_actions(&item) {
+                                if spec.id == "reveal" {
+                                    run_secondary_action(
+                                        &engine,
+                                        spec,
+                                        &item,
+                                        &window,
+                                        &search,
+                                        &session_queries,
+                                        &open_settings,
+                                        &results,
+                                        &selected,
+                                        &list,
+                                        &row_pool,
+                                        &empty,
+                                        &footer_action,
+                                        &preview,
+                                        &drag_session,
+                                        &suppress_select,
+                                        &ui_icon_size,
+                                        &ui_symbolic,
+                                        &ignore_focus_loss,
+                                    );
+                                    return glib::Propagation::Stop;
+                                }
                             }
                         }
                         glib::Propagation::Proceed
@@ -741,7 +950,6 @@ impl Launcher {
             settings,
             in_settings,
             footer_action,
-            footer_term,
             preview,
             deep_gen,
             search_debounce,
@@ -793,7 +1001,6 @@ impl Launcher {
             &self.results,
             &self.selected,
             &self.footer_action,
-            &self.footer_term,
             &self.preview,
             &self.deep_gen,
             &self.search,
@@ -904,7 +1111,10 @@ fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
             Some(item.title.clone())
         }
         Action::LaunchApp { .. } | Action::OpenTerminal(_) => Some(item.title.clone()),
-        Action::Copy(_) | Action::OpenSettings => {
+        Action::Copy(_)
+        | Action::OpenSettings
+        | Action::RevealPath(_)
+        | Action::TrashPath(_) => {
             // Calc / conversion / settings: title is still a useful fill-in.
             if item.title.is_empty() {
                 None
@@ -1098,6 +1308,188 @@ mod tab_complete_tests {
     }
 }
 
+
+/// Apply an action from the secondary panel (or a keyboard shortcut).
+fn run_secondary_action<F: Fn() + 'static>(
+    engine: &Arc<Engine>,
+    spec: ActionSpec,
+    item: &SearchResult,
+    window: &ApplicationWindow,
+    search: &Entry,
+    session_queries: &Rc<RefCell<VecDeque<String>>>,
+    open_settings: &Rc<F>,
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    selected: &Rc<Cell<usize>>,
+    list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
+    empty: &Label,
+    footer_action: &Label,
+    preview: &Rc<PreviewPanel>,
+    drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
+    ui_icon_size: &Rc<Cell<i32>>,
+    ui_symbolic: &Rc<Cell<bool>>,
+    ignore_focus_loss: &Rc<Cell<bool>>,
+) {
+    let finish = {
+        let engine = engine.clone();
+        let window = window.clone();
+        let search = search.clone();
+        let session_queries = session_queries.clone();
+        let open_settings = open_settings.clone();
+        let results = results.clone();
+        let selected = selected.clone();
+        let list = list.clone();
+        let row_pool = row_pool.clone();
+        let empty = empty.clone();
+        let footer_action = footer_action.clone();
+        let preview = preview.clone();
+        let drag_session = drag_session.clone();
+        let suppress_select = suppress_select.clone();
+        let ui_icon_size = ui_icon_size.clone();
+        let ui_symbolic = ui_symbolic.clone();
+        let item_id = item.id.clone();
+        let item_kind = item.kind;
+        let item_title = item.title.clone();
+        move |spec: ActionSpec| {
+            let outcome = engine.execute(&spec.action);
+            match outcome {
+                ExecuteOutcome::OpenSettings => open_settings(),
+                ExecuteOutcome::SetQuery(q) => {
+                    search.set_text(&q);
+                    search.set_position(-1);
+                    search.grab_focus_without_selecting();
+                }
+                ExecuteOutcome::Launched => {
+                    if matches!(spec.id, "open" | "terminal" | "reveal")
+                        && !matches!(
+                            item_kind,
+                            ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                        )
+                    {
+                        let final_q = search.text().to_string();
+                        let recent: Vec<String> =
+                            session_queries.borrow().iter().cloned().collect();
+                        engine.learn_typos(&final_q, &recent, &item_id, &item_title);
+                        engine.record_usage(&item_id);
+                    }
+                    window.set_visible(false);
+                }
+                ExecuteOutcome::Refresh => {
+                    // Drop the trashed row immediately so the UI feels responsive
+                    // even if the on-disk index still lists the path briefly.
+                    {
+                        let mut rs = results.borrow_mut();
+                        rs.retain(|r| r.id != item_id);
+                        if let Action::TrashPath(path) = &spec.action {
+                            let path_id = format!("path:{}", path.display());
+                            rs.retain(|r| r.id != path_id);
+                        }
+                    }
+                    rebind_results_from_cache(
+                        &list,
+                        &row_pool,
+                        &empty,
+                        &results,
+                        &selected,
+                        &footer_action,
+                        &preview,
+                        &drag_session,
+                        &suppress_select,
+                        ui_icon_size.get(),
+                        ui_symbolic.get(),
+                    );
+                    search.grab_focus_without_selecting();
+                }
+                ExecuteOutcome::Failed => {
+                    search.grab_focus_without_selecting();
+                }
+            }
+        }
+    };
+
+    if spec.destructive {
+        let title = item.title.clone();
+        let message = format!("Move \"{title}\" to Trash?");
+        let detail = match &spec.action {
+            Action::TrashPath(p) => p.display().to_string(),
+            _ => title.clone(),
+        };
+        let dialog = gtk::AlertDialog::builder()
+            .modal(true)
+            .message(&message)
+            .detail(&detail)
+            .buttons(["Cancel", "Move to Trash"])
+            .cancel_button(0)
+            .default_button(1)
+            .build();
+        ignore_focus_loss.set(true);
+        let ignore_focus_loss = ignore_focus_loss.clone();
+        let window = window.clone();
+        dialog.choose(
+            Some(&window),
+            None::<&Cancellable>,
+            move |result| {
+                ignore_focus_loss.set(false);
+                if matches!(result, Ok(1)) {
+                    finish(spec);
+                }
+            },
+        );
+    } else {
+        finish(spec);
+    }
+}
+
+/// Re-render the list from the in-memory `results` vec (no re-search).
+fn rebind_results_from_cache(
+    list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
+    empty: &Label,
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    selected: &Rc<Cell<usize>>,
+    footer_action: &Label,
+    preview: &Rc<PreviewPanel>,
+    drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
+    icon_size: i32,
+    symbolic_icons: bool,
+) {
+    if drag_session.is_active() {
+        return;
+    }
+    let found = results.borrow().clone();
+    let no_hits = found.is_empty();
+    empty.set_visible(no_hits);
+    empty.set_vexpand(no_hits);
+    list.set_visible(!no_hits);
+
+    {
+        let mut pool = row_pool.borrow_mut();
+        if found.is_empty() {
+            pool.clear(list);
+        } else {
+            pool.apply(list, &found, icon_size, symbolic_icons);
+        }
+    }
+
+    let idx = selected.get().min(found.len().saturating_sub(1));
+    selected.set(if found.is_empty() { 0 } else { idx });
+
+    if let Some(row) = row_pool.borrow().row_at(selected.get()).map(|r| r.clone()) {
+        suppress_select.set(true);
+        list.select_row(Some(&row));
+        suppress_select.set(false);
+        update_footer(results, selected.get(), footer_action);
+        let item = results.borrow().get(selected.get()).cloned();
+        preview.update(item.as_ref());
+    } else {
+        list.select_row(Option::<&ListBoxRow>::None);
+        update_footer(results, 0, footer_action);
+        preview.clear();
+    }
+}
+
 fn activate_result<F: Fn()>(
     engine: &Engine,
     results: &Rc<RefCell<Vec<SearchResult>>>,
@@ -1132,6 +1524,8 @@ fn activate_result<F: Fn()>(
                 }
                 window.set_visible(false);
             }
+            // Primary Enter never produces these; secondary actions handle them.
+            ExecuteOutcome::Refresh | ExecuteOutcome::Failed => {}
         }
     }
 }
@@ -1205,7 +1599,6 @@ fn refresh_results(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
     footer_action: &Label,
-    footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     deep_gen: &Rc<Cell<u64>>,
     search_entry: &Entry,
@@ -1263,12 +1656,12 @@ fn refresh_results(
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
-        update_footer(results, 0, footer_action, footer_term);
+        update_footer(results, 0, footer_action);
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
-        update_footer(results, 0, footer_action, footer_term);
+        update_footer(results, 0, footer_action);
         preview.clear();
     }
 
@@ -1286,7 +1679,6 @@ fn refresh_results(
         let results_t = results.clone();
         let selected_t = selected.clone();
         let footer_action_t = footer_action.clone();
-        let footer_term_t = footer_term.clone();
         let preview_t = preview.clone();
         let deep_gen_t = deep_gen.clone();
         let search_entry_t = search_entry.clone();
@@ -1319,7 +1711,6 @@ fn refresh_results(
                 &results_t,
                 &selected_t,
                 &footer_action_t,
-                &footer_term_t,
                 &preview_t,
                 &drag_session_t,
                 &suppress_t,
@@ -1341,7 +1732,6 @@ fn refresh_results(
     let results = results.clone();
     let selected = selected.clone();
     let footer_action = footer_action.clone();
-    let footer_term = footer_term.clone();
     let preview = preview.clone();
     let deep_gen = deep_gen.clone();
     let search_entry = search_entry.clone();
@@ -1374,7 +1764,6 @@ fn refresh_results(
             &results,
             &selected,
             &footer_action,
-            &footer_term,
             &preview,
             &drag_session,
             &suppress_select,
@@ -1501,7 +1890,6 @@ fn apply_translate_hits(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
     footer_action: &Label,
-    footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -1542,12 +1930,12 @@ fn apply_translate_hits(
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
-        update_footer(results, 0, footer_action, footer_term);
+        update_footer(results, 0, footer_action);
         let item = results.borrow().first().cloned();
         preview.update(item.as_ref());
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
-        update_footer(results, 0, footer_action, footer_term);
+        update_footer(results, 0, footer_action);
         preview.clear();
     }
 }
@@ -1562,7 +1950,6 @@ fn apply_deep_hits(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
     footer_action: &Label,
-    footer_term: &GtkBox,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -1623,12 +2010,12 @@ fn apply_deep_hits(
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
-        update_footer(results, new_sel, footer_action, footer_term);
+        update_footer(results, new_sel, footer_action);
         let item = results.borrow().get(new_sel).cloned();
         preview.update(item.as_ref());
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
-        update_footer(results, 0, footer_action, footer_term);
+        update_footer(results, 0, footer_action);
         preview.clear();
     }
 }

@@ -469,6 +469,75 @@ window.blink-window .blink-action-label {{
   opacity: 0.82;
 }}
 
+/* --- Action panel (Ctrl+K) --- */
+.blink-action-panel contents,
+popover.blink-action-panel contents {{
+  background-color: {shell_bg};
+  border: 1px solid {border};
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 0;
+}}
+
+.blink-action-panel-inner {{
+  min-width: 280px;
+  background-color: transparent;
+}}
+
+.blink-action-panel-header {{
+  color: {hint};
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  padding: 2px 4px 4px 4px;
+}}
+
+.blink-action-panel-list {{
+  background-color: transparent;
+  border: none;
+}}
+
+.blink-action-panel-list > row {{
+  background-color: transparent;
+  border-radius: 8px;
+  margin: 1px 0;
+  padding: 0;
+  border: none;
+  outline: none;
+}}
+
+.blink-action-panel-list > row:hover {{
+  background-color: {hover_bg};
+}}
+
+.blink-action-panel-list > row:selected,
+.blink-action-panel-list > row:selected:hover {{
+  background-color: {selected_bg};
+  border: 1px solid {border};
+}}
+
+.blink-action-panel-label {{
+  color: {on_surface};
+  font-size: 13px;
+  font-weight: 500;
+}}
+
+.blink-action-panel-label.destructive {{
+  color: #f7768e;
+}}
+
+.blink-action-panel-row.destructive:selected .blink-action-panel-label {{
+  color: #f7768e;
+}}
+
+.blink-action-panel-shortcut {{
+  color: {hint};
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.65;
+}}
+
 window.blink-window .blink-hint {{
   color: {hint};
   font-size: 11px;

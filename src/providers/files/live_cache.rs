@@ -117,6 +117,11 @@ impl LiveCache {
         }
     }
 
+    /// Drop all cached deep-search hits (e.g. after trash / external delete).
+    pub fn clear(&self) {
+        self.inner.lock().unwrap().clear();
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().len()

@@ -8,25 +8,19 @@ pub(crate) fn update_footer(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     idx: usize,
     footer_action: &Label,
-    footer_term: &GtkBox,
 ) {
     let item = results.borrow().get(idx).cloned();
-    let (label, show_term) = match item.as_ref() {
-        Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => {
-            ("Use Scope", false)
-        }
+    let label = match item.as_ref() {
+        Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => "Use Scope",
         Some(i) => match i.kind {
-            ResultKind::Calc | ResultKind::Conversion => ("Copy Result", false),
-            ResultKind::Command => ("Open", false),
+            ResultKind::Calc | ResultKind::Conversion => "Copy Result",
+            ResultKind::Command => "Open",
             // Files / folders / apps are also draggable (drag path out of the row).
-            ResultKind::Folder => ("Open · Drag", true),
-            ResultKind::File => ("Open · Drag", true),
-            ResultKind::App => ("Open · Drag", false),
+            ResultKind::Folder | ResultKind::File | ResultKind::App => "Open · Drag",
         },
-        None => ("Open", false),
+        None => "Open",
     };
     footer_action.set_text(label);
-    footer_term.set_visible(show_term);
 }
 
 pub(crate) fn keycap_label(text: &str) -> Label {
@@ -54,6 +48,7 @@ pub(crate) fn footer_divider() -> Label {
     l
 }
 
+#[allow(dead_code)]
 pub(crate) fn action_chip(label: &str, keys: &str) -> GtkBox {
     let box_ = GtkBox::new(Orientation::Horizontal, 6);
     box_.add_css_class("blink-action-chip");

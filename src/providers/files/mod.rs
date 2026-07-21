@@ -72,6 +72,10 @@ impl FileProvider {
     }
 
     /// Mark hot set stale (e.g. after recording a path open).
+    pub fn clear_live_cache(&self) {
+        self.live_cache.clear();
+    }
+
     pub fn note_usage_changed(&self) {
         self.hot.mark_dirty();
     }
@@ -442,6 +446,99 @@ pub fn desktop_id_display_name(desktop_id: &str) -> Option<String> {
         }
     }
     None
+}
+
+
+/// Reveal `path` in the default file manager, selecting it when the manager supports it.
+pub fn reveal_in_file_manager(path: &Path) {
+    let path = if path.exists() {
+        path.to_path_buf()
+    } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
+        parent.to_path_buf()
+    } else {
+        return;
+    };
+
+    // KDE Dolphin (common on this host)
+    if which_bin("dolphin").is_some() {
+        spawn_detached("dolphin", &["--select", &path.to_string_lossy()]);
+        return;
+    }
+    // GNOME Nautilus
+    if which_bin("nautilus").is_some() {
+        spawn_detached("nautilus", &["--select", &path.to_string_lossy()]);
+        return;
+    }
+    // Elementary Files / Pantheon
+    if which_bin("io.elementary.files").is_some() {
+        spawn_detached(
+            "io.elementary.files",
+            &[&path.to_string_lossy()],
+        );
+        return;
+    }
+    // Fallback: open containing folder (or the folder itself).
+    let target = if path.is_dir() {
+        path.as_path()
+    } else {
+        path.parent().unwrap_or(path.as_path())
+    };
+    spawn_detached("xdg-open", &[&target.to_string_lossy()]);
+}
+
+/// Move `path` to the FreeDesktop trash. Returns `Ok(())` on success.
+pub fn trash_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err("Path no longer exists".into());
+    }
+    // `gio trash` is the portable FreeDesktop path (gvfs).
+    let status = Command::new("gio")
+        .args(["trash", "--"])
+        .arg(path)
+        .status()
+        .map_err(|e| format!("gio trash failed to start: {e}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    // Older hosts may only ship gvfs-trash.
+    if which_bin("gvfs-trash").is_some() {
+        let status = Command::new("gvfs-trash")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("gvfs-trash failed to start: {e}"))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "Could not trash {} (gio exit {:?})",
+        path.display(),
+        status.code()
+    ))
+}
+
+fn spawn_detached(bin: &str, args: &[&str]) {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Detach so the file manager outlives blink's short-lived helper spawns.
+    let quoted: Vec<String> = std::iter::once(bin.to_string())
+        .chain(args.iter().map(|a| shell_quote(Path::new(a))))
+        .collect();
+    let shell_cmd = quoted.join(" ");
+    let mut sh = Command::new("sh");
+    sh.arg("-c")
+        .arg(format!(
+            "setsid -f {shell_cmd} >/dev/null 2>&1 || nohup {shell_cmd} >/dev/null 2>&1 &"
+        ))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if sh.spawn().is_err() {
+        let _ = cmd.spawn();
+    }
 }
 
 pub fn open_terminal_at(path: &Path) {

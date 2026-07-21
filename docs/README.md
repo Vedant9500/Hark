@@ -6,6 +6,7 @@
 |-----|------|
 | **[performance.md](./performance.md)** | Latency, index depth, cache, binary, how to bench |
 | **[OPTIMIZATION.md](./OPTIMIZATION.md)** | Short tracker (done / open / measure) |
+| **[ACTION-PANEL-AUDIT.md](./ACTION-PANEL-AUDIT.md)** | Raycast-style actions panel research + implementation tracker |
 | **[../README.md](../README.md)** | Install & overview |
 | **[../FEATURES.md](../FEATURES.md)** | User-facing feature list |
 | **[../todo.md](../todo.md)** | Product backlog / known gaps |
