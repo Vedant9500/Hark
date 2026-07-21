@@ -352,6 +352,8 @@ impl Engine {
                     ExecuteOutcome::Failed
                 }
             },
+            Action::OpenWith(path) => ExecuteOutcome::OpenWith(path.clone()),
+            Action::TogglePreview => ExecuteOutcome::TogglePreview,
         }
     }
 
@@ -624,6 +626,10 @@ pub enum ExecuteOutcome {
     Refresh,
     /// Action did not complete; keep the launcher open.
     Failed,
+    /// Show system Open With dialog for this path (UI-owned).
+    OpenWith(std::path::PathBuf),
+    /// Toggle media preview panel (UI-owned).
+    TogglePreview,
 }
 
 /// When the user opens a file deeper than the global index depth, promote a

@@ -1,7 +1,7 @@
 # Blink — Action Panel audit
 
-**Status:** Phase 1 implemented · Phase 2+ pending  
-**Last updated:** 2026-07-21 (Phase 1)  
+**Status:** Phase 1–2 implemented · Phase 3+ pending  
+**Last updated:** 2026-07-21 (Phase 2)  
 **Related:** user request (Raycast-style actions on selected item); [`feature.txt`](../feature.txt)  
 **Code baseline:** `Action` enum in `src/providers/mod.rs`, footer chips in `src/ui/footer.rs` / `src/ui/mod.rs`, execute in `src/engine.rs`
 
@@ -39,10 +39,10 @@ Target UX (from product notes): bottom-right becomes **Actions / Options** for t
 
 ### Phase 2 — Open With + app location
 
-- [ ] **Open with…** (GTK `AppChooser` / GIO MIME apps)
-- [ ] Apps: **Reveal .desktop / install location**
-- [ ] Apps: **Copy name** / **Copy desktop path**
-- [ ] Preview toggle polish (Quick Look-ish; panel already exists)
+- [x] **Open with…** (GTK `AppChooser` / GIO MIME apps)
+- [x] Apps: **Reveal .desktop / install location**
+- [x] Apps: **Copy name** / **Copy desktop path**
+- [x] Preview toggle polish (Quick Look-ish; panel already exists)
 
 ### Phase 3 — Elevated + optional process control
 
@@ -92,6 +92,8 @@ SetQuery(String)
 OpenSettings
 RevealPath(PathBuf)   # Phase 1
 TrashPath(PathBuf)    # Phase 1
+OpenWith(PathBuf)     # Phase 2
+TogglePreview         # Phase 2
 ```
 
 ### Footer
@@ -102,9 +104,11 @@ TrashPath(PathBuf)    # Phase 1
 | Terminal | `Ctrl+Alt+Enter` — folders/files |
 | Copy | `Ctrl+C` — calc/conversion + `Action::Copy` |
 | Settings | `Ctrl+,` |
-| **Actions** | `Ctrl+K` — secondary panel (Phase 1) |
+| **Actions** | `Ctrl+K` — secondary panel |
 | Copy path | `Ctrl+Shift+C` |
 | Reveal | `Ctrl+Shift+R` |
+| Open With | `Ctrl+Shift+O` |
+| Toggle preview | `Ctrl+P` |
 | DnD | Files, folders, apps (desktop path) |
 
 ### Already strong
@@ -142,8 +146,8 @@ Legend: **Rec** = recommend · **Eff** = effort · **Ph** = phase
 | Copy Name | basename → clipboard | L | 1 | yes | done |
 | Reveal in file manager | `dolphin --select` / `xdg-open` parent | L–M | 1 | yes | done |
 | Move to Trash | `gio trash` + confirm | L | 1 | yes | done |
-| Open With… | GTK AppChooser / GIO | M | 2 | yes | todo |
-| Quick Look | existing preview + toggle | L–M | 2 | yes | partial |
+| Open With… | In-window popover (GIO recommended/all apps) | M | 2 | yes | done |
+| Quick Look | existing preview + toggle (Ctrl+P) | L–M | 2 | yes | done |
 | Compress | `zip`/`tar` | M | 4 | later | todo |
 | Properties | stat + dialog / preview | M | 4 | later | todo |
 | Rename / Move | fs + reindex | M–H | 4 | later | todo |
@@ -153,9 +157,9 @@ Legend: **Rec** = recommend · **Eff** = effort · **Ph** = phase
 | Action | Linux approach | Eff | Ph | Rec | Status |
 |--------|----------------|-----|----|-----|--------|
 | Open | existing `LaunchApp` | — | — | done | done |
-| Reveal location | parent of `desktop_path` or Exec | L | 2 | yes | done (desktop file) |
+| Reveal location | Exec binary + desktop file | L | 2 | yes | done |
 | Copy Name | title → clipboard | L | 2 | yes | done |
-| Copy desktop path | clipboard | L | 2 | yes | done |
+| Copy desktop path / exec path | clipboard | L | 2 | yes | done |
 | Run elevated | `pkexec` wrap Exec | M | 3 | optional | todo |
 | Quit / Force Quit | `hyprctl` match class | M | 3 | optional | todo |
 | Uninstall | pacman/flatpak/snap detect only | H | 4 | defer | todo |
@@ -248,6 +252,7 @@ Files to touch (expected):
 | 2026-07-21 | “Run as admin” → optional **Run elevated** (`pkexec`), not default open |
 | 2026-07-21 | Prefer Dolphin `--select` for reveal on this host; fallback `xdg-open` parent |
 | 2026-07-21 | Phase 1 shipped: `Ctrl+K` panel, copy path/name, reveal, trash + confirm |
+| 2026-07-21 | Phase 2 shipped: Open With (FileLauncher), install-location reveal, Ctrl+P preview |
 | 2026-07-21 | Reuse existing preview as Quick Look; don’t rebuild |
 
 ---
@@ -267,3 +272,5 @@ Files to touch (expected):
 |------|------|
 | 2026-07-21 | Initial audit from Raycast/Linux research + codebase baseline |
 | 2026-07-21 | Phase 1 implementation: Action panel + copy/reveal/trash |
+| 2026-07-21 | Phase 2: OpenWith, app install location, preview toggle |
+| 2026-07-21 | Open With: replaced FileLauncher with in-window GIO app list (layer-shell safe) |

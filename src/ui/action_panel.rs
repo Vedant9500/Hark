@@ -26,7 +26,7 @@ impl ActionPanel {
         popover.set_parent(parent);
         popover.set_position(PositionType::Top);
         popover.set_autohide(true);
-        popover.set_has_arrow(true);
+        popover.set_has_arrow(false);
         popover.add_css_class("blink-action-panel");
 
         let outer = GtkBox::new(Orientation::Vertical, 4);

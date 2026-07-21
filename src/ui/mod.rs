@@ -1,5 +1,6 @@
 mod action_panel;
 mod dnd;
+mod open_with;
 mod footer;
 mod preview;
 mod rows;
@@ -13,6 +14,7 @@ use action_panel::ActionPanel;
 use dnd::DragSession;
 use footer::{action_chip_button, footer_divider, keycap_label, update_footer};
 use gio::Cancellable;
+use gio::prelude::*;
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
@@ -492,6 +494,7 @@ impl Launcher {
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
+            let actions_chip = actions_chip.clone();
             Rc::new(move || {
                 let idx = selected.get();
                 let item = match results.borrow().get(idx).cloned() {
@@ -522,6 +525,7 @@ impl Launcher {
                 let ui_icon_size = ui_icon_size.clone();
                 let ui_symbolic = ui_symbolic.clone();
                 let ignore_focus_loss = ignore_focus_loss.clone();
+                let actions_chip = actions_chip.clone();
                 let item = item.clone();
                 action_panel.set_on_activate(Rc::new(move |spec| {
                     run_secondary_action(
@@ -544,6 +548,7 @@ impl Launcher {
                         &ui_icon_size,
                         &ui_symbolic,
                         &ignore_focus_loss,
+                        &actions_chip,
                     );
                 }));
             })
@@ -644,6 +649,7 @@ impl Launcher {
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
+            let actions_chip = actions_chip.clone();
             let dismiss_settings_overlay = {
                 let settings_dismiss = settings.dismiss_overlay_handle();
                 settings_dismiss
@@ -735,6 +741,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
+                        &actions_chip,
                                     );
                                 }
                             }
@@ -851,6 +858,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
+                        &actions_chip,
                                     );
                                     return glib::Propagation::Stop;
                                 }
@@ -903,12 +911,61 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
+                        &actions_chip,
                                     );
                                     return glib::Propagation::Stop;
                                 }
                             }
                         }
                         glib::Propagation::Proceed
+                    }
+                    Key::o | Key::O
+                        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                            && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                    {
+                        // Ctrl+Shift+O → Open With…
+                        let idx = selected.get();
+                        if let Some(item) = results.borrow().get(idx).cloned() {
+                            for spec in engine.secondary_actions(&item) {
+                                if spec.id == "open_with" {
+                                    run_secondary_action(
+                                        &engine,
+                                        spec,
+                                        &item,
+                                        &window,
+                                        &search,
+                                        &session_queries,
+                                        &open_settings,
+                                        &results,
+                                        &selected,
+                                        &list,
+                                        &row_pool,
+                                        &empty,
+                                        &footer_action,
+                                        &preview,
+                                        &drag_session,
+                                        &suppress_select,
+                                        &ui_icon_size,
+                                        &ui_symbolic,
+                                        &ignore_focus_loss,
+                        &actions_chip,
+                                    );
+                                    return glib::Propagation::Stop;
+                                }
+                            }
+                        }
+                        glib::Propagation::Proceed
+                    }
+                    Key::p | Key::P
+                        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                            && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                            && !state.contains(gtk::gdk::ModifierType::ALT_MASK) =>
+                    {
+                        // Ctrl+P → toggle media preview panel
+                        preview.toggle_user_hidden();
+                        let item = results.borrow().get(selected.get()).cloned();
+                        preview.update(item.as_ref());
+                        glib::Propagation::Stop
                     }
                     _ => glib::Propagation::Proceed,
                 }
@@ -1114,7 +1171,9 @@ fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
         Action::Copy(_)
         | Action::OpenSettings
         | Action::RevealPath(_)
-        | Action::TrashPath(_) => {
+        | Action::TrashPath(_)
+        | Action::OpenWith(_)
+        | Action::TogglePreview => {
             // Calc / conversion / settings: title is still a useful fill-in.
             if item.title.is_empty() {
                 None
@@ -1310,6 +1369,8 @@ mod tab_complete_tests {
 
 
 /// Apply an action from the secondary panel (or a keyboard shortcut).
+
+
 fn run_secondary_action<F: Fn() + 'static>(
     engine: &Arc<Engine>,
     spec: ActionSpec,
@@ -1330,6 +1391,7 @@ fn run_secondary_action<F: Fn() + 'static>(
     ui_icon_size: &Rc<Cell<i32>>,
     ui_symbolic: &Rc<Cell<bool>>,
     ignore_focus_loss: &Rc<Cell<bool>>,
+    open_with_anchor: &gtk::Button,
 ) {
     let finish = {
         let engine = engine.clone();
@@ -1351,6 +1413,8 @@ fn run_secondary_action<F: Fn() + 'static>(
         let item_id = item.id.clone();
         let item_kind = item.kind;
         let item_title = item.title.clone();
+        let ignore_focus_loss = ignore_focus_loss.clone();
+        let open_with_anchor = open_with_anchor.clone();
         move |spec: ActionSpec| {
             let outcome = engine.execute(&spec.action);
             match outcome {
@@ -1361,12 +1425,13 @@ fn run_secondary_action<F: Fn() + 'static>(
                     search.grab_focus_without_selecting();
                 }
                 ExecuteOutcome::Launched => {
-                    if matches!(spec.id, "open" | "terminal" | "reveal")
-                        && !matches!(
-                            item_kind,
-                            ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
-                        )
-                    {
+                    if matches!(
+                        spec.id,
+                        "open" | "terminal" | "reveal" | "reveal_install"
+                    ) && !matches!(
+                        item_kind,
+                        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                    ) {
                         let final_q = search.text().to_string();
                         let recent: Vec<String> =
                             session_queries.borrow().iter().cloned().collect();
@@ -1402,6 +1467,21 @@ fn run_secondary_action<F: Fn() + 'static>(
                     search.grab_focus_without_selecting();
                 }
                 ExecuteOutcome::Failed => {
+                    search.grab_focus_without_selecting();
+                }
+                ExecuteOutcome::OpenWith(path) => {
+                    open_with::show_open_with_picker(
+                        &open_with_anchor,
+                        &window,
+                        path,
+                        ignore_focus_loss.clone(),
+                    );
+                }
+                ExecuteOutcome::TogglePreview => {
+                    preview.toggle_user_hidden();
+                    // Re-apply current selection so the panel shows again when un-hidden.
+                    let item = results.borrow().get(selected.get()).cloned();
+                    preview.update(item.as_ref());
                     search.grab_focus_without_selecting();
                 }
             }
@@ -1525,7 +1605,10 @@ fn activate_result<F: Fn()>(
                 window.set_visible(false);
             }
             // Primary Enter never produces these; secondary actions handle them.
-            ExecuteOutcome::Refresh | ExecuteOutcome::Failed => {}
+            ExecuteOutcome::Refresh
+            | ExecuteOutcome::Failed
+            | ExecuteOutcome::OpenWith(_)
+            | ExecuteOutcome::TogglePreview => {}
         }
     }
 }

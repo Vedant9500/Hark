@@ -58,6 +58,10 @@ pub enum Action {
     RevealPath(PathBuf),
     /// Move a path to the FreeDesktop trash (`gio trash`).
     TrashPath(PathBuf),
+    /// Ask which app should open this path (system Open With dialog).
+    OpenWith(PathBuf),
+    /// Toggle the media preview side panel (UI-only).
+    TogglePreview,
 }
 
 /// One entry in the Raycast-style action panel (secondary menu).
@@ -80,7 +84,11 @@ impl Action {
             | Action::RevealPath(p)
             | Action::TrashPath(p) => Some(p.as_path()),
             Action::LaunchApp { desktop_path, .. } => desktop_path.as_deref(),
-            Action::Copy(_) | Action::SetQuery(_) | Action::OpenSettings => None,
+            Action::Copy(_)
+            | Action::SetQuery(_)
+            | Action::OpenSettings
+            | Action::OpenWith(_)
+            | Action::TogglePreview => None,
         }
     }
 }
@@ -102,6 +110,14 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 label: "Open".into(),
                 shortcut: Some("↵"),
                 action: Action::OpenPath(path.clone()),
+                destructive: false,
+            });
+            // Folders can still be opened with a specific app (e.g. an IDE).
+            out.push(ActionSpec {
+                id: "open_with",
+                label: "Open With…".into(),
+                shortcut: Some("Ctrl Shift O"),
+                action: Action::OpenWith(path.clone()),
                 destructive: false,
             });
             out.push(ActionSpec {
@@ -144,6 +160,15 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 action: Action::TrashPath(path),
                 destructive: true,
             });
+            if item.kind == ResultKind::File {
+                out.push(ActionSpec {
+                    id: "toggle_preview",
+                    label: "Toggle Preview".into(),
+                    shortcut: Some("Ctrl P"),
+                    action: Action::TogglePreview,
+                    destructive: false,
+                });
+            }
         }
         ResultKind::App => {
             out.push(ActionSpec {
@@ -161,24 +186,43 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 destructive: false,
             });
             if let Action::LaunchApp {
-                desktop_path: Some(dp),
+                exec,
+                desktop_path,
                 ..
             } = &item.action
             {
-                out.push(ActionSpec {
-                    id: "copy_path",
-                    label: "Copy Desktop Path".into(),
-                    shortcut: Some("Ctrl Shift C"),
-                    action: Action::Copy(dp.to_string_lossy().into_owned()),
-                    destructive: false,
-                });
-                out.push(ActionSpec {
-                    id: "reveal",
-                    label: "Reveal Desktop File".into(),
-                    shortcut: Some("Ctrl Shift R"),
-                    action: Action::RevealPath(dp.clone()),
-                    destructive: false,
-                });
+                if let Some(bin) = crate::providers::apps::resolve_exec_binary(exec) {
+                    out.push(ActionSpec {
+                        id: "copy_exec",
+                        label: "Copy Executable Path".into(),
+                        shortcut: None,
+                        action: Action::Copy(bin.to_string_lossy().into_owned()),
+                        destructive: false,
+                    });
+                    out.push(ActionSpec {
+                        id: "reveal_install",
+                        label: "Reveal Install Location".into(),
+                        shortcut: None,
+                        action: Action::RevealPath(bin),
+                        destructive: false,
+                    });
+                }
+                if let Some(dp) = desktop_path {
+                    out.push(ActionSpec {
+                        id: "copy_path",
+                        label: "Copy Desktop Path".into(),
+                        shortcut: Some("Ctrl Shift C"),
+                        action: Action::Copy(dp.to_string_lossy().into_owned()),
+                        destructive: false,
+                    });
+                    out.push(ActionSpec {
+                        id: "reveal",
+                        label: "Reveal Desktop File".into(),
+                        shortcut: Some("Ctrl Shift R"),
+                        action: Action::RevealPath(dp.clone()),
+                        destructive: false,
+                    });
+                }
             }
         }
         ResultKind::Calc | ResultKind::Conversion => {
@@ -230,11 +274,37 @@ mod action_panel_tests {
     fn file_actions_include_copy_reveal_trash() {
         let acts = secondary_actions(&file_item("/tmp/notes.md"));
         let ids: Vec<_> = acts.iter().map(|a| a.id).collect();
+        assert!(ids.contains(&"open_with"));
         assert!(ids.contains(&"copy_path"));
         assert!(ids.contains(&"copy_name"));
         assert!(ids.contains(&"reveal"));
         assert!(ids.contains(&"trash"));
+        assert!(ids.contains(&"toggle_preview"));
         assert!(acts.iter().any(|a| a.destructive && a.id == "trash"));
+    }
+
+    #[test]
+    fn app_actions_include_install_reveal_when_exec_resolves() {
+        // `sh` is always on PATH.
+        let item = SearchResult {
+            id: "app:test".into(),
+            title: "Shell".into(),
+            subtitle: "test".into(),
+            kind: ResultKind::App,
+            score: 0,
+            icon: None,
+            action: Action::LaunchApp {
+                exec: "sh".into(),
+                terminal: false,
+                desktop_path: Some(PathBuf::from("/usr/share/applications/x.desktop")),
+            },
+            conversion: None,
+        };
+        let ids: Vec<_> = secondary_actions(&item).iter().map(|a| a.id).collect();
+        assert!(ids.contains(&"reveal_install"));
+        assert!(ids.contains(&"copy_exec"));
+        assert!(ids.contains(&"reveal"));
+        assert!(ids.contains(&"copy_path"));
     }
 
     #[test]

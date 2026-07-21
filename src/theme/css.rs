@@ -24,6 +24,9 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let icon_size = ui.icon_size.clamp(18, 36);
 
     let shell_bg = rgba(&theme.surface_container, base);
+    // Popovers float over results/previews without Hyprland blur — need higher opacity.
+    let popover_bg = rgba(&theme.surface_container, (base + 0.32).min(0.94));
+    let popover_bg_solid = rgba(&theme.surface_container_high, (base + 0.42).min(0.97));
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
     let selected_bg = rgba(primary, 0.18);
@@ -469,19 +472,80 @@ window.blink-window .blink-action-label {{
   opacity: 0.82;
 }}
 
-/* --- Action panel (Ctrl+K) --- */
-.blink-action-panel contents,
-popover.blink-action-panel contents {{
-  background-color: {shell_bg};
+/* --- Action panel (Ctrl+K) / Open With --- */
+/* Only paint `contents` — painting the popover + contents creates a double card. */
+popover.blink-action-panel {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  opacity: 1;
+}}
+
+popover.blink-action-panel > arrow {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+}}
+
+popover.blink-action-panel > contents,
+.blink-action-panel contents {{
+  background-color: {popover_bg};
+  background-image: none;
   border: 1px solid {border};
   border-radius: 12px;
   box-shadow: none;
-  padding: 0;
+  padding: 6px;
+  margin: 0;
+  opacity: 1;
+}}
+
+/* Open With sits over previews — denser single fill */
+popover.blink-open-with > contents {{
+  background-color: {popover_bg_solid};
+  border: 1px solid {border};
 }}
 
 .blink-action-panel-inner {{
   min-width: 280px;
   background-color: transparent;
+  background-image: none;
+}}
+
+popover.blink-action-panel scrolledwindow,
+popover.blink-action-panel list,
+popover.blink-action-panel viewport,
+popover.blink-action-panel overshoot,
+popover.blink-action-panel undershoot {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+}}
+
+/* Stronger text contrast in floating menus */
+popover.blink-action-panel .blink-action-panel-label {{
+  color: {on_surface};
+  opacity: 1;
+  font-weight: 600;
+}}
+
+popover.blink-action-panel .blink-action-panel-shortcut {{
+  color: {hint};
+  opacity: 0.85;
+}}
+
+popover.blink-action-panel .blink-action-panel-header {{
+  color: {on_surface};
+  opacity: 0.9;
 }}
 
 .blink-action-panel-header {{

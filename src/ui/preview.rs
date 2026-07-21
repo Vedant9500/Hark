@@ -115,6 +115,8 @@ pub struct PreviewPanel {
     worker_busy: Rc<Cell<bool>>,
     /// Drag source bound to the current preview file path.
     drag: PathDragBinding,
+    /// User forced the panel off (Ctrl+P / Toggle Preview) until toggled back.
+    user_hidden: Rc<Cell<bool>>,
 }
 
 impl PreviewPanel {
@@ -260,6 +262,7 @@ impl PreviewPanel {
             inflight: Rc::new(RefCell::new(None)),
             worker_busy: Rc::new(Cell::new(false)),
             drag,
+            user_hidden: Rc::new(Cell::new(false)),
         }
     }
 
@@ -272,9 +275,22 @@ impl PreviewPanel {
     }
 
     fn set_panel_visible(&self, visible: bool) {
-        self.root.set_visible(visible);
-        self.sep.set_visible(visible);
+        let vis = visible && !self.user_hidden.get();
+        self.root.set_visible(vis);
+        self.sep.set_visible(vis);
     }
+
+    /// Flip user hide flag. Returns `true` when the panel is now user-hidden.
+    pub fn toggle_user_hidden(&self) -> bool {
+        let next = !self.user_hidden.get();
+        self.user_hidden.set(next);
+        if next {
+            self.root.set_visible(false);
+            self.sep.set_visible(false);
+        }
+        next
+    }
+
 
     pub fn clear(&self) {
         self.cancel_debounce();

@@ -360,6 +360,16 @@ fn which(bin: &str) -> Option<PathBuf> {
     None
 }
 
+/// Resolve the primary binary from a desktop `Exec=` line (field codes stripped).
+pub fn resolve_exec_binary(exec: &str) -> Option<PathBuf> {
+    let cleaned = clean_exec(exec);
+    let first = cleaned.split_whitespace().next()?.trim_matches('"');
+    if first.is_empty() {
+        return None;
+    }
+    which(first)
+}
+
 pub fn launch_app(exec: &str, terminal: bool) {
     let shell_cmd = if terminal {
         let term = std::env::var("TERMINAL")
