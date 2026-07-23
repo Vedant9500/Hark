@@ -52,33 +52,36 @@ impl FxStore {
             return Some((amount, "same currency".into()));
         }
 
-        if self.is_stale() {
+        // One read lock: compute conversion + staleness, then refresh after drop.
+        let (converted, stale) = {
+            let g = self.shared.cache.read().unwrap();
+            match g.as_ref() {
+                None => (None, true),
+                Some(cache) => {
+                    let age = now_secs().saturating_sub(cache.fetched_at);
+                    let stale = age > TTL_SECS;
+                    let converted =
+                        rate_vs_base(cache, &from).and_then(|from_rate| {
+                            rate_vs_base(cache, &to).map(|to_rate| {
+                                let out = (amount / from_rate) * to_rate;
+                                let meta = if stale {
+                                    format!("ECB {} · stale cache", cache.date)
+                                } else if age > 300 {
+                                    format!("ECB {} · cached", cache.date)
+                                } else {
+                                    format!("ECB {}", cache.date)
+                                };
+                                (out, meta)
+                            })
+                        });
+                    (converted, stale)
+                }
+            }
+        };
+        if stale {
             self.schedule_background_refresh();
         }
-
-        let g = self.shared.cache.read().unwrap();
-        let cache = g.as_ref()?;
-        let from_rate = rate_vs_base(cache, &from)?;
-        let to_rate = rate_vs_base(cache, &to)?;
-        let in_base = amount / from_rate;
-        let out = in_base * to_rate;
-        let age = now_secs().saturating_sub(cache.fetched_at);
-        let meta = if age > TTL_SECS {
-            format!("ECB {} · stale cache", cache.date)
-        } else if age > 300 {
-            format!("ECB {} · cached", cache.date)
-        } else {
-            format!("ECB {}", cache.date)
-        };
-        Some((out, meta))
-    }
-
-    fn is_stale(&self) -> bool {
-        let g = self.shared.cache.read().unwrap();
-        match g.as_ref() {
-            None => true,
-            Some(c) => now_secs().saturating_sub(c.fetched_at) > TTL_SECS,
-        }
+        converted
     }
 
     /// Fire-and-forget HTTP refresh. Coalesced + backoff so typing FX queries

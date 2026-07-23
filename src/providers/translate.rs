@@ -1,7 +1,8 @@
 //! Translate-on-paste provider.
 //!
-//! Fast path (UI thread): detection + disk cache only.
-//! Network path: `search_network` on a worker thread (never blocks GTK).
+//! Fast path (UI thread): detection + **process-memory** cache / fail only (no disk).
+//! Network path: `search_network` on a worker thread — may read durable disk cache,
+//! then HTTP (never blocks GTK).
 //! When `TranslateConfig.enabled` is false: zero I/O.
 
 use crate::config::{ConfigStore, TranslateConfig};
@@ -74,7 +75,8 @@ impl TranslateProvider {
         })
     }
 
-    /// True when UI should spawn a worker: enabled, matches, not already cached.
+    /// True when UI should spawn a worker: enabled, matches, not already in **memory** cache.
+    /// Disk is checked on the worker (`search_network`) so the UI thread never blocks on FS.
     pub fn needs_network(&self, query: &str) -> bool {
         let cfg = self.cfg();
         if !cfg.enabled || !is_translate_query(query, &cfg) {
@@ -87,7 +89,7 @@ impl TranslateProvider {
             return false;
         }
         let key = cache_key(&source, &target, &text);
-        if cache_get(&key).is_some() {
+        if cache_get_mem(&key).is_some() {
             return false;
         }
         // Recent failure: show soft-fail from UI path, no new worker.
@@ -97,7 +99,7 @@ impl TranslateProvider {
         true
     }
 
-    /// Blocking network translate (worker thread only).
+    /// Blocking network translate (worker thread only). May read disk cache.
     pub fn search_network(&self, query: &str) -> Vec<SearchResult> {
         let cfg = self.cfg();
         if !cfg.enabled {
@@ -118,6 +120,7 @@ impl TranslateProvider {
             )];
         }
         let key = cache_key(&source, &target, &text);
+        // Worker path: mem first, then disk (promotes into mem).
         if let Some(hit) = cache_get(&key) {
             return vec![ok_result(&text, &hit.translated, &source, &target, "cache")];
         }
@@ -137,7 +140,8 @@ impl TranslateProvider {
         }
     }
 
-    /// UI-thread safe: cache hit, recent fail, or "Translating…" placeholder. **No curl.**
+    /// UI-thread safe: memory cache hit, recent fail, or "Translating…" placeholder.
+    /// **No disk I/O** — durable cache is loaded on the worker via `search_network`.
     pub fn search(&self, query: &str) -> Vec<SearchResult> {
         let cfg = self.cfg();
         if !cfg.enabled {
@@ -158,7 +162,7 @@ impl TranslateProvider {
             )];
         }
         let key = cache_key(&source, &target, &text);
-        if let Some(hit) = cache_get(&key) {
+        if let Some(hit) = cache_get_mem(&key) {
             return vec![ok_result(&text, &hit.translated, &source, &target, "cache")];
         }
         if let Some(msg) = fail_get(&key) {
@@ -735,16 +739,22 @@ fn cache_path(key: &str) -> PathBuf {
     cache_dir().join(format!("{key}.json"))
 }
 
+/// Process-memory only — safe on the GTK main thread (no FS).
+fn cache_get_mem(key: &str) -> Option<CacheEntry> {
+    let Ok(g) = mem_ok().lock() else {
+        return None;
+    };
+    let e = g.get(key)?;
+    if now_secs().saturating_sub(e.fetched_at) > CACHE_TTL_SECS || e.translated.trim().is_empty() {
+        return None;
+    }
+    Some(e.clone())
+}
+
+/// Mem first, then durable disk (promotes into mem). **Worker thread only.**
 fn cache_get(key: &str) -> Option<CacheEntry> {
-    // Hot path: process memory (UI thread).
-    if let Ok(g) = mem_ok().lock() {
-        if let Some(e) = g.get(key) {
-            if now_secs().saturating_sub(e.fetched_at) <= CACHE_TTL_SECS
-                && !e.translated.trim().is_empty()
-            {
-                return Some(e.clone());
-            }
-        }
+    if let Some(e) = cache_get_mem(key) {
+        return Some(e);
     }
     let data = fs::read_to_string(cache_path(key)).ok()?;
     let e: CacheEntry = serde_json::from_str(&data).ok()?;

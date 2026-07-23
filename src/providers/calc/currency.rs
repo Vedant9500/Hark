@@ -3,8 +3,15 @@ use crate::providers::fx::{format_money, normalize_currency, FxStore};
 use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::borrow::Cow;
 
-pub(crate) fn normalize_money_query(q: &str) -> String {
+/// Rewrite `$100` / `100$` into `100 USD …` when a currency symbol is present.
+/// Fast path: no symbol → borrow the input (zero alloc on typical app/file queries).
+pub(crate) fn normalize_money_query(q: &str) -> Cow<'_, str> {
+    if !q.chars().any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽')) {
+        return Cow::Borrowed(q);
+    }
+
     let mut s = q.to_string();
     // $100 / €50 / £20 / ₹1000 at start
     static RE_SYM: Lazy<Regex> =
@@ -29,7 +36,7 @@ pub(crate) fn normalize_money_query(q: &str) -> String {
                 .to_string();
         }
     }
-    s
+    Cow::Owned(s)
 }
 
 pub(crate) fn try_currency(q: &str, fx: &FxStore) -> Option<SearchResult> {

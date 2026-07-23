@@ -2,17 +2,22 @@
 //! Keeps curl process spawns off the battery path.
 
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const CONNECT: Duration = Duration::from_secs(1);
 const TOTAL: Duration = Duration::from_secs(2);
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT)
-        .timeout(TOTAL)
-        .user_agent("blink-launcher/0.1")
-        .build()
+/// Shared agent so TLS/DNS sessions can be reused across worker requests.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(CONNECT)
+            .timeout(TOTAL)
+            .user_agent("blink-launcher/0.1")
+            .build()
+    })
 }
 
 /// GET body as bytes (status must be 2xx; ureq maps non-2xx to Err).

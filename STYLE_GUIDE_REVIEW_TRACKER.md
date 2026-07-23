@@ -13,10 +13,10 @@ except where the Performance Book’s **build configuration** chapter applies (`
 | 1 | Core & App Shell | ~3,500 | ✅ complete |
 | 2 | UI Shell | ~3,780 | ✅ complete |
 | 3 | UI Features & Theme | ~4,750 | ✅ complete |
-| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
+| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ✅ complete |
 | 5 | Files Provider | ~4,620 | ✅ complete |
 
-**Overall status:** 4 / 5 complete
+**Overall status:** 5 / 5 complete
 
 **References:**
 
@@ -669,54 +669,189 @@ translate. Mix of pure CPU (calc, fuzzy apps) and network (FX, translate).
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/providers/mod.rs` | ~322 | ⬜ |
-| `src/providers/apps.rs` | ~442 | ⬜ |
-| `src/providers/fx.rs` | ~261 | ⬜ |
-| `src/providers/http.rs` | 78 | ⬜ |
-| `src/providers/translate.rs` | ~1016 | ⬜ |
-| `src/providers/calc/mod.rs` | ~150 | ⬜ |
-| `src/providers/calc/expr.rs` | ~391 | ⬜ |
-| `src/providers/calc/math.rs` | ~160 | ⬜ |
-| `src/providers/calc/units.rs` | ~553 | ⬜ |
-| `src/providers/calc/timezone.rs` | ~757 | ⬜ |
-| `src/providers/calc/datetime.rs` | ~177 | ⬜ |
-| `src/providers/calc/duration.rs` | ~108 | ⬜ |
-| `src/providers/calc/currency.rs` | ~128 | ⬜ |
-| `src/providers/calc/battery.rs` | ~444 | ⬜ |
-| `src/providers/calc/util.rs` | 70 | ⬜ |
+| `src/providers/mod.rs` | ~322 | ✅ |
+| `src/providers/apps.rs` | ~442 | ✅ |
+| `src/providers/fx.rs` | ~261 | ✅ |
+| `src/providers/http.rs` | 78 | ✅ |
+| `src/providers/translate.rs` | ~1016 | ✅ |
+| `src/providers/calc/mod.rs` | ~150 | ✅ |
+| `src/providers/calc/expr.rs` | ~391 | ✅ |
+| `src/providers/calc/math.rs` | ~160 | ✅ |
+| `src/providers/calc/units.rs` | ~553 | ✅ |
+| `src/providers/calc/timezone.rs` | ~757 | ✅ |
+| `src/providers/calc/datetime.rs` | ~177 | ✅ |
+| `src/providers/calc/duration.rs` | ~108 | ✅ |
+| `src/providers/calc/currency.rs` | ~128 | ✅ |
+| `src/providers/calc/battery.rs` | ~444 | ✅ |
+| `src/providers/calc/util.rs` | 70 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewed:** —  
-**Against:** https://nnethercote.github.io/perf-book/
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23  
+**Against:**
+
+- [The Rust Performance Book](https://nnethercote.github.io/perf-book/)
+- [Effective Rust](https://www.effective-rust.com/)
 
 ### Reviewer notes
 
-_(fill during review)_
-
 #### Verdict
 
-_(one paragraph)_
+**Solid provider split; interactive path stays non-blocking for network.** Engine order is
+calc → translate (if enabled) → apps/files, with early outs when calc or translate owns the
+query. Apps use precomputed `name_lower` / `search_blob` + top-K heap + fuzzy only as fallback.
+FX converts from memory/disk only and refreshes in the background with coalescing + backoff.
+Translate UI path returns cache / fail / pending only; HTTP runs on a worker (and free backends
+race in parallel). Calc has a `looks_like_plain_text` fast reject before the regex stack.
+
+**No Part-4 P1** that blocks the keystroke path the way Files once did. Remaining issues:
+translate `cache_get` can touch disk on the UI thread on mem miss; `http::agent()` rebuilds a
+ureq agent every call; FX double-locks on convert; apps `RwLock` poison unwrap; small alloc /
+clone nits. Prefer measure-first for regex rewrites (**E20**).
 
 #### Findings
 
-##### P1 —
+##### P1 — none confined to these providers
 
-##### P2 —
+Free-text latency is still dominated by **Files** (Part 5). Apps scan is O(n apps) with cheap
+prefix/contains before fuzzy; typical desktop counts (~100–500) are fine. Network never sits
+on the GTK thread for FX or translate.
 
-##### P3 / Info —
+##### P2 — translate `cache_get` may do disk I/O on the UI thread (**B12**, **B14**) — **fixed**
+
+Was: mem miss → `fs::read_to_string` on UI from `search` / `needs_network`.
+
+**Applied:** `cache_get_mem` (UI + needs_network); full `cache_get` (mem → disk → promote)
+only on worker `search_network`. First post-restart hit may briefly show pending then fill
+from disk/network off-thread.
+
+##### P2 — `http::agent()` constructs a new `ureq::Agent` every request (**B5**, **B12**) — **fixed**
+
+**Applied:** `OnceLock<ureq::Agent>` shared across GET/POST helpers (connection reuse).
+
+##### P2 — FX `convert` takes the cache lock twice (**B13**) — **fixed**
+
+**Applied:** one read guard computes conversion + staleness; `schedule_background_refresh`
+runs after the lock is dropped. Uppercase of ISO codes kept (already short; callers often
+pass uppercased codes from `normalize_currency`).
+
+**Also good (keep):** non-blocking convert; background refresh with `inflight` CAS + 15 min
+backoff — no worker storm while typing FX queries.
+
+##### P2 — AppProvider lock poison + full clone in `to_result` (**E17**, **E18**, **B5**)
+
+All `apps.read().unwrap()` / `write().unwrap()` — same poison policy as Core/Files; release
+`panic = "abort"`. `to_result` clones name, comment, icon, exec, desktop_path for every hit
+(≤20) — normal for owned `SearchResult`; Arc-interning would be over-opt (**E20**).
+
+Search quality is good: exact/prefix/contains bands aligned with engine, keyword blob band
+below name-contains, fuzzy threshold 40, top-K min-heap.
+
+**Minor (fixed):** `search_blob` no longer re-`.to_lowercase()`s the whole formatted string;
+id tokens use `to_ascii_lowercase` once.
+
+##### P2 — calc regex stack cost when query is not plain text (**B5**, **B9**)
+
+`looks_like_plain_text` correctly exits before regex for pure app/file words. Non-plain
+queries walk: battery → duration → timezone (many `Lazy<Regex>`) → currency → units →
+datetime → math → natural. Patterns are `once_cell::Lazy` (compile once) — good.
+
+Still: multi-word place names / times can run several full regex attempts. Acceptable for
+launcher scale; do not fuse without a bench of real query mixes (**E20**).
+
+**Fixed:** `normalize_money_query` returns `Cow<'_, str>` — borrow when no currency symbol.
+
+##### P3 — battery / timezone only when relevant (**Info** / keep)
+
+Battery: keyword gate then sysfs walk — event-style, no background poll. Good.
+
+Timezone: large city table + regex; only after plain-text reject fails. `q.to_lowercase()`
+allocates once per try — fine.
+
+##### P3 — `Lazy` regex `.unwrap()` at init (**E18**)
+
+Static patterns; panic only if a pattern is invalid at first use (dev bug). Prefer
+`expect("static regex")` for clarity, or `const`/`regex_automata` later — not production
+user-input panics.
+
+##### P3 — translate config clone + multi-lock (**B5**, **B13**)
+
+`cfg()` clones full `TranslateConfig` per call. `should_handle` / `is_auto_query` /
+`needs_network` / `search` each take config locks. Engine already gates with `is_enabled()`.
+Optional: one snapshot at start of `search` / `needs_network`.
+
+##### P3 — free backend race always spawns two threads (**B13**)
+
+`free_backends_race` races Google GTX + MyMemory (~2.2s deadline). Good latency; loser work
+is wasted. Acceptable for rare translate jobs.
+
+##### Info — `mod.rs` action specs (**E1**, cold)
+
+Action panel builders allocate `SearchResult` clones / path clones on open — not search path.
+Typed `ResultKind` / `Action` enums are good (**E1**).
+
+##### Info — FX disk load at `FxStore::new` (**B12**)
+
+`load_disk()` once at calc provider construction — fine. Engine comment notes FX is not
+eagerly networked at startup.
 
 #### What already looks good
 
-- 
+| Area | Why |
+|------|-----|
+| Engine provider order | Calc owns query → skip apps/files; translate force → no noise |
+| Apps top-K heap | No full sort of all apps; O(n log K) |
+| Apps precomputed blobs | `name_lower` / `search_blob` at reload, not per keystroke |
+| FX non-blocking | Memory/disk convert; background HTTP + backoff + single-flight |
+| HTTP timeouts | 1s / 2s caps; no curl process spawn |
+| Translate split | UI: mem cache/pending only; worker: disk + network; fail cache 90s |
+| Translate disk put | Atomic tmp + rename; mem cap 256; disk sweep 500 |
+| Calc plain-text reject | Avoids regex for `"firefox"`-style queries |
+| Battery | On-demand sysfs only |
+| Disabled translate | Zero I/O when `enabled == false` |
+
+#### Effective Rust map (Part 4)
+
+| Item | Notes |
+|------|-------|
+| **E1** | `Action` / `ResultKind` / `ConversionView` model domain well |
+| **E4** | HTTP/translate errors as short `String` messages — OK for soft UI fail |
+| **E8** | `Arc<FxStore>` / `Arc<ConfigStore>`; apps under `RwLock` |
+| **E16** | No `unsafe` in this part |
+| **E17** | FX/apps locks short; translate mem caches mutex-scoped |
+| **E18** | Regex Lazy unwraps; lock unwraps (abort-on-poison) |
+| **E20** | Do not rewrite timezone/units regex graph without benches |
+| **E27** | `http`, `translate`, `battery` have `//!`; others thinner |
+| **E30** | Solid unit tests: apps parse, FX disk, translate parse/cache, calc math/tz |
 
 #### Suggested measurements
 
-- App provider: desktop-file scan + match latency; cache invalidation.
-- Calc: regex compile once (`once_cell` / `Lazy`) vs per query; expression parse cost.
-- FX / translate: request coalescing, timeouts, no UI-thread blocking (confirm worker design).
-- Provider fan-out: sequential vs parallel; early cancel when query changes.
+- `apps.search` for 1–3 char queries on a full desktop install (cold vs warm)
+- First translate after restart: main-thread time in `cache_get` disk path
+- `calc.search("firefox")` vs `calc.search("10kg to lb")` (plain reject vs regex hit)
+- FX convert with empty cache then stale cache (background spawn count)
 
-#### Fixes applied
+#### Optional fixes — applied 2026-07-23
+
+| # | Fix | Status |
+|---|-----|--------|
+| 1 | UI translate: mem-only; disk on worker | ✅ |
+| 2 | Shared static `ureq::Agent` | ✅ |
+| 3 | FX `convert` single read lock | ✅ |
+| 4 | `normalize_money_query` → `Cow` (no symbol = borrow) | ✅ |
+| 5 | Apps `search_blob` no double-lowercase | ✅ |
+| 6 | Regex fusion / apps Arc fields / translate cfg snapshot | ⬜ deferred (**E20**) |
+
+#### Part checklist (B/E coverage)
+
+| Check | Result |
+|-------|--------|
+| B4 Hashing | Std maps for FX rates / translate cache — fine at small N |
+| B5 Heap | Apps clones bounded; money_query borrows without symbol; shared agent |
+| B12 I/O | Translate disk only on worker; FX disk at init + bg save; battery on keyword |
+| B13 Concurrency | FX single lock + single-flight; translate race 2 threads; apps RwLock |
+| B14 Caching | FX rates; translate mem+disk+fail; apps in-memory list |
+| E17/E18 | Lock unwrap policy; static regex expect |
+| E20 | No structural rewrite without numbers |
 
 - [ ] …
 

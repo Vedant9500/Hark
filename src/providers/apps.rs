@@ -312,13 +312,13 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
 
     let name_lower = name.to_lowercase();
     // Include desktop id with separators normalized so `sublime_text` matches `subli`.
-    let id_tokens = id.replace(['-', '_', '.'], " ");
+    // Parts are lowercased once; desktop ids are typically already ASCII-lower.
+    let id_tokens = id.replace(['-', '_', '.'], " ").to_ascii_lowercase();
     let search_blob = format!(
         "{name_lower} {} {} {id_tokens}",
         generic_name.to_lowercase(),
         keywords.to_lowercase(),
-    )
-    .to_lowercase();
+    );
     Some(DesktopApp {
         id,
         name,
