@@ -2397,13 +2397,39 @@ fn apply_path_boosts(item: &IndexedPath, q_lower: &str, mut score: i64) -> Optio
     if item.path_lower.contains("/.pi/agent/sessions") {
         score -= 50_000;
     }
-    if item.path_lower.contains(&format!("/{q_lower}")) || item.path_lower.ends_with(q_lower) {
+    // Zero-alloc equivalent of `path_lower.contains(&format!("/{q_lower}"))`.
+    if path_contains_slash_prefixed(q_lower, &item.path_lower) || item.path_lower.ends_with(q_lower)
+    {
         score += 2_000;
     }
     if score <= 0 {
         return None;
     }
     Some(score)
+}
+
+/// True when `path_lower` contains the substring `"/" + q_lower` (no heap allocation).
+#[inline]
+fn path_contains_slash_prefixed(q_lower: &str, path_lower: &str) -> bool {
+    if q_lower.is_empty() {
+        return path_lower.contains('/');
+    }
+    let path = path_lower.as_bytes();
+    let q = q_lower.as_bytes();
+    let need = q.len() + 1;
+    if path.len() < need {
+        return false;
+    }
+    // Scan for '/' then compare the following bytes to q_lower.
+    let last_start = path.len() - need;
+    let mut i = 0;
+    while i <= last_start {
+        if path[i] == b'/' && path[i + 1..i + 1 + q.len()] == *q {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Exact / prefix / substring on name only (no fuzzy allocator path).
@@ -2473,6 +2499,22 @@ fn decode_session_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_contains_slash_prefixed_no_alloc_semantics() {
+        // Same semantics as `path.contains(&format!("/{q}"))` (substring, not segment).
+        assert!(path_contains_slash_prefixed("docs", "/home/u/docs/readme.md"));
+        assert!(path_contains_slash_prefixed("readme.md", "/home/u/docs/readme.md"));
+        // "doc" matches the prefix of "/docs" — intentional parity with old format! path.
+        assert!(path_contains_slash_prefixed("doc", "/home/u/docs/readme.md"));
+        assert!(path_contains_slash_prefixed("u", "/home/u/docs"));
+        assert!(!path_contains_slash_prefixed("xyz", "/home/u/docs"));
+        assert!(!path_contains_slash_prefixed("home", "home/u")); // no '/' before match
+        assert!(path_contains_slash_prefixed("home", "/home/u"));
+        // Empty needle: any slash counts.
+        assert!(path_contains_slash_prefixed("", "/a"));
+        assert!(!path_contains_slash_prefixed("", "nopathslash"));
+    }
 
     #[test]
     fn detects_path_glob_queries() {

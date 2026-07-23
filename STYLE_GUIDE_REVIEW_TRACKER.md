@@ -1,357 +1,616 @@
-# Style Guide Review Tracker (Temporary)
+# Performance & Effective Rust Review Tracker (Temporary)
 
-Temporary tracking file for a 5-part style guide review of the Blink codebase.
-Scope: `src/` only (~21.7k LOC). Build artifacts, packaging, and docs are out of scope.
+Temporary tracking file for a 5-part review of the Blink codebase against:
+
+1. **[The Rust Performance Book](https://nnethercote.github.io/perf-book/)** — latency, allocations, I/O, caching
+2. **[Effective Rust](https://www.effective-rust.com/)** — types, panics, shared state, over-optimization, tooling
+
+**Scope:** `src/` only (~21.7k LOC). Build artifacts, packaging, and non-Rust docs are out of scope
+except where the Performance Book’s **build configuration** chapter applies (`Cargo.toml` profiles / features).
 
 | Part | Name | Approx. LOC | Status |
 |------|------|-------------|--------|
-| 1 | Core & App Shell | ~3,530 | ✅ complete |
-| 2 | UI Shell | ~3,790 | ✅ complete |
-| 3 | UI Features & Theme | ~4,760 | ✅ complete |
-| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ✅ complete |
-| 5 | Files Provider | ~4,660 | ⬜ pending |
+| 1 | Core & App Shell | ~3,500 | ⬜ pending |
+| 2 | UI Shell | ~3,780 | ⬜ pending |
+| 3 | UI Features & Theme | ~4,750 | ⬜ pending |
+| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
+| 5 | Files Provider | ~4,620 | ✅ complete |
 
-**Overall status:** 4 / 5 complete
+**Overall status:** 1 / 5 complete
 
-**Style reference:** [Rust Style Guide](https://doc.rust-lang.org/style-guide/) (default Rust style; project uses `rustfmt.toml` edition 2021, `max_width = 100`).
+**References:**
+
+| Guide | URL | Used for |
+|-------|-----|----------|
+| Rust Performance Book | https://nnethercote.github.io/perf-book/ | Hot-path cost, hashing, allocs, I/O, caching |
+| Effective Rust | https://www.effective-rust.com/ | Types, `Option`/`Result`, panics, shared state, over-opt |
+
+**Project notes (pre-review):**
+
+- Release profile already sets `lto = true`, `codegen-units = 1`, `opt-level = 3`, `strip = true`,
+  `panic = "abort"` — strong defaults per the build-configuration chapter; re-verify during Part 1.
+- Optional `bench` feature + `src/bench.rs` micro-bench CLI (`blink --bench`) — exercise under
+  the benchmarking chapter rather than only Criterion (crate has no Criterion harness today).
+- Hot paths to weight more heavily: search/index (`providers/files/*`), result ranking
+  (`engine.rs`), app launch path, typo correction, UI debounce / row rebuilds.
+
+---
+
+## Performance Book checklist (B#)
+
+| # | Chapter / topic | What to look for |
+|---|-----------------|------------------|
+| B1 | Build configuration | Debug vs release assumptions; feature flags that bloat the daemon; unnecessary deps on hot paths |
+| B2 | Profiling | Known hot functions instrumentable? CPU vs allocation vs I/O bound? |
+| B3 | Benchmarking | Micro-benches / CLI benches exist for regressions? Stable inputs? |
+| B4 | Hashing | Default hasher vs `FxHash` / `ahash` for non-adversarial in-memory maps/sets |
+| B5 | Heap allocations | Avoidable `clone` / `to_string` / `to_owned` / `format!` on hot paths; preallocation (`with_capacity`); reuse buffers |
+| B6 | Collections | Right structure (`Vec` vs `HashMap` vs `BTree*`); repeated linear scans; unnecessary intermediate `collect`s |
+| B7 | Iterators | Extra allocations from intermediate collections; opportunities for fused/chain vs manual loops |
+| B8 | Bounds checks | Hot indexed loops that could use iterators / `get_unchecked` only where proven safe & measured |
+| B9 | Inlining / monomorphization | Tiny hot helpers not inlined; heavy generic blow-up |
+| B10 | Type sizes / layout | Large structs moved a lot; boxing large rarely-used variants; padding waste in hot arrays |
+| B11 | Logging / debug | Hot-path `println!` / `dbg!` / expensive `format!` in logging |
+| B12 | I/O | Sync blocking on UI thread; repeated open/read; lack of buffering; process spawn vs library |
+| B13 | Parallelism / concurrency | Over-sync; lock contention; work that could be off-thread; channel churn |
+| B14 | Caching | Recomputation of pure results; stale vs thrash; invalidation cost |
+
+## Effective Rust checklist (E#)
+
+Map of items most relevant to app code. Full list: https://www.effective-rust.com/
+
+| # | Item | What to look for |
+|---|------|------------------|
+| E1 | Item 1 — express data with types | Enums/structs model domain; avoid stringly APIs on hot paths |
+| E3 | Item 3 — `Option`/`Result` transforms | Prefer `?` / combinators over nested `match` where clearer |
+| E4 | Item 4 — idiomatic errors | Typed errors vs `String`/`unwrap` for fallible APIs |
+| E8 | Item 8 — references & pointers | `Arc`/`&`/`Cow` choices; avoid owned copies when a borrow suffices |
+| E9 | Item 9 — iterator transforms | Prefer iterators when they replace alloc-heavy intermediate loops |
+| E16 | Item 16 — avoid `unsafe` | No `unsafe` unless measured + justified |
+| E17 | Item 17 — shared-state parallelism | Lock scope, poisoning, deadlock risk, prefer message-passing where fit |
+| E18 | Item 18 — don't panic | `unwrap`/`expect` on lock/parse paths that can fail in prod |
+| E20 | Item 20 — avoid over-optimizing | Measure first; don't micro-opt cold paths or obscure code |
+| E27 | Item 27 — document public APIs | `//!` / `///` on provider surface |
+| E29 | Item 29 — Clippy | No systematic `allow` without reason |
+| E30 | Item 30 — tests beyond unit | Integration / property / bench coverage for regressions |
+
+**Severity labels for findings:**
+
+| Label | Meaning |
+|-------|---------|
+| **P1** | Likely user-visible latency / reliability issue on a hot path — fix or measure + fix |
+| **P2** | Real waste or idiomatic gap; cold path or moderate factor — fix when touching the area |
+| **P3** | Micro nit / style; only if measured or zero-risk cleanup |
+| **Info** | Observation, already good, or needs a benchmark before judging |
 
 ---
 
 ## Part 1 — Core & App Shell
 
-**Focus:** entrypoint, config, search engine, IPC, usage tracking, typo correction, benchmarks.
+**Focus:** entrypoint, config load, search engine / ranking, IPC, usage tracking, typo correction,
+micro-bench CLI. Highest leverage after Files search for end-to-end query latency.
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/main.rs` | 179 | ✅ |
-| `src/config.rs` | 976 | ✅ |
-| `src/engine.rs` | 819 | ✅ |
-| `src/ipc.rs` | 194 | ✅ |
-| `src/usage.rs` | 289 | ✅ |
-| `src/typos.rs` | 579 | ✅ |
-| `src/bench.rs` | 490 | ✅ |
+| `src/main.rs` | ~182 | ⬜ |
+| `src/config.rs` | ~969 | ⬜ |
+| `src/engine.rs` | ~809 | ⬜ |
+| `src/ipc.rs` | ~193 | ⬜ |
+| `src/usage.rs` | ~289 | ⬜ |
+| `src/typos.rs` | ~565 | ⬜ |
+| `src/bench.rs` | ~485 | ⬜ |
 
-**Part status:** ✅ complete  
-**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
+**Also in scope for this part:** `Cargo.toml` `[profile.release]`, `[features]` (`bench`, `layer-shell`).
 
-### Verdict
+**Part status:** ⬜ pending  
+**Reviewed:** —  
+**Against:** https://nnethercote.github.io/perf-book/
 
-Mostly compliant. No line-width violations (>100), no tabs, no trailing whitespace, no block comments. Naming (`snake_case` / `UpperCamelCase` / `SCREAMING_SNAKE_CASE`) is solid. Main gap is **rustfmt drift** on 5 of 7 files (layout of short vs multi-line expressions), plus a few **double blank lines** and one **module declaration order** nit.
+### Reviewer notes
 
-### Findings
+_(fill during review)_
 
-#### P1 — rustfmt layout drift (must fix for default style)
+#### Verdict
 
-`rustfmt --check` fails on: `config.rs`, `engine.rs`, `ipc.rs`, `typos.rs`, `bench.rs`.  
-`main.rs` and `usage.rs` are already clean.
+_(one paragraph)_
 
-Style guide basis: indentation/line width, block indent, small-item single-line form, blank lines (0 or 1 between items).
+#### Findings
 
-| File | Issue (rustfmt wants) |
-|------|------------------------|
-| `bench.rs:50` | Multi-line `if` arms instead of single-line `if deep.is_empty() { … } else { … }` |
-| `bench.rs:160–176` | Collapse short `println!` calls onto one line |
-| `bench.rs:246` | Remove extra blank line before `pick_bench_app_query` |
-| `bench.rs:250` | Multi-line array literal with trailing comma |
-| `bench.rs:283` | Collapse `p95` assignment onto one line |
-| `config.rs:324` | Double blank line before `LayoutMode` → single blank |
-| `config.rs:456` | Collapse `target_lang` chain onto one line |
-| `config.rs:778` | Break method chain after `best` (block indent) |
-| `config.rs:921–929` | Multi-line `assert_eq!` / `assert!` when message doesn't fit |
-| `config.rs:961` | Collapse short array arg onto one line |
-| `config.rs:EOF` | Trailing double blank after final `}` |
-| `engine.rs:223` | Prefer chain form for `results.iter().any(...)` |
-| `engine.rs:361–364` | Single-line `secondary_actions` signature |
-| `engine.rs:711–715` | Single-line `if` condition with `\|\|` |
-| `engine.rs:738–740` | Single-line `if` condition |
-| `engine.rs:801` | Double blank before test module |
-| `ipc.rs:114` | Double blank before `#[cfg(test)]` |
-| `typos.rs:221–225` | Collapse `sort_by` comparator |
-| `typos.rs:258–260` | Different break for `ok_or_else` |
-| `typos.rs:402` | Collapse `cur[j] = …` chain |
-| `typos.rs:508+` | Collapse short `learn_from_launch` / `assert_eq!` calls |
+##### P1 —
 
-**Fix:** `cargo fmt` (or `rustfmt` on those files). No semantic change.
+##### P2 —
 
-#### P2 — blank lines (style guide: 0 or 1 between items)
+##### P3 / Info —
 
-Double blank lines found at:
+#### What already looks good
 
-- `config.rs:323–324` (before `LayoutMode`)
-- `engine.rs:800–801` (before tests)
-- `ipc.rs:113–114` (before tests)
-- `bench.rs:245–246` (before helper)
+- 
 
-#### P3 — module declaration order (`main.rs`)
-
-Style guide: version-sort module declarations. Current order:
-
-```text
-config, engine, ipc, providers, theme, ui, usage, typos
-```
-
-`typos` should come before `ui` and `usage` alphabetically/version-sort:
-
-```text
-config, engine, ipc, providers, theme, typos, ui, usage
-```
-
-(Imports after mods look fine; crate uses are appropriately ordered relative to `std`/`gtk`.)
-
-#### P4 — minor / optional (advice, not hard style-guide musts)
-
-| Item | Notes |
-|------|--------|
-| `PathStyle` manual `Default` | Could be `#[derive(Default)]` + `#[default]` on `Label` (same pattern as `LayoutMode`) — idiomatic, not required by the formatting guide |
-| Expression-oriented style | Generally good (`let x = if …`, early returns). No systematic anti-pattern found |
-| Comments | Prefer `//` (done). Many are sentence fragments / rationale notes — guide says complete sentences are a *recommendation* only |
-| `Cargo.toml` | Present and reasonable; out of Part 1 `src/` scope but edition matches `rustfmt.toml` (2021) |
-
-### What already looks good
-
-- 4-space indent, spaces not tabs
-- Max line width ≤ 100 in source (no over-width lines)
-- Trailing commas on multi-line lists where already multi-line
-- Block indent preferred over visual indent
-- Naming conventions followed
-- `///` / `//!` docs used appropriately (`typos.rs`, `bench.rs`, public APIs)
-- `usage.rs` fully rustfmt-clean
-
-### Suggested next action
+#### Suggested measurements
 
 ```bash
-cargo fmt
+# Release binary (always measure release for perf claims)
+cargo build --release --features "layer-shell,bench"
+
+# Built-in micro-bench CLI (if enabled)
+./target/release/blink --bench
+
+# Optional: CPU / alloc profiling when chasing a finding
+# perf record / samply / heaptrack / dhat — pick what fits the suspect path
 ```
 
-Then re-check Part 1 files; remaining manual nits are only the `mod` sort in `main.rs` if you want strict item-order compliance.
+#### Fixes applied
 
-### Fixes applied (2026-07-23)
-
-- [x] `cargo fmt` — all Part 1 files pass `rustfmt --check`
-- [x] Double blank lines removed (via fmt)
-- [x] `main.rs` module order: `typos` before `ui` / `usage`
-- [x] `PathStyle`: `#[derive(Default, Copy)]` + `#[default]` on `Label` (dropped manual `impl Default`)
-- [x] `cargo check --features "layer-shell,bench"` succeeds
+- [ ] …
 
 ---
 
 ## Part 2 — UI Shell
 
-**Focus:** main window / list UI, row rendering, footer, action panel, drag-and-drop, thumbnails, base CSS.
+**Focus:** main window / list UI, row rendering, footer, action panel, drag-and-drop, thumbnails.
+Watch for per-keystroke work, full list rebuilds, icon/thumbnail I/O on the GTK thread.
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/mod.rs` | ~2197 | ✅ |
-| `src/ui/rows.rs` | ~496 | ✅ |
-| `src/ui/dnd.rs` | ~368 | ✅ |
-| `src/ui/action_panel.rs` | ~247 | ✅ |
-| `src/ui/thumbnails.rs` | 225 | ✅ |
-| `src/ui/style.css` | 166 | ✅ (CSS; not rustfmt) |
-| `src/ui/footer.rs` | 80 | ✅ |
+| `src/ui/mod.rs` | ~2197 | ⬜ |
+| `src/ui/rows.rs` | ~496 | ⬜ |
+| `src/ui/dnd.rs` | ~368 | ⬜ |
+| `src/ui/action_panel.rs` | ~247 | ⬜ |
+| `src/ui/thumbnails.rs` | ~225 | ⬜ |
+| `src/ui/style.css` | 166 | ⬜ (CSS; book applies only where it affects paint cost) |
+| `src/ui/footer.rs` | 80 | ⬜ |
 
-**Part status:** ✅ complete  
-**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
+**Part status:** ⬜ pending  
+**Reviewed:** —  
+**Against:** https://nnethercote.github.io/perf-book/
 
-### Verdict
+### Reviewer notes
 
-**Clean.** All six Rust files pass `rustfmt --check` with project `rustfmt.toml` (edition 2021, max_width 100). No tabs, no trailing whitespace, no double blank lines, no lines over 100 columns, no block comments in Rust. Naming and module layout match the guide. No mandatory fixes.
+_(fill during review)_
 
-*(Already reformatted by the earlier full-crate `cargo fmt` from Part 1.)*
+#### Verdict
 
-### Findings
+_(one paragraph)_
 
-#### No P1 issues
+#### Findings
 
-| Check | Result |
-|--------|--------|
-| rustfmt layout | Pass — all 6 `.rs` files |
-| Max width 100 | Pass |
-| Spaces / no tabs | Pass |
-| Trailing whitespace | Pass |
-| Blank lines (0 or 1) | Pass |
-| Module order (`ui/mod.rs`) | Pass — alpha: `action_panel`, `dnd`, `footer`, `open_with`, `preview`, `rows`, `settings`, `thumbnails` |
-| Naming | Pass — `snake_case` / `UpperCamelCase` / `SCREAMING_SNAKE_CASE`; `box_` for reserved `box` (guide-approved) |
-| Prefer `//` over `/* */` (Rust) | Pass |
-| Block indent | Pass |
+##### P1 —
 
-#### Informational / out of Rust style-guide scope
+##### P2 —
 
-| Item | Notes |
-|------|--------|
-| `src/ui/style.css` | GTK CSS, not Rust. Uses 2-space indent and `/* */` comments (normal for CSS). Not governed by the Rust Style Guide or rustfmt. |
-| `footer.rs` module docs | Sibling files use `//!` crate/module docs; `footer.rs` has none. Soft consistency preference only. |
-| `#[allow(dead_code)]` | Present on a few helpers/fields (`footer`, `dnd`, `mod.rs`). Not a formatting/style-guide violation. |
-| Import grouping | `group_imports` default is Preserve; rustfmt accepts current order. No reorder needed. |
+##### P3 / Info —
 
-### What looks good
+#### What already looks good
 
-- Strong `//!` module docs on `rows`, `dnd`, `action_panel`, `thumbnails`
-- Expression-oriented control flow (`if let`, early returns, `let … = match`)
-- Multi-line function args use trailing commas
-- Constants properly `SCREAMING_SNAKE_CASE` (`WINDOW_WIDTH`, `SEARCH_DEBOUNCE_MS`, …)
-- Large `ui/mod.rs` stays within width and rustfmt layout rules
+- 
 
-### Fixes applied
+#### Suggested measurements
 
-None required for Part 2.
+- Time from keystroke → results applied (debounce + engine + row rebuild).
+- Thumbnail / icon load: main-thread vs worker; cache hit rate.
+- Large result sets: row widget reuse vs recreate.
+
+#### Fixes applied
+
+- [ ] …
 
 ---
 
 ## Part 3 — UI Features & Theme
 
-**Focus:** settings UI, preview pane, open-with dialog, theme generation / CSS injection.
+**Focus:** settings UI, preview pane, open-with dialog, theme / CSS generation and injection.
+Mostly cold paths (settings, theme apply) but preview can sit on the interactive path.
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/settings.rs` | ~2208 | ✅ |
-| `src/ui/preview.rs` | ~1081 | ✅ |
-| `src/theme/css.rs` | ~935 | ✅ |
-| `src/ui/open_with.rs` | ~343 | ✅ |
-| `src/theme/mod.rs` | ~175 | ✅ |
+| `src/ui/settings.rs` | ~2213 | ⬜ |
+| `src/ui/preview.rs` | ~1081 | ⬜ |
+| `src/theme/css.rs` | ~935 | ⬜ |
+| `src/ui/open_with.rs` | ~343 | ⬜ |
+| `src/theme/mod.rs` | ~175 | ⬜ |
 
-**Part status:** ✅ complete  
-**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
+**Part status:** ⬜ pending  
+**Reviewed:** —  
+**Against:** https://nnethercote.github.io/perf-book/
 
-### Verdict
+### Reviewer notes
 
-**Mostly clean.** All five files already pass `rustfmt --check`. One hard style-guide issue: three UI strings in `settings.rs` exceeded the 100-column max (rustfmt does not reflow string literals). Fixed by wrapping with `\` string continuations. No other mandatory fixes.
+_(fill during review)_
 
-### Findings
+#### Verdict
 
-#### P1 — line width > 100 (settings copy strings) — **fixed**
+_(one paragraph)_
 
-Style guide: max line width 100. These were single-line string literals:
+#### Findings
 
-| Location | Was | Fix |
-|----------|-----|-----|
-| `settings.rs` Appearance page_shell subtitle | ~128 cols | `\`-continued string |
-| `settings.rs` Appearance note label | ~180 cols | `\`-continued string |
-| `settings.rs` Tools note label | ~185 cols | `\`-continued string |
+##### P1 —
 
-String values unchanged (verified with a small rustc join check). `cargo check` still green.
+##### P2 —
 
-#### No other P1 issues
+##### P3 / Info —
 
-| Check | Result |
-|--------|--------|
-| rustfmt layout | Pass (all 5 files) |
-| Tabs / trailing space / double blanks | Pass |
-| Naming | Pass (`box_` for reserved `box` is guide-approved) |
-| Module order (`theme/mod.rs`) | Pass (`mod css;`) |
-| Prefer `//` in Rust | Pass — `/* */` inside `theme/css.rs` are **CSS comments in a format string**, not Rust block comments |
+#### What already looks good
 
-#### Informational
+- 
 
-| Item | Notes |
-|------|--------|
-| Module docs | `open_with.rs` has `//!`; `settings.rs` / `preview.rs` / `theme/*` do not — soft consistency only |
-| `theme/css.rs` | Large raw CSS template string; indent inside the string is CSS convention (2-space), not Rust block indent |
-| `#[allow(dead_code)]` / clippy allows | Present; not a formatting violation |
+#### Suggested measurements
 
-### Fixes applied (2026-07-23)
+- Theme rebuild / CSS inject frequency (once per change vs every frame).
+- Preview content load: size limits, cancellation when selection changes quickly.
+- Settings open cost (one-shot is fine if bounded).
 
-- [x] Wrap three long user-facing strings in `src/ui/settings.rs` to ≤100 columns
-- [x] Re-check: no Part 3 lines > 100; rustfmt clean; `cargo check --features "layer-shell,bench"` OK
+#### Fixes applied
+
+- [ ] …
 
 ---
 
 ## Part 4 — Providers (Apps, Calc, FX, HTTP, Translate)
 
-**Focus:** provider trait / registry, app launcher, calculator submodules, FX rates, HTTP helper, translate.
+**Focus:** provider trait / registry, app launcher, calculator submodules, FX rates, HTTP helper,
+translate. Mix of pure CPU (calc, fuzzy apps) and network (FX, translate).
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/providers/mod.rs` | ~322 | ✅ |
-| `src/providers/apps.rs` | ~435 | ✅ |
-| `src/providers/fx.rs` | ~261 | ✅ |
-| `src/providers/http.rs` | 78 | ✅ |
-| `src/providers/translate.rs` | ~1016 | ✅ |
-| `src/providers/calc/mod.rs` | ~150 | ✅ |
-| `src/providers/calc/expr.rs` | ~391 | ✅ |
-| `src/providers/calc/math.rs` | ~148 | ✅ |
-| `src/providers/calc/units.rs` | ~547 | ✅ |
-| `src/providers/calc/timezone.rs` | ~748 | ✅ |
-| `src/providers/calc/datetime.rs` | ~174 | ✅ |
-| `src/providers/calc/duration.rs` | ~107 | ✅ |
-| `src/providers/calc/currency.rs` | ~128 | ✅ |
-| `src/providers/calc/battery.rs` | ~444 | ✅ |
-| `src/providers/calc/util.rs` | 70 | ✅ |
+| `src/providers/mod.rs` | ~322 | ⬜ |
+| `src/providers/apps.rs` | ~442 | ⬜ |
+| `src/providers/fx.rs` | ~261 | ⬜ |
+| `src/providers/http.rs` | 78 | ⬜ |
+| `src/providers/translate.rs` | ~1016 | ⬜ |
+| `src/providers/calc/mod.rs` | ~150 | ⬜ |
+| `src/providers/calc/expr.rs` | ~391 | ⬜ |
+| `src/providers/calc/math.rs` | ~160 | ⬜ |
+| `src/providers/calc/units.rs` | ~553 | ⬜ |
+| `src/providers/calc/timezone.rs` | ~757 | ⬜ |
+| `src/providers/calc/datetime.rs` | ~177 | ⬜ |
+| `src/providers/calc/duration.rs` | ~108 | ⬜ |
+| `src/providers/calc/currency.rs` | ~128 | ⬜ |
+| `src/providers/calc/battery.rs` | ~444 | ⬜ |
+| `src/providers/calc/util.rs` | 70 | ⬜ |
 
-**Part status:** ✅ complete  
-**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
+**Part status:** ⬜ pending  
+**Reviewed:** —  
+**Against:** https://nnethercote.github.io/perf-book/
 
-### Verdict
+### Reviewer notes
 
-**Mostly clean.** All 15 files already pass `rustfmt --check`. Main issue: **13 lines over 100 columns** — almost all long regex string literals (rustfmt will not reflow them) plus one test desktop-file fixture. Fixed by splitting regexes with `concat!(…)` and wrapping the desktop fixture with `\` string continuations. Module order, naming, tabs, blanks: good.
+_(fill during review)_
 
-### Findings
+#### Verdict
 
-#### P1 — line width > 100 — **fixed**
+_(one paragraph)_
 
-| File | Lines | Kind | Fix |
-|------|-------|------|-----|
-| `apps.rs` | 1 | Test `.desktop` fixture string (~284 cols) | Multi-line string with `\n\` |
-| `calc/math.rs` | 3 | Magnitude / % / tip regexes | `concat!(r"…", r"…")` |
-| `calc/units.rs` | 2 | Convert regexes | `concat!` |
-| `calc/timezone.rs` | 5 | TZ query / predict regexes | `concat!` |
-| `calc/datetime.rs` | 1 | Relative time regex | `concat!` |
-| `calc/duration.rs` | 1 | Duration token regex | `concat!` |
+#### Findings
 
-Pattern semantics unchanged (`concat!` joins at compile time). Tests: **71 passed**, 2 ignored.
+##### P1 —
 
-#### No other P1 issues
+##### P2 —
 
-| Check | Result |
-|--------|--------|
-| rustfmt layout | Pass (all 15 files) |
-| Tabs / trailing space / double blanks | Pass |
-| Module order (`providers/mod.rs`) | Pass — `apps`, `calc`, `files`, `fx`, `http`, `translate` |
-| Module order (`calc/mod.rs`) | Pass — alpha: battery…util |
-| Naming | Pass |
+##### P3 / Info —
 
-#### Informational
+#### What already looks good
 
-| Item | Notes |
-|------|--------|
-| Module docs | `http.rs` has `//!`; most calc modules do not — soft consistency only |
-| `files` module | Declared here but reviewed in Part 5 |
+- 
 
-### Fixes applied (2026-07-23)
+#### Suggested measurements
 
-- [x] Wrap over-width regexes via `concat!` in math/units/timezone/datetime/duration
-- [x] Wrap desktop-entry test fixture in `apps.rs`
-- [x] `cargo fmt`; no Part 4 lines > 100; full test suite green
+- App provider: desktop-file scan + match latency; cache invalidation.
+- Calc: regex compile once (`once_cell` / `Lazy`) vs per query; expression parse cost.
+- FX / translate: request coalescing, timeouts, no UI-thread blocking (confirm worker design).
+- Provider fan-out: sequential vs parallel; early cancel when query changes.
+
+#### Fixes applied
+
+- [ ] …
 
 ---
 
 ## Part 5 — Files Provider
 
-**Focus:** file index, search, hot paths, live cache, files provider module.
+**Focus:** file index, search, hot paths, live cache, files provider module. Largest performance
+surface in the app.
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/providers/files/search.rs` | 3082 | ⬜ |
-| `src/providers/files/mod.rs` | 646 | ⬜ |
-| `src/providers/files/index.rs` | 588 | ⬜ |
-| `src/providers/files/live_cache.rs` | 187 | ⬜ |
-| `src/providers/files/hot.rs` | 160 | ⬜ |
+| `src/providers/files/search.rs` | ~3074 | ✅ |
+| `src/providers/files/mod.rs` | ~627 | ✅ |
+| `src/providers/files/index.rs` | ~578 | ✅ |
+| `src/providers/files/live_cache.rs` | 187 | ✅ |
+| `src/providers/files/hot.rs` | ~158 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewer notes:**
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23  
+**Against:**
 
-- 
-- 
+- [The Rust Performance Book](https://nnethercote.github.io/perf-book/)
+- [Effective Rust](https://www.effective-rust.com/)
+
+### Reviewer notes
+
+#### Verdict
+
+**Solid architecture, a few measurable hot-path leaks.** The design already follows several
+Performance Book and Effective Rust lessons well: short index lock scopes, top-K heaps, hot-set
+short-circuit, live-cache with `Arc<[SearchResult]>`, budgeted deep walks off the main lock,
+pre-lowercased index fields, and `DeepMode` as a real enum rather than stringly flags.
+
+The main gaps are **per-score heap allocations in free-text ranking** (`format!` in
+`apply_path_boosts`), **O(n) string-key maps rebuilt on every hot refresh**, **JSON index cache
+I/O cost**, and **lock `.unwrap()` panics** on shared state. Effective Rust Item 20 applies: fix
+only what measurement confirms; the rest are good opportunistic cleanups.
+
+No `unsafe`. No systematic over-engineering. Biggest wins are cheap to try and easy to bench.
+
+#### Findings
+
+##### P1 — hot-path allocations in free-text scoring (**B5**, **E20**)
+
+`score_name_only` → `apply_path_boosts` runs for **every** index entry on a full scan (up to
+`MAX_INDEX` = 100k). Inside the hot loop:
+
+```rust
+// search.rs — apply_path_boosts
+if item.path_lower.contains(&format!("/{q_lower}")) || item.path_lower.ends_with(q_lower) {
+    score += 2_000;
+}
+```
+
+That allocates a new `String` per scored item for a path-segment check. Also, each result materializes
+via `indexed_to_result`:
+
+- `format!("path:{}", …)` for `id`
+- `pretty_path` (home lookup + `format!`) for subtitle
+- `path.clone()` into `Action::OpenPath`
+- `icon: Some(… .into())` → heap `String` even though `icon_for_path` returns `&'static str`
+
+Top-K is only 25, so result construction is smaller than the score loop, but the `format!` inside
+`apply_path_boosts` is **O(index size)** per keystroke on non-hot-skip queries.
+
+**Fix (low risk):**
+
+1. Replace `format!("/{q_lower}")` with a stack buffer or two-slice check
+   (`path_lower.ends_with(q_lower)` already exists; for mid-path use
+   `path_lower.contains` with a prebuilt `/{q}` once **outside** the loop, or
+   `split`/`windows` without alloc).
+2. Precompute `needle = format!("/{q_lower}")` once in `score_free_text_*` and pass `&str`.
+3. Optionally keep icon as `Option<&'static str>` or `Cow<'static, str>` on `SearchResult`
+   (cross-cutting; Part 1/engine may need to agree).
+
+**Measure first** with `blink --bench` / heaptrack on a full free-text query against a full index.
+
+##### P1 — hot-set rebuild clones entire index path map (**B5**, **B6**, **B4**)
+
+`hot.rs` `build_hot_set`:
+
+```rust
+let mut by_path: HashMap<String, usize> = HashMap::with_capacity(index.len());
+for (idx, item) in index.iter().enumerate() {
+    by_path.entry(item.path_lower.clone()).or_insert(idx);
+}
+```
+
+On every dirty rebuild this **clones every `path_lower`** (up to 100k strings) into a
+`std` `HashMap` (SipHash). Hot set cap is only 64 — the reverse lookup should not cost a full
+index string clone.
+
+**Fix options (prefer measured):**
+
+| Option | Notes |
+|--------|--------|
+| A. Build `HashMap<&str, usize>` from `index` | Lifetime tied to index read lock — already held by caller in `ensure_fresh` / `rebuild` |
+| B. Keep a persistent `path_lower → idx` beside the index | Invalidate on rebuild; avoid per-hot rebuild |
+| C. Linear scan for ≤128 wanted paths | 64 × 100k strcmp may still beat alloc of 100k keys — measure |
+| D. `FxHashMap` / `hashbrown` | Secondary; only after eliminating clones (**B4**) |
+
+Also `snapshot_indices` clones the small `Vec<usize>` each search — fine (≤64).
+
+##### P2 — index on-disk cache is JSON + full string rewrite (**B12**, **B5**)
+
+`index.rs` `save_cache` / `load_cache`:
+
+- Full `serde_json::to_vec` of up to 100k path strings
+- Atomic rename (good)
+- Compact `CacheEntry` (only path / is_dir / depth) — good design
+- `load_cache` re-derives `name_lower` / `path_lower` / flags via `make_indexed` — correct but CPU-heavy on cold start
+
+Fingerprint uses `DefaultHasher` (not cryptographic need — OK for local cache key; **B4** is about
+in-memory maps, not this).
+
+**Opportunistic improvements:**
+
+- `bincode` / `rkyv` / `postcard` for binary cache (faster load; version already gated)
+- `Vec::with_capacity` on walk is 4096 — fine; could ramp or reserve previous size
+- `is_high_value_path` calls `dirs::home_dir()` and `format!("{home_s}/")` **per entry** during
+  index build — cache home prefix once outside the loop (**B5**)
+
+##### P2 — live deep walk allocates aggressively (**B5**, **B12**)
+
+`live_deep_under_roots` (async path, budgeted — good):
+
+- Per visit: `name.to_lowercase()`, `path.to_string_lossy().to_lowercase()`, `format!("path:…")`,
+  `make_indexed` (more lowercasing + path clone), then another `path.to_path_buf()` into top-K
+- Top-K uses linear min scan on a ≤25 vec (fine)
+- `existing: HashSet<String>` of result ids rebuilt from clones in `run_deep_jobs`
+
+Budgets (`40ms` sync / `200ms` async, visit caps) already limit worst case — aligns with **E20**
+(don't unbounded-walk). Still, reducing per-node allocs improves how deep you get within budget.
+
+**Fix ideas:** reuse a `String` buffer for `path_lower`; score without full `IndexedPath`;
+`HashSet` of path indices or `PathBuf` only where needed.
+
+##### P2 — result merge / cache put clones full `SearchResult` graphs (**B5**, **E8**)
+
+`mod.rs`:
+
+```rust
+self.live_cache.put(query, results.clone());  // deep mode
+// …
+merge_cached: HashSet of id clones + r.clone() per cached hit
+```
+
+`LiveCache` already stores `Arc<[SearchResult]>` and returns Arc clones on get — good (**E8**).
+But `put` takes `Vec` after a full clone of results, and `get` for deep full-hit path does
+`cached.to_vec()` (clones every `SearchResult` out of the Arc).
+
+**Fix:** `put` can take ownership of `results` without clone when you're done with them; full-hit
+return path could return `Arc` or write into a shared buffer if the engine allows. Cross-module
+API change — coordinate with engine/UI.
+
+##### P2 — lock poisoning via `.unwrap()` (**E17**, **E18**)
+
+Widespread:
+
+| Location | Pattern |
+|----------|---------|
+| `index` / `mounts` / `fingerprint` | `read().unwrap()` / `write().unwrap()` |
+| `hot.set` | `write().unwrap()` / `read().unwrap()` |
+| `live_cache.inner` | `lock().unwrap()` |
+| `scoped_memo` | `lock().unwrap()` |
+
+With `panic = "abort"` in release, a poisoned lock aborts the process. Poisoning only happens after
+a panic while holding the lock — so this is secondary to not panicking elsewhere. Still, Effective
+Rust Item 18 prefers recovering or using `parking_lot` (no poison) for internal caches.
+
+**Recommendation:** `parking_lot::{Mutex,RwLock}` for internal non-poison maps, or
+`.unwrap_or_else(|e| e.into_inner())` for “keep going” recovery on caches. Not a latency P1.
+
+##### P2 — mounts / config snapshot cloning each search (**B5**, **E8**)
+
+```rust
+let cfg = self.state.config.snapshot(); // Arc — good
+let mounts = self.state.mounts.read().unwrap().clone(); // full Vec clone per search
+```
+
+Mount lists are small; OK. If `pretty_path` / scoring only need `&[MountInfo]`, hold the read guard
+for the index phase only (already structured that way for index). Cloning mounts is P3 unless
+profiling shows otherwise.
+
+##### P3 — hashing defaults on in-memory maps (**B4**)
+
+`HashMap` / `HashSet` for:
+
+- hot path rebuild (`path_lower` keys)
+- live cache query keys
+- `seen` sets during walks / merges
+- index `seen: HashSet<PathBuf>` during build
+
+None of these are adversarial user-controlled high-QPS hash-DoS surfaces in the same way as a
+public HTTP API, but free-text search is interactive: **FxHash / ahash** can shave map ops on
+large sets. Only worth it after removing the clone storm in `build_hot_set`.
+
+##### P3 — sort comparators re-lowercase titles (**B5**)
+
+```rust
+a.title.to_lowercase().cmp(&b.title.to_lowercase())
+```
+
+in `merge_cached` / `merge_live` / absolute glob — only on ≤25 items. Prefer `eq_ignore_ascii_case`
+or store `title_lower` if you touch this code; not worth a dedicated change (**E20**).
+
+##### P3 / Effective Rust — types & APIs
+
+| Topic | Assessment |
+|-------|------------|
+| **E1** `DeepMode`, `IndexedPath`, `CacheEntry` | Good domain modeling |
+| **E1** result `id` as `String` (`path:…`) | Stringly; works; parsing elsewhere by prefix |
+| **E4** `trash_path` → `Result<(), String>` | Acceptable for UI errors; not hot |
+| **E8** `LiveCache` `Arc<[T]>` | Exemplary shared ownership |
+| **E8** `ConfigStore` Arc snapshot | Exemplary |
+| **E9** scoring | Explicit loops + heap — correct for top-K; iterators wouldn't help much |
+| **E16** | No `unsafe` in this part |
+| **E20** | Hot skip, visit caps, strong-score early outs — optimization is purposeful, not cargo-cult |
+| **E27** | `hot`, `live_cache` have `//!`; `search.rs` / `index.rs` sparse module docs |
+| **E30** | Strong unit tests in `search` / `hot` / `live_cache`; worth keeping benches in `bench` feature |
+
+##### Info — architecture already aligned with the books
+
+| Pattern | Where | Book lens |
+|---------|--------|-----------|
+| Index read lock dropped before WalkDir | `FileProvider::search_with` | **B13**, **E17** |
+| Top-K `BinaryHeap` instead of full sort | `score_free_text_*` | **B6**, **B5** |
+| Hot short-circuit (`HOT_SKIP_FULL_SCORE`) | `score_free_text_full` | **B14**, **E20** |
+| Fuzzy budget (`fuzzy_left = 500`) | `finish_free_text_fuzzy` | **E20** |
+| Precomputed `name_lower` / `path_lower` | `IndexedPath` | **B5** |
+| Compact disk cache + version + TTL | `index.rs` | **B12**, **B14** |
+| Negative TTL for empty deep results | `live_cache` | **B14** |
+| LRU + cap (64) on live cache | `live_cache` | **B14** |
+| Scoped query memo | `scoped_memo` | **B14** |
+| `icon_for_path` → static str names | `mod.rs` | good; only the `String` wrap costs |
+| Release profile LTO / abort | `Cargo.toml` | **B1** (crate-wide) |
+
+#### Checklist snapshot (Part 5)
+
+| Lens | Result |
+|------|--------|
+| B4 Hashing | P3 — std hasher; clone cost dominates |
+| B5 Allocations | **P1** — `apply_path_boosts` format; hot rebuild clones; result strings |
+| B6 Collections | Good top-K heap; hot map oversized |
+| B10 Type sizes | `IndexedPath` holds 3 strings + PathBuf — intentional for search speed |
+| B12 I/O | JSON cache cold-start; deep walk budgeted |
+| B13 / E17 Concurrency | Good lock discipline; unwrap on poison |
+| B14 Caching | Live + disk + hot + scoped memo — strong |
+| E16 unsafe | Pass (none) |
+| E18 panics | Lock unwraps; test-only expects elsewhere |
+| E20 over-opt | Restraint is good; fix measured leaks only |
+
+#### What already looks good
+
+- Phase split: index under short `RwLock`, deep walk after release
+- Free-text: name-only pass first, fuzzy only if weak top-K
+- Hot set + min query length avoids short-prefix false short-circuits
+- Live cache Arc sharing + negative caching
+- Disk cache fingerprint ignores content mtimes (avoids thrash) with TTL freshness
+- Exclude / low-value / high-value scoring reduces junk in top-K
+- Substantial unit coverage for globs, scoped `in`, hot build, cache keys
+
+#### Suggested measurements (do these before large rewrites)
+
+```bash
+cargo build --release --features "layer-shell,bench"
+./target/release/blink --bench   # file / search cases if present
+
+# Allocation focus on free-text against a warm full index
+# heaptrack ./target/release/blink …
+# or dhat / samply for CPU
+```
+
+| Experiment | Success signal |
+|------------|----------------|
+| Remove per-item `format!("/{q}")` in scoring | Fewer allocs/query; lower p95 free-text |
+| Hot rebuild without cloning all `path_lower` | Faster post-open / post-reindex; less spike RSS |
+| Binary index cache | Faster cold start / ensure_fresh from disk |
+| Cache home string in `is_high_value_path` | Faster `build_index` only |
+
+#### Priority order for fixes
+
+1. **Precompute path needle** in `apply_path_boosts` call chain (or stop allocating inside it)
+2. **Hot set lookup without full-index string clone**
+3. **Avoid `results.clone()` before `live_cache.put`** (ownership)
+4. **Home-prefix once** in index build high-value check
+5. Binary cache / FxHash only if 1–4 aren't enough after measurement
+6. Lock poison policy / `parking_lot` when touching concurrency next
+
+#### Fixes applied (2026-07-23)
+
+- [x] `apply_path_boosts`: zero-alloc `path_contains_slash_prefixed` replaces per-item `format!("/{q}")`
+- [x] `build_hot_set`: `HashMap<&str, usize>` borrows `path_lower` (no full-index string clone)
+- [x] `live_cache.put_returning`: move into `Arc` once; drop double-owned-Vec pattern
+- [x] `is_high_value_path` / index load: `OnceLock` home prefix (`home_prefix_lower`)
+- [x] Unit test for slash-prefixed path match; full suite **72 passed**, 2 ignored
+- [ ] (optional, not done) binary disk cache
+- [ ] (optional, not done) `parking_lot` for internal locks
 
 ---
 
 ## How to use
 
-1. Pick a part (recommended order: 1 → 5).
-2. Review each file for style-guide issues (naming, formatting, module layout, comments, error handling patterns, etc.).
-3. Flip `⬜` → `✅` per file and for the part when done.
-4. Drop findings under **Reviewer notes**.
-5. Update the summary table and overall count at the top.
-6. Delete this file when the full review is finished.
+1. Pick a part (recommended order: **5 → 1 → 4 → 2 → 3** — hottest paths first; or 1 → 5 structural).
+2. For each file, walk the **Performance (B#)** and **Effective Rust (E#)** checklists.
+3. Prefer measurement over intuition for P1s; always judge hot-path changes in **`--release`**.
+4. Flip `⬜` → `🔄` → `✅` per file and for the part when done.
+5. Record findings with severity and guide tag (`B5`, `E18`, …).
+6. Update the summary table and overall count at the top.
+7. Delete this file when the full review is finished (or archive it).
 
 ## Status legend
 
@@ -361,3 +620,16 @@ Pattern semantics unchanged (`concat!` joins at compile time). Tests: **71 passe
 | 🔄 | in progress |
 | ✅ | complete |
 | ⛔ | blocked / skipped |
+
+## Quick command palette
+
+```bash
+cargo fmt --check
+cargo check --features "layer-shell,bench"
+cargo test --features "layer-shell,bench"
+
+# Performance-oriented
+cargo build --release --features "layer-shell,bench"
+./target/release/blink --bench
+```
+)

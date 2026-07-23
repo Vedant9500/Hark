@@ -182,9 +182,11 @@ impl FileProvider {
         }
 
         if deep != DeepMode::Skip {
-            // Store full file-result set so retypes / async re-runs skip the walk.
-            self.live_cache.put(query, results.clone());
-        } else if let Some(cached) = self.live_cache.get(query) {
+            // Move into Arc cache once; return a Vec clone of the shared slice
+            // (avoids holding two full owned Vecs like `put(results.clone())`).
+            return self.live_cache.put_returning(query, results);
+        }
+        if let Some(cached) = self.live_cache.get(query) {
             // UI path: merge previous live hits into index-only results.
             merge_cached(&mut results, cached.as_ref());
         }
@@ -245,9 +247,13 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
     if cached.is_empty() {
         return;
     }
-    let mut seen: std::collections::HashSet<String> = base.iter().map(|r| r.id.clone()).collect();
+    // Owned ids only: cannot store `&str` into base while also pushing (reallocation).
+    // `contains` + conditional insert avoids cloning the id on duplicate hits.
+    let mut seen: std::collections::HashSet<String> =
+        base.iter().map(|r| r.id.clone()).collect();
     for r in cached {
-        if seen.insert(r.id.clone()) {
+        if !seen.contains(&r.id) {
+            seen.insert(r.id.clone());
             base.push(r.clone());
         }
     }

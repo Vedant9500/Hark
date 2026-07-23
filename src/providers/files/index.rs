@@ -5,7 +5,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -341,11 +341,25 @@ fn is_low_value_path(path_lower: &str) -> bool {
     BAD.iter().any(|b| path_lower.contains(b))
 }
 
+/// Cached `"$HOME/"` in lowercase (trailing slash). Computed once per process —
+/// index build / cache load used to call `dirs::home_dir()` + `format!` per entry.
+fn home_prefix_lower() -> Option<&'static str> {
+    static HOME: OnceLock<Option<String>> = OnceLock::new();
+    HOME.get_or_init(|| {
+        dirs::home_dir().map(|home| {
+            let mut s = home.to_string_lossy().to_lowercase();
+            if !s.ends_with('/') {
+                s.push('/');
+            }
+            s
+        })
+    })
+    .as_deref()
+}
+
 fn is_high_value_path(path_lower: &str) -> bool {
-    if let Some(home) = dirs::home_dir() {
-        let home_s = home.to_string_lossy().to_lowercase();
-        if path_lower.starts_with(&format!("{home_s}/")) {
-            let rest = &path_lower[home_s.len() + 1..];
+    if let Some(home_prefix) = home_prefix_lower() {
+        if let Some(rest) = path_lower.strip_prefix(home_prefix) {
             if rest.matches('/').count() <= 1 {
                 return true;
             }

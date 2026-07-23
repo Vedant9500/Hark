@@ -73,25 +73,29 @@ impl HotPaths {
 }
 
 /// Map absolute paths → first index position (`path_lower` key).
+///
+/// Keys borrow from `index` — no per-entry `path_lower` clone (hot cap is tiny;
+/// the expensive part was cloning up to `MAX_INDEX` strings into the map).
 pub(crate) fn build_hot_set(index: &[IndexedPath], wanted_paths: &[String], cap: usize) -> HotSet {
     if index.is_empty() || wanted_paths.is_empty() || cap == 0 {
         return HotSet::default();
     }
 
-    let mut by_path: HashMap<String, usize> = HashMap::with_capacity(index.len());
+    let mut by_path: HashMap<&str, usize> = HashMap::with_capacity(index.len());
     for (idx, item) in index.iter().enumerate() {
-        by_path.entry(item.path_lower.clone()).or_insert(idx);
+        by_path.entry(item.path_lower.as_str()).or_insert(idx);
     }
 
     let mut indices = Vec::with_capacity(cap.min(wanted_paths.len()));
-    let mut seen_idx = HashSet::new();
+    let mut seen_idx = HashSet::with_capacity(cap.min(wanted_paths.len()));
 
     for p in wanted_paths {
         if indices.len() >= cap {
             break;
         }
+        // Wanted list is small (≤ ~2× HOT_CAP); lowercasing here is fine.
         let key = PathBuf::from(p).to_string_lossy().to_lowercase();
-        let Some(&idx) = by_path.get(&key) else {
+        let Some(&idx) = by_path.get(key.as_str()) else {
             continue;
         };
         if seen_idx.insert(idx) {

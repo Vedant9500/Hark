@@ -84,9 +84,18 @@ impl LiveCache {
     }
 
     pub fn put(&self, query: &str, hits: Vec<SearchResult>) {
+        let _ = self.put_returning(query, hits);
+    }
+
+    /// Cache `hits` and return them for the caller.
+    ///
+    /// Moves into an `Arc` once, stores that Arc, then clones elements out for the
+    /// return `Vec` — avoids the old `results.clone()` + `put(clone)` pattern that
+    /// briefly held two full owned vectors before the Arc conversion.
+    pub fn put_returning(&self, query: &str, hits: Vec<SearchResult>) -> Vec<SearchResult> {
         let key = Self::key_for(query);
         if key.is_empty() {
-            return;
+            return hits;
         }
         let now = Instant::now();
         let ttl = if hits.is_empty() {
@@ -94,11 +103,14 @@ impl LiveCache {
         } else {
             DEFAULT_TTL
         };
+        // Single move into shared storage; return path clones from Arc.
+        let hits: Arc<[SearchResult]> = Arc::from(hits);
+        let out = hits.to_vec();
         let mut map = self.inner.lock().unwrap();
         map.insert(
             key,
             Entry {
-                hits: hits.into(),
+                hits,
                 expires: now + ttl,
                 last_used: now,
             },
@@ -115,6 +127,7 @@ impl LiveCache {
                 break;
             }
         }
+        out
     }
 
     /// Drop all cached deep-search hits (e.g. after trash / external delete).
