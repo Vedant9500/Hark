@@ -5,8 +5,10 @@ use std::io::Read;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const CONNECT: Duration = Duration::from_secs(1);
-const TOTAL: Duration = Duration::from_secs(2);
+const CONNECT: Duration = Duration::from_secs(2);
+/// Per-request wall time. Translate races two backends under ~3s; FX rates also
+/// fit. Too tight (1–2s) caused free Google TLS reads to fail while curl was fine.
+const TOTAL: Duration = Duration::from_secs(4);
 
 /// Shared agent so TLS/DNS sessions can be reused across worker requests.
 fn agent() -> &'static ureq::Agent {

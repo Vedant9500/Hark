@@ -177,7 +177,7 @@ impl TranslateProvider {
 /// Forced forms after `tr` / `translate` / `译`:
 /// - `tr en zh Hello` → source=en, target=zh, text=Hello
 /// - `tr zh en 你好` → source=zh, target=en, text=你好
-/// - `tr Hello` / bare CJK → auto/guessed source, config target
+/// - `tr Hello` / bare non-Latin paste → auto/guessed source, config target
 fn parse_job(query: &str, cfg: &TranslateConfig) -> Option<(String, String, String)> {
     let (forced, rest) = strip_translate_prefix(query.trim());
     let rest = rest.trim();
@@ -196,7 +196,16 @@ fn parse_job(query: &str, cfg: &TranslateConfig) -> Option<(String, String, Stri
     }
 
     let source = guess_source_lang(rest, forced);
-    let target = normalize_lang(&cfg.target_lang);
+    let mut target = normalize_lang(&cfg.target_lang);
+    // Auto paste with target == source (e.g. zh→zh) is useless — flip to English.
+    // Forced `tr en en …` keeps the user's explicit pair.
+    if !forced && same_primary_lang(&source, &target) {
+        target = if is_english_lang(&source) {
+            "zh-CN".into()
+        } else {
+            "en".into()
+        };
+    }
     Some((rest.to_string(), source, target))
 }
 
@@ -274,13 +283,36 @@ fn normalize_lang(code: &str) -> String {
     if c.is_empty() {
         return "en".into();
     }
-    // Canonical common forms
+    // Canonical common forms + popular aliases users type in `tr xx yy …`
     match c.as_str() {
-        "zh" | "zh-cn" | "zh-hans" | "cn" => "zh-CN".into(),
-        "zh-tw" | "zh-hant" | "zh-hk" => "zh-TW".into(),
-        "jp" => "ja".into(),
-        "kr" => "ko".into(),
-        "iw" => "he".into(),
+        "zh" | "zh-cn" | "zh-hans" | "cn" | "chi" | "chinese" => "zh-CN".into(),
+        "zh-tw" | "zh-hant" | "zh-hk" | "tw" => "zh-TW".into(),
+        "jp" | "jpn" | "japanese" => "ja".into(),
+        "kr" | "kor" | "korean" => "ko".into(),
+        "iw" | "hebrew" => "he".into(),
+        "ua" | "ukr" => "uk".into(),
+        "nb" | "nn" | "no" | "nor" => "no".into(),
+        "fa" | "per" | "farsi" | "persian" => "fa".into(),
+        "ur" | "urd" => "ur".into(),
+        "hi" | "hin" | "hindi" => "hi".into(),
+        "bn" | "ben" | "bengali" => "bn".into(),
+        "ta" | "tam" | "tamil" => "ta".into(),
+        "th" | "tha" | "thai" => "th".into(),
+        "vi" | "vie" | "vietnamese" => "vi".into(),
+        "ar" | "ara" | "arabic" => "ar".into(),
+        "ru" | "rus" | "russian" => "ru".into(),
+        "es" | "spa" | "spanish" => "es".into(),
+        "fr" | "fra" | "fre" | "french" => "fr".into(),
+        "de" | "ger" | "deu" | "german" => "de".into(),
+        "pt" | "por" | "portuguese" => "pt".into(),
+        "pt-br" | "br" => "pt-BR".into(),
+        "it" | "ita" | "italian" => "it".into(),
+        "tr" | "tur" | "turkish" => "tr".into(),
+        "pl" | "pol" | "polish" => "pl".into(),
+        "nl" | "dut" | "nld" | "dutch" => "nl".into(),
+        "id" | "ind" | "indonesian" => "id".into(),
+        "el" | "gre" | "ell" | "greek" => "el".into(),
+        "en" | "eng" | "english" => "en".into(),
         other => {
             // Keep primary + optional region uppercased like en, pt-BR
             let mut parts = other.split('-');
@@ -292,6 +324,27 @@ fn normalize_lang(code: &str) -> String {
             }
         }
     }
+}
+
+fn primary_lang(code: &str) -> String {
+    let n = normalize_lang(code);
+    n.split(['-', '_'])
+        .next()
+        .unwrap_or("en")
+        .to_ascii_lowercase()
+}
+
+fn same_primary_lang(a: &str, b: &str) -> bool {
+    let pa = primary_lang(a);
+    let pb = primary_lang(b);
+    if pa == "auto" || pb == "auto" {
+        return false;
+    }
+    pa == pb
+}
+
+fn is_english_lang(code: &str) -> bool {
+    primary_lang(code) == "en"
 }
 
 fn lang_badge(code: &str) -> String {
@@ -353,12 +406,19 @@ fn pending_result(source_text: &str, source: &str, target: &str) -> SearchResult
 fn fail_result(source_text: &str, source: &str, target: &str, msg: &str) -> SearchResult {
     let src_b = lang_badge(source);
     let tgt_b = lang_badge(target);
-    // Keep subtitle short so the conversion card stays readable.
+    // Keep messages short so the conversion card stays readable.
     let short = if msg.chars().count() > 72 {
         let t: String = msg.chars().take(69).collect();
         format!("{t}…")
     } else {
         msg.to_string()
+    };
+    // Show a short reason on the right panel (conversion card hides title/subtitle).
+    let right = if short.chars().count() > 28 {
+        let t: String = short.chars().take(25).collect();
+        format!("{t}…")
+    } else {
+        short.clone()
     };
     SearchResult {
         id: format!("translate-fail:{}", simple_hash(source_text)),
@@ -371,7 +431,7 @@ fn fail_result(source_text: &str, source: &str, target: &str, msg: &str) -> Sear
         conversion: Some(ConversionView {
             left_title: source_text.to_string(),
             left_badge: src_b,
-            right_title: "—".into(),
+            right_title: right,
             right_badge: tgt_b,
         }),
     }
@@ -437,29 +497,45 @@ pub fn is_translate_query(query: &str, cfg: &TranslateConfig) -> bool {
     looks_like_translatable_script(text)
 }
 
+/// Auto-detect paste in non-Latin scripts (not Latin app queries like `firefox`).
+/// Covers CJK, Cyrillic, Arabic, Indic, Thai, Hebrew, Greek — popular launcher paste cases.
 pub fn looks_like_translatable_script(text: &str) -> bool {
     let mut total = 0u32;
-    let mut cjk = 0u32;
+    let mut script = 0u32;
     for ch in text.chars() {
         if ch.is_whitespace() || ch.is_ascii_punctuation() {
             continue;
         }
         total += 1;
-        if is_cjk_like(ch) {
-            cjk += 1;
+        if is_translatable_script_char(ch) {
+            script += 1;
         }
     }
-    if cjk == 0 {
+    if script == 0 {
         return false;
     }
-    if cjk >= 2 {
+    if script >= 2 {
         return true;
     }
-    total > 0 && (cjk as f32 / total as f32) >= 0.5
+    total > 0 && (script as f32 / total as f32) >= 0.5
+}
+
+/// True for scripts we treat as "foreign text paste" (not ASCII Latin).
+fn is_translatable_script_char(ch: char) -> bool {
+    is_cjk_like(ch)
+        || is_cyrillic(ch)
+        || is_arabic_script(ch)
+        || is_devanagari(ch)
+        || is_bengali(ch)
+        || is_tamil(ch)
+        || is_thai(ch)
+        || is_hebrew(ch)
+        || is_greek(ch)
 }
 
 fn is_cjk_like(ch: char) -> bool {
     let c = ch as u32;
+    // Han, CJK ext A, compatibility ideographs, hiragana, katakana, hangul, CJK punctuation
     (0x4E00..=0x9FFF).contains(&c)
         || (0x3400..=0x4DBF).contains(&c)
         || (0xF900..=0xFAFF).contains(&c)
@@ -469,20 +545,95 @@ fn is_cjk_like(ch: char) -> bool {
         || (0x3000..=0x303F).contains(&c)
 }
 
+fn is_cyrillic(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0400..=0x04FF).contains(&c) // Cyrillic
+        || (0x0500..=0x052F).contains(&c) // Cyrillic Supplement
+}
+
+fn is_arabic_script(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0600..=0x06FF).contains(&c) // Arabic
+        || (0x0750..=0x077F).contains(&c) // Arabic Supplement
+        || (0x08A0..=0x08FF).contains(&c) // Arabic Extended-A
+        || (0xFB50..=0xFDFF).contains(&c) // Arabic Presentation Forms-A
+        || (0xFE70..=0xFEFF).contains(&c) // Arabic Presentation Forms-B
+}
+
+fn is_devanagari(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0900..=0x097F).contains(&c)
+}
+
+fn is_bengali(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0980..=0x09FF).contains(&c)
+}
+
+fn is_tamil(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0B80..=0x0BFF).contains(&c)
+}
+
+fn is_thai(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0E00..=0x0E7F).contains(&c)
+}
+
+fn is_hebrew(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0590..=0x05FF).contains(&c)
+}
+
+fn is_greek(ch: char) -> bool {
+    let c = ch as u32;
+    (0x0370..=0x03FF).contains(&c)
+}
+
 fn guess_source_lang(text: &str, _forced: bool) -> String {
     let mut han = 0u32;
     let mut hira_kata = 0u32;
     let mut hangul = 0u32;
+    let mut cyrillic = 0u32;
+    let mut arabic = 0u32;
+    let mut devanagari = 0u32;
+    let mut bengali = 0u32;
+    let mut tamil = 0u32;
+    let mut thai = 0u32;
+    let mut hebrew = 0u32;
+    let mut greek = 0u32;
+
     for ch in text.chars() {
         let c = ch as u32;
-        if (0x4E00..=0x9FFF).contains(&c) || (0x3400..=0x4DBF).contains(&c) {
+        if (0x4E00..=0x9FFF).contains(&c)
+            || (0x3400..=0x4DBF).contains(&c)
+            || (0xF900..=0xFAFF).contains(&c)
+        {
             han += 1;
         } else if (0x3040..=0x309F).contains(&c) || (0x30A0..=0x30FF).contains(&c) {
             hira_kata += 1;
         } else if (0xAC00..=0xD7AF).contains(&c) {
             hangul += 1;
+        } else if is_cyrillic(ch) {
+            cyrillic += 1;
+        } else if is_arabic_script(ch) {
+            arabic += 1;
+        } else if is_devanagari(ch) {
+            devanagari += 1;
+        } else if is_bengali(ch) {
+            bengali += 1;
+        } else if is_tamil(ch) {
+            tamil += 1;
+        } else if is_thai(ch) {
+            thai += 1;
+        } else if is_hebrew(ch) {
+            hebrew += 1;
+        } else if is_greek(ch) {
+            greek += 1;
         }
     }
+
+    // CJK: prefer kana → Japanese, hangul → Korean, else Han → Chinese.
     if hira_kata > 0 && hira_kata >= han {
         return "ja".into();
     }
@@ -492,7 +643,34 @@ fn guess_source_lang(text: &str, _forced: bool) -> String {
     if han > 0 {
         return "zh-CN".into();
     }
-    // Latin / unknown: let free APIs auto-detect when supported.
+
+    // Other scripts: pick the strongest signal (ties break by this order).
+    let candidates: [(&str, u32); 8] = [
+        ("ru", cyrillic),
+        ("ar", arabic),
+        ("hi", devanagari),
+        ("bn", bengali),
+        ("ta", tamil),
+        ("th", thai),
+        ("he", hebrew),
+        ("el", greek),
+    ];
+    let mut best: Option<(&str, u32)> = None;
+    for (lang, n) in candidates {
+        if n == 0 {
+            continue;
+        }
+        match best {
+            None => best = Some((lang, n)),
+            Some((_, bn)) if n > bn => best = Some((lang, n)),
+            _ => {}
+        }
+    }
+    if let Some((lang, _)) = best {
+        return lang.into();
+    }
+
+    // Latin / unknown: free APIs that support it get `auto`.
     "auto".into()
 }
 
@@ -528,7 +706,8 @@ fn free_backends_race(text: &str, source: &str, target: &str) -> Result<(String,
     });
 
     let mut errors = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2200);
+    // Must exceed http::TOTAL so a slow backend can still report (4s + slack).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4500);
     for _ in 0..2 {
         let remain = deadline.saturating_duration_since(std::time::Instant::now());
         if remain.is_zero() {
@@ -545,7 +724,8 @@ fn free_backends_race(text: &str, source: &str, target: &str) -> Result<(String,
     } else {
         // Prefer a short human message when every backend is unreachable.
         let joined = errors.join("; ");
-        if joined.to_ascii_lowercase().contains("unreachable") {
+        let low = joined.to_ascii_lowercase();
+        if low.contains("unreachable") || low.contains("timed out") {
             Err("Offline or blocked · check network".into())
         } else {
             Err(joined)
@@ -560,9 +740,9 @@ fn libretranslate(
     cfg: &TranslateConfig,
 ) -> Result<(String, String), String> {
     let url = format!("{}/translate", cfg.endpoint.trim_end_matches('/'));
-    // LibreTranslate: short codes; "auto" when supported
-    let src = api_source_lang(source, true);
-    let tgt = short_lang(target);
+    // LibreTranslate: ISO 639-1 primary codes; "auto" when supported
+    let src = api_source_lang(source, true, LangStyle::Primary);
+    let tgt = api_target_lang(target, LangStyle::Primary);
     let mut body = serde_json::json!({
         "q": text,
         "source": src,
@@ -598,8 +778,9 @@ fn libretranslate(
 
 fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
     // Unofficial free endpoint (same family as many OSS clients). No API key.
-    let sl = api_source_lang(source, true);
-    let tl = short_lang(target);
+    // Google prefers region tags for Chinese (zh-CN / zh-TW).
+    let sl = api_source_lang(source, true, LangStyle::Google);
+    let tl = api_target_lang(target, LangStyle::Google);
     let bytes = crate::providers::http::get_bytes_query(
         "https://translate.googleapis.com/translate_a/single",
         &[
@@ -644,12 +825,12 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
 
 fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
     // MyMemory has no reliable "auto"; fall back to en when unknown.
-    let src = match api_source_lang(source, false).as_str() {
+    // Uses region for Chinese; primary for most others.
+    let src = match api_source_lang(source, false, LangStyle::MyMemory).as_str() {
         "auto" => "en".to_string(),
-        "zh" => "zh-CN".to_string(),
         s => s.to_string(),
     };
-    let tgt = short_lang(target);
+    let tgt = api_target_lang(target, LangStyle::MyMemory);
     let langpair = format!("{src}|{tgt}");
     let bytes = crate::providers::http::get_bytes_query(
         "https://api.mymemory.translated.net/get",
@@ -663,49 +844,49 @@ fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), 
         }
     })?;
 
-    #[derive(Deserialize)]
-    struct MmResp {
-        response_data: Option<MmData>,
-    }
-    #[derive(Deserialize)]
-    struct MmData {
-        translated_text: Option<String>,
-    }
-    let resp: MmResp =
-        serde_json::from_slice(&bytes).map_err(|_| "Bad MyMemory response".to_string())?;
-    let translated = resp
-        .response_data
-        .and_then(|d| d.translated_text)
-        .unwrap_or_default();
+    let translated = parse_mymemory_body(&bytes)?;
+    Ok((translated, "MyMemory".into()))
+}
+
+/// Parse MyMemory JSON. Live API uses camelCase (`responseData.translatedText`).
+fn parse_mymemory_body(bytes: &[u8]) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| "Bad MyMemory response".to_string())?;
+    let translated = v
+        .pointer("/responseData/translatedText")
+        .or_else(|| v.pointer("/response_data/translated_text"))
+        .or_else(|| v.pointer("/responseData/translated_text"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     let upper = translated.to_ascii_uppercase();
     if translated.trim().is_empty() || upper.contains("INVALID SOURCE LANGUAGE") {
         return Err("MyMemory rejected language pair".into());
     }
-    // Strip free-tier warning prefix if present, keep the rest.
-    let cleaned = if let Some(idx) = translated.find("QUERY LENGTH LIMIT") {
-        // Entirely a warning — fail
-        let _ = idx;
+    if upper.contains("QUERY LENGTH LIMIT") {
         return Err("MyMemory rate/length limit".into());
-    } else {
-        translated.trim().to_string()
-    };
-    Ok((cleaned, "MyMemory".into()))
+    }
+    Ok(translated.trim().to_string())
 }
 
-fn short_lang(code: &str) -> String {
-    let c = code.trim().to_ascii_lowercase().replace('_', "-");
-    if c == "auto" {
-        return "auto".into();
-    }
-    if c.starts_with("zh") {
-        return "zh".into();
-    }
-    c.split('-').next().unwrap_or("en").to_string()
+/// How to encode language tags for a given backend.
+#[derive(Clone, Copy)]
+enum LangStyle {
+    /// ISO 639-1 primary only (`zh`, `en`, `pt`).
+    Primary,
+    /// Google gtx: keep zh-CN / zh-TW / pt-BR.
+    Google,
+    /// MyMemory: zh-CN style for Chinese; primary otherwise.
+    MyMemory,
+}
+
+fn api_target_lang(code: &str, style: LangStyle) -> String {
+    encode_lang(code, style)
 }
 
 /// Source language code for HTTP APIs.
 /// `allow_auto`: Google / LibreTranslate can use `auto`; MyMemory cannot.
-fn api_source_lang(source: &str, allow_auto: bool) -> String {
+fn api_source_lang(source: &str, allow_auto: bool, style: LangStyle) -> String {
     let s = source.trim();
     if s.eq_ignore_ascii_case("auto") {
         return if allow_auto {
@@ -714,7 +895,37 @@ fn api_source_lang(source: &str, allow_auto: bool) -> String {
             "en".into()
         };
     }
-    short_lang(s)
+    encode_lang(s, style)
+}
+
+fn encode_lang(code: &str, style: LangStyle) -> String {
+    let n = normalize_lang(code);
+    if n.eq_ignore_ascii_case("auto") {
+        return "auto".into();
+    }
+    match style {
+        LangStyle::Primary => {
+            // LibreTranslate-style: zh-CN → zh, pt-BR → pt
+            if n.to_ascii_lowercase().starts_with("zh") {
+                return "zh".into();
+            }
+            primary_lang(&n)
+        }
+        LangStyle::Google | LangStyle::MyMemory => {
+            // Preserve Chinese / Brazilian Portuguese regions; strip other regions.
+            let lower = n.to_ascii_lowercase();
+            if lower == "zh-cn" || lower == "zh" {
+                return "zh-CN".into();
+            }
+            if lower == "zh-tw" || lower == "zh-hk" {
+                return "zh-TW".into();
+            }
+            if lower == "pt-br" {
+                return "pt-BR".into();
+            }
+            primary_lang(&n)
+        }
+    }
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
@@ -934,11 +1145,25 @@ mod tests {
     }
 
     #[test]
+    fn popular_scripts_auto_detect() {
+        let c = cfg_auto();
+        assert!(is_translate_query("Привет мир", &c)); // Russian
+        assert!(is_translate_query("مرحبا بالعالم", &c)); // Arabic
+        assert!(is_translate_query("नमस्ते दुनिया", &c)); // Hindi
+        assert!(is_translate_query("สวัสดี", &c)); // Thai
+        assert!(is_translate_query("Γειά σου", &c)); // Greek
+        assert!(is_translate_query("שלום עולם", &c)); // Hebrew
+        assert!(!is_translate_query("spotify", &c));
+        assert!(!is_translate_query("hello world", &c));
+    }
+
+    #[test]
     fn prefix_forced() {
         let c = cfg_prefix_only();
         assert!(is_translate_query("tr 你好", &c));
         assert!(is_translate_query("translate hello world", &c));
         assert!(!is_translate_query("你好", &c));
+        assert!(!is_translate_query("Привет", &c));
     }
 
     #[test]
@@ -966,7 +1191,24 @@ mod tests {
         assert_eq!(guess_source_lang("你好", false), "zh-CN");
         assert_eq!(guess_source_lang("こんにちは", false), "ja");
         assert_eq!(guess_source_lang("안녕하세요", false), "ko");
+        assert_eq!(guess_source_lang("Привет", false), "ru");
+        assert_eq!(guess_source_lang("مرحبا", false), "ar");
+        assert_eq!(guess_source_lang("नमस्ते", false), "hi");
+        assert_eq!(guess_source_lang("สวัสดี", false), "th");
+        assert_eq!(guess_source_lang("Γειά", false), "el");
+        assert_eq!(guess_source_lang("שלום", false), "he");
         assert_eq!(guess_source_lang("Hello world", true), "auto");
+    }
+
+    #[test]
+    fn normalize_aliases() {
+        assert_eq!(normalize_lang("jp"), "ja");
+        assert_eq!(normalize_lang("kr"), "ko");
+        assert_eq!(normalize_lang("ua"), "uk");
+        assert_eq!(normalize_lang("zh"), "zh-CN");
+        assert_eq!(normalize_lang("zh-TW"), "zh-TW");
+        assert_eq!(normalize_lang("pt-br"), "pt-BR");
+        assert_eq!(normalize_lang("iw"), "he");
     }
 
     #[test]
@@ -985,6 +1227,22 @@ mod tests {
         assert_eq!(job.0, "你好世界");
         assert!(job.1.to_ascii_lowercase().starts_with("zh"));
         assert_eq!(job.2.to_ascii_lowercase(), "en");
+    }
+
+    #[test]
+    fn direction_parse_popular_pairs() {
+        let c = cfg_auto();
+        let job = parse_job("tr en es Hello", &c).expect("job");
+        assert_eq!(job.1, "en");
+        assert_eq!(job.2, "es");
+        assert_eq!(job.0, "Hello");
+
+        let job = parse_job("tr ru en Привет", &c).expect("job");
+        assert_eq!(job.1, "ru");
+        assert_eq!(job.2, "en");
+
+        let job = parse_job("tr en hi Hello", &c).expect("job");
+        assert_eq!(job.2, "hi");
     }
 
     #[test]
@@ -1009,6 +1267,16 @@ mod tests {
     }
 
     #[test]
+    fn auto_flips_same_source_target() {
+        let mut c = cfg_auto();
+        c.target_lang = "zh".into();
+        // Chinese paste with target zh → reverse to English
+        let job = parse_job("你好世界", &c).expect("job");
+        assert!(job.1.to_ascii_lowercase().starts_with("zh"));
+        assert_eq!(job.2, "en");
+    }
+
+    #[test]
     fn is_lang_code_basic() {
         assert!(is_lang_code("en"));
         assert!(is_lang_code("zh"));
@@ -1022,5 +1290,26 @@ mod tests {
     fn pending_id() {
         let r = pending_result("你好", "zh-CN", "en");
         assert!(is_pending_result(&r));
+    }
+
+    #[test]
+    fn google_keeps_zh_region() {
+        assert_eq!(encode_lang("zh-CN", LangStyle::Google), "zh-CN");
+        assert_eq!(encode_lang("zh-TW", LangStyle::Google), "zh-TW");
+        assert_eq!(encode_lang("zh", LangStyle::Primary), "zh");
+        assert_eq!(encode_lang("pt-BR", LangStyle::Google), "pt-BR");
+        assert_eq!(encode_lang("pt-BR", LangStyle::Primary), "pt");
+    }
+
+    #[test]
+    fn mymemory_parses_camel_case() {
+        let body = br#"{"responseData":{"translatedText":"Hello. ","match":0.99},"responseStatus":200}"#;
+        assert_eq!(parse_mymemory_body(body).unwrap(), "Hello.");
+    }
+
+    #[test]
+    fn mymemory_rejects_invalid() {
+        let body = br#"{"responseData":{"translatedText":"INVALID SOURCE LANGUAGE "}}"#;
+        assert!(parse_mymemory_body(body).is_err());
     }
 }

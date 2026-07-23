@@ -403,22 +403,22 @@ impl UiThemeConfig {
     }
 }
 
-/// Online translate-on-paste settings (see `translation.md`).
+/// Online translate-on-paste settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TranslateConfig {
     /// Master switch.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Default target language code (`en`, `zh`, …).
+    /// Default target language code (`en`, `es`, `zh`, `hi`, …).
     #[serde(default = "default_translate_target")]
     pub target_lang: String,
-    /// LibreTranslate-compatible base URL. Empty = not configured (Phase 1).
+    /// LibreTranslate-compatible base URL. Empty = free Google/MyMemory race.
     #[serde(default)]
     pub endpoint: String,
     /// Optional API key for the endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    /// Auto-run when CJK / similar scripts are detected (no `tr ` prefix).
+    /// Auto-run when non-Latin scripts are detected (CJK, Cyrillic, Arabic, Indic, …).
     #[serde(default = "default_true")]
     pub auto_detect: bool,
     /// Max source characters accepted for translation.
@@ -484,7 +484,7 @@ pub struct BlinkConfig {
     /// Appearance: transparency, accent, font, icons, radius.
     #[serde(default)]
     pub ui: UiThemeConfig,
-    /// Translate-on-paste (CJK / `tr ` prefix). Online via LibreTranslate or MyMemory.
+    /// Translate-on-paste (non-Latin scripts / `tr ` prefix). Online via LibreTranslate or free backends.
     #[serde(default)]
     pub translate: TranslateConfig,
 }

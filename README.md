@@ -152,6 +152,7 @@ bind = ALT, A, exec, blink
 
 - **[docs/performance.md](docs/performance.md)** — latency snapshot, index depth chart, cache/binary, how to bench  
 - **[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md)** — short optimization tracker (done / open)  
+- **[docs/TRANSLATE.md](docs/TRANSLATE.md)** — translate: languages, aliases, auto-detect scripts  
 - **[docs/](docs/)** — index of metrics, bench logs, and archive  
 - **[packaging/](packaging/)** — desktop entry, user installer, AUR `PKGBUILD`
 

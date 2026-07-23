@@ -43,7 +43,7 @@ const WINDOW_MAX_HEIGHT: i32 = 520;
 const SHELL_INSET: i32 = 0;
 /// Debounce keystrokes before search + async deep (cuts typing CPU spikes).
 const SEARCH_DEBOUNCE_MS: u64 = 40;
-/// CJK / translate queries: longer settle so paste/IME does not spawn workers per glyph.
+/// Auto-detect translate queries: longer settle so paste/IME does not spawn workers per glyph.
 const TRANSLATE_DEBOUNCE_MS: u64 = 180;
 
 pub struct Launcher {
@@ -355,7 +355,7 @@ impl Launcher {
                 let header_sep_c = header_sep_c.clone();
                 let footer_sep_c = footer_sep_c.clone();
                 let scroll_c = scroll_c.clone();
-                // Longer settle only for auto CJK paste/IME (not forced `tr …`).
+                // Longer settle only for auto script paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
                 } else {

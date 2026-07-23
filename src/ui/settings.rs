@@ -2103,8 +2103,11 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     card.append(&Separator::new(Orientation::Horizontal));
 
     let (auto_row, auto_cb) = check_setting_row(
-        "Auto-detect CJK paste",
-        Some("Without a tr prefix. Ignored when translation is disabled."),
+        "Auto-detect foreign-script paste",
+        Some(
+            "CJK, Cyrillic, Arabic, Hindi, Thai, Greek, Hebrew, … without a tr prefix. \
+             Ignored when translation is disabled.",
+        ),
         cfg.translate.auto_detect,
     );
     {
@@ -2121,7 +2124,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     // Target language
     let target_row = setting_row(
         "Target language",
-        Some("BCP-47 code, e.g. en / zh / ja / hi"),
+        Some("BCP-47 code, e.g. en / es / zh / ja / hi / ar / ru"),
     );
     let target_entry = Entry::builder()
         .placeholder_text("en")
@@ -2200,9 +2203,9 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     body.append(&card);
 
     let note = Label::new(Some(
-        "Paste Chinese (or type tr …). Shows Translating… then fills in (network off the UI \
-         thread). Empty endpoint uses free Google/MyMemory. Prefer local LibreTranslate for \
-         privacy.",
+        "Paste non-Latin text (or type tr … / tr en es Hello). Shows Translating… then fills \
+         in (network off the UI thread). Empty endpoint uses free Google/MyMemory. Prefer local \
+         LibreTranslate for privacy. Explicit direction: tr <src> <tgt> <text>.",
     ));
     note.add_css_class("blink-hint");
     note.set_halign(gtk::Align::Start);
