@@ -5,17 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PathStyle {
+    #[default]
     Label,
     Drive,
-}
-
-impl Default for PathStyle {
-    fn default() -> Self {
-        Self::Label
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -321,7 +316,6 @@ impl FileOpenCategory {
     }
 }
 
-
 /// Launcher chrome density (Raycast-style).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -456,10 +450,7 @@ impl Default for TranslateConfig {
 impl TranslateConfig {
     pub fn sanitize(&mut self) {
         self.max_chars = self.max_chars.clamp(100, 5000);
-        self.target_lang = self
-            .target_lang
-            .trim()
-            .to_ascii_lowercase();
+        self.target_lang = self.target_lang.trim().to_ascii_lowercase();
         if self.target_lang.is_empty() {
             self.target_lang = default_translate_target();
         }
@@ -778,7 +769,8 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
     let mut best: Option<&MountInfo> = None;
     for m in mounts {
         if path.starts_with(&m.target) {
-            if best.map(|b| m.target.components().count() > b.target.components().count())
+            if best
+                .map(|b| m.target.components().count() > b.target.components().count())
                 .unwrap_or(true)
             {
                 best = Some(m);
@@ -921,7 +913,10 @@ mod config_store_tests {
             let _ = c.index.path_style;
         });
         let mtime_after = fs::metadata(&path).unwrap().modified().unwrap();
-        assert_eq!(mtime_before, mtime_after, "no-op update must not rewrite config");
+        assert_eq!(
+            mtime_before, mtime_after,
+            "no-op update must not rewrite config"
+        );
 
         // Real change must rewrite.
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -929,7 +924,10 @@ mod config_store_tests {
             c.index.max_depth = 3;
         });
         let mtime_changed = fs::metadata(&path).unwrap().modified().unwrap();
-        assert!(mtime_changed > mtime_before, "real update must rewrite config");
+        assert!(
+            mtime_changed > mtime_before,
+            "real update must rewrite config"
+        );
         assert_eq!(store.snapshot().index.max_depth, 3);
 
         let _ = fs::remove_dir_all(&dir);
@@ -961,11 +959,7 @@ mod config_store_tests {
 
     #[test]
     fn exclude_set_matches_names_and_patterns() {
-        let set = ExcludeSet::from_list(&[
-            "node_modules".into(),
-            ".Git".into(),
-            "foo/bar".into(),
-        ]);
+        let set = ExcludeSet::from_list(&["node_modules".into(), ".Git".into(), "foo/bar".into()]);
         assert!(set.matches(Path::new("/home/a/node_modules/x")));
         assert!(set.matches(Path::new("/home/a/.git")));
         assert!(set.matches(Path::new("/home/a/.Git")));
@@ -973,4 +967,3 @@ mod config_store_tests {
         assert!(!set.matches(Path::new("/home/a/src/main.rs")));
     }
 }
-

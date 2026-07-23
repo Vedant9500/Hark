@@ -4,15 +4,15 @@ mod live_cache;
 mod search;
 
 use crate::config::{pretty_path, ConfigStore, ExcludeSet};
-use crate::usage::UsageStore;
 use crate::providers::{Action, ResultKind, SearchResult};
+use crate::usage::UsageStore;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gio::prelude::*;
-pub use index::MAX_INDEX;
+use hot::HotPaths;
 #[cfg(feature = "bench")]
 pub use index::cache_bytes_on_disk;
 use index::IndexState;
-use hot::HotPaths;
+pub use index::MAX_INDEX;
 use live_cache::LiveCache;
 pub use search::{is_path_glob_query, is_scoped_file_query, DeepMode};
 use std::path::{Path, PathBuf};
@@ -125,12 +125,7 @@ impl FileProvider {
     ///
     /// When `deep == Skip`, any live-cache hits for this query are merged in so
     /// retypes stay instant without re-walking.
-    pub fn search_with(
-        &self,
-        query: &str,
-        allow_fuzzy: bool,
-        deep: DeepMode,
-    ) -> Vec<SearchResult> {
+    pub fn search_with(&self, query: &str, allow_fuzzy: bool, deep: DeepMode) -> Vec<SearchResult> {
         // Full cache hit for a deep mode: skip the walk entirely.
         if deep != DeepMode::Skip {
             if let Some(cached) = self.live_cache.get(query) {
@@ -250,8 +245,7 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
     if cached.is_empty() {
         return;
     }
-    let mut seen: std::collections::HashSet<String> =
-        base.iter().map(|r| r.id.clone()).collect();
+    let mut seen: std::collections::HashSet<String> = base.iter().map(|r| r.id.clone()).collect();
     for r in cached {
         if seen.insert(r.id.clone()) {
             base.push(r.clone());
@@ -389,10 +383,7 @@ pub fn launch_with_desktop_id(desktop_id: &str, path: &Path) -> bool {
         if let Some(info) = gio::DesktopAppInfo::new(&cand) {
             let file = gio::File::for_path(path);
             let files = [file];
-            if info
-                .launch(&files, None::<&gio::AppLaunchContext>)
-                .is_ok()
-            {
+            if info.launch(&files, None::<&gio::AppLaunchContext>).is_ok() {
                 return true;
             }
         }
@@ -402,10 +393,7 @@ pub fn launch_with_desktop_id(desktop_id: &str, path: &Path) -> bool {
             if let Some(info) = gio::DesktopAppInfo::from_filename(p) {
                 let file = gio::File::for_path(path);
                 let files = [file];
-                if info
-                    .launch(&files, None::<&gio::AppLaunchContext>)
-                    .is_ok()
-                {
+                if info.launch(&files, None::<&gio::AppLaunchContext>).is_ok() {
                     return true;
                 }
             }
@@ -448,7 +436,6 @@ pub fn desktop_id_display_name(desktop_id: &str) -> Option<String> {
     None
 }
 
-
 /// Reveal `path` in the default file manager, selecting it when the manager supports it.
 pub fn reveal_in_file_manager(path: &Path) {
     let path = if path.exists() {
@@ -478,10 +465,7 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
     // Elementary Files / Pantheon
     if which_bin("io.elementary.files").is_some() {
-        spawn_detached(
-            "io.elementary.files",
-            &[&path.to_string_lossy()],
-        );
+        spawn_detached("io.elementary.files", &[&path.to_string_lossy()]);
         return;
     }
     // Fallback: open containing folder (or the folder itself).
@@ -608,10 +592,7 @@ pub fn open_terminal_at(path: &Path) {
         "foot" => format!("foot --working-directory={}", shell_quote(&dir)),
         "ghostty" => format!("ghostty --working-directory={}", shell_quote(&dir)),
         "wezterm" => format!("wezterm start --cwd {}", shell_quote(&dir)),
-        _ => format!(
-            "xterm -e sh -c 'cd {} && exec $SHELL'",
-            shell_quote(&dir)
-        ),
+        _ => format!("xterm -e sh -c 'cd {} && exec $SHELL'", shell_quote(&dir)),
     };
 
     let mut cmd = Command::new("sh");

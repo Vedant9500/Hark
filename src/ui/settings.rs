@@ -185,8 +185,10 @@ impl SettingsPanel {
                             .find(|c| c.id == id)
                             .map(|c| c.subtitle.to_lowercase())
                             .unwrap_or_default();
-                        let visible =
-                            q.is_empty() || title.contains(&q) || sub.contains(&q) || id.contains(&q);
+                        let visible = q.is_empty()
+                            || title.contains(&q)
+                            || sub.contains(&q)
+                            || id.contains(&q);
                         row.set_visible(visible);
                     }
                     child = next;
@@ -293,11 +295,7 @@ impl SettingsPanel {
                 if n == 0 {
                     return glib::Propagation::Proceed;
                 }
-                let cur = nav
-                    .selected_row()
-                    .map(|r| r.index())
-                    .unwrap_or(0)
-                    .max(0);
+                let cur = nav.selected_row().map(|r| r.index()).unwrap_or(0).max(0);
                 let next = match keyval {
                     Key::Down | Key::j | Key::J => Some((cur + 1) % n),
                     Key::Up | Key::k | Key::K => Some(if cur == 0 { n - 1 } else { cur - 1 }),
@@ -350,18 +348,11 @@ impl SettingsPanel {
     /// Closes nested settings UI (app picker, etc.); returns true if something was dismissed.
     pub fn dismiss_overlay_handle(&self) -> impl Fn() -> bool + 'static {
         let dismiss = self.dismiss_overlay.clone();
-        move || {
-            dismiss
-                .borrow()
-                .as_ref()
-                .map(|cb| cb())
-                .unwrap_or(false)
-        }
+        move || dismiss.borrow().as_ref().map(|cb| cb()).unwrap_or(false)
     }
 
     pub fn refresh_status(&self) {
-        self.status
-            .set_text(&self.engine.format_index_status());
+        self.status.set_text(&self.engine.format_index_status());
     }
 
     pub fn widget(&self) -> &GtkBox {
@@ -430,10 +421,7 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     (outer, body)
 }
 
-fn build_indexing_page(
-    engine: &Arc<Engine>,
-    cfg: &crate::config::BlinkConfig,
-) -> (GtkBox, Label) {
+fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> (GtkBox, Label) {
     let (outer, body) = page_shell(
         "folder-saved-search-symbolic",
         "Indexing",
@@ -534,11 +522,7 @@ fn build_indexing_page(
     let sources = GtkBox::new(Orientation::Vertical, 0);
     sources.add_css_class("blink-settings-card");
 
-    let home_row = check_setting_row(
-        "Home directory (~)",
-        None,
-        cfg.index.include_home,
-    );
+    let home_row = check_setting_row("Home directory (~)", None, cfg.index.include_home);
     {
         let engine = engine.clone();
         let cb = home_row.1.clone();
@@ -559,21 +543,14 @@ fn build_indexing_page(
         } else {
             format!("{}  ({})", m.label, key)
         };
-        let enabled = cfg
-            .index
-            .include_mounts
-            .get(&key)
-            .copied()
-            .unwrap_or(true);
+        let enabled = cfg.index.include_mounts.get(&key).copied().unwrap_or(true);
         let (row, cb) = check_setting_row(&label, None, enabled);
         {
             let engine = engine.clone();
             let key = key.clone();
             cb.connect_toggled(move |btn| {
                 engine.config().update(|c| {
-                    c.index
-                        .include_mounts
-                        .insert(key.clone(), btn.is_active());
+                    c.index.include_mounts.insert(key.clone(), btn.is_active());
                 });
             });
         }
@@ -622,7 +599,6 @@ fn build_indexing_page(
 
     (outer, status)
 }
-
 
 fn build_typos_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
@@ -743,7 +719,9 @@ fn refill_typo_list(list: &GtkBox, engine: &Arc<Engine>) {
     }
     let items = engine.list_typo_aliases();
     if items.is_empty() {
-        let empty = Label::new(Some("No aliases yet — mistype, open the right result, and Blink will learn."));
+        let empty = Label::new(Some(
+            "No aliases yet — mistype, open the right result, and Blink will learn.",
+        ));
         empty.add_css_class("blink-hint");
         empty.add_css_class("blink-settings-list-row");
         empty.set_halign(gtk::Align::Start);
@@ -774,7 +752,11 @@ fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkB
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.add_css_class("blink-settings-list-label");
 
-    let strength = if alias.count >= 2 { "strong" } else { "learning" };
+    let strength = if alias.count >= 2 {
+        "strong"
+    } else {
+        "learning"
+    };
     let sub = Label::new(Some(&format!(
         "{strength} · seen {}× · {}",
         alias.count, alias.id
@@ -1072,7 +1054,12 @@ fn defaults_category_row(
     title.set_halign(gtk::Align::Start);
     title.set_xalign(0.0);
 
-    let current = engine.config().snapshot().open_with.get(cat).map(|s| s.to_string());
+    let current = engine
+        .config()
+        .snapshot()
+        .open_with
+        .get(cat)
+        .map(|s| s.to_string());
     let sub_text = format_open_with_label(engine, current.as_deref());
     let sub = Label::new(Some(&sub_text));
     sub.add_css_class("blink-settings-list-sub");
@@ -1644,7 +1631,6 @@ fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
     });
 }
 
-
 fn build_appearance_page(
     engine: &Arc<Engine>,
     theme: &Rc<ThemeManager>,
@@ -1819,10 +1805,7 @@ fn build_appearance_page(
     let colour_card = GtkBox::new(Orientation::Vertical, 0);
     colour_card.add_css_class("blink-settings-card");
 
-    let accent_row = setting_row(
-        "Accent override",
-        Some("Empty = Caelestia primary"),
-    );
+    let accent_row = setting_row("Accent override", Some("Empty = Caelestia primary"));
     let accent_entry = Entry::builder()
         .placeholder_text("#7aa2f7")
         .hexpand(false)
@@ -2047,7 +2030,10 @@ fn build_appearance_page(
     body.append(&group_label("Reset"));
     let reset_card = GtkBox::new(Orientation::Vertical, 0);
     reset_card.add_css_class("blink-settings-card");
-    let reset_row = setting_row("Restore defaults", Some("Opacity, accent, font, icons, radius, layout"));
+    let reset_row = setting_row(
+        "Restore defaults",
+        Some("Opacity, accent, font, icons, radius, layout"),
+    );
     let reset_btn = Button::with_label("Reset appearance");
     reset_btn.add_css_class("blink-settings-btn");
     {
@@ -2084,8 +2070,6 @@ fn build_appearance_page(
 
     outer
 }
-
-
 
 fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {
     let (outer, body) = page_shell(
@@ -2132,7 +2116,10 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     card.append(&Separator::new(Orientation::Horizontal));
 
     // Target language
-    let target_row = setting_row("Target language", Some("BCP-47 code, e.g. en / zh / ja / hi"));
+    let target_row = setting_row(
+        "Target language",
+        Some("BCP-47 code, e.g. en / zh / ja / hi"),
+    );
     let target_entry = Entry::builder()
         .placeholder_text("en")
         .hexpand(false)

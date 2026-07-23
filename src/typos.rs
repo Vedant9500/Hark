@@ -218,11 +218,7 @@ impl TypoStore {
                 score: alias_frecency(e.count, e.last, now),
             })
             .collect();
-        items.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.alias.cmp(&b.alias))
-        });
+        items.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.alias.cmp(&b.alias)));
         items
     }
 
@@ -255,9 +251,8 @@ impl TypoStore {
 
     /// Manual pin from Settings (v3). `alias` is normalized; overwrites target.
     pub fn set_manual(&self, alias: &str, result_id: &str) -> Result<(), String> {
-        let key = normalize_alias(alias).ok_or_else(|| {
-            "Typo must be 3–24 letters (single word, no paths/math)".to_string()
-        })?;
+        let key = normalize_alias(alias)
+            .ok_or_else(|| "Typo must be 3–24 letters (single word, no paths/math)".to_string())?;
         if !result_id.starts_with("app:") && !result_id.starts_with("path:") {
             return Err("Target must be an app or file result".into());
         }
@@ -402,9 +397,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
         cur[0] = i;
         for j in 1..=m {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            cur[j] = (prev[j] + 1)
-                .min(cur[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut cur);
     }
@@ -508,22 +501,12 @@ mod tests {
     #[test]
     fn learn_and_lookup_v1() {
         let store = temp_store();
-        store.learn_from_launch(
-            "wats",
-            &[],
-            "app:whatsapp.desktop",
-            "WhatsApp",
-        );
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
         let (id, boost) = store.lookup("wats").expect("alias");
         assert_eq!(id, "app:whatsapp.desktop");
         assert_eq!(boost, BOOST_WEAK);
         // second confirm → strong
-        store.learn_from_launch(
-            "wats",
-            &[],
-            "app:whatsapp.desktop",
-            "WhatsApp",
-        );
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
         let (_, boost2) = store.lookup("wats").unwrap();
         assert_eq!(boost2, BOOST_STRONG);
         store.flush();
@@ -561,7 +544,10 @@ mod tests {
         store
             .set_manual("ffox", "app:firefox.desktop")
             .expect("manual");
-        assert_eq!(store.lookup("ffox").map(|(id, _)| id), Some("app:firefox.desktop".into()));
+        assert_eq!(
+            store.lookup("ffox").map(|(id, _)| id),
+            Some("app:firefox.desktop".into())
+        );
         store.clear_all();
         assert_eq!(store.len(), 0);
         assert!(store.set_manual("x", "app:a.desktop").is_err());

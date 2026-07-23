@@ -38,8 +38,6 @@ pub struct SearchResult {
     pub conversion: Option<ConversionView>,
 }
 
-
-
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Launch a `.desktop` app. `desktop_path` is the on-disk entry (for DnD).
@@ -186,9 +184,7 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 destructive: false,
             });
             if let Action::LaunchApp {
-                exec,
-                desktop_path,
-                ..
+                exec, desktop_path, ..
             } = &item.action
             {
                 if let Some(bin) = crate::providers::apps::resolve_exec_binary(exec) {
@@ -324,4 +320,3 @@ mod action_panel_tests {
         assert_eq!(acts[0].id, "copy");
     }
 }
-

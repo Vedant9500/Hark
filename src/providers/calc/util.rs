@@ -56,7 +56,6 @@ pub(crate) fn relative_secs(n: f64, unit: &str) -> Option<f64> {
     Some(n * mult)
 }
 
-
 pub(crate) fn result_calc(title: String, subtitle: String, copy: String) -> SearchResult {
     SearchResult {
         id: format!("calc:{title}:{subtitle}"),

@@ -129,7 +129,9 @@ fn looks_like_plain_text(q: &str) -> bool {
         return false;
     }
     // Currency symbols
-    if q.chars().any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽')) {
+    if q.chars()
+        .any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽'))
+    {
         return false;
     }
     // Math function names

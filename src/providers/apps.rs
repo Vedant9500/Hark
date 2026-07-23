@@ -85,7 +85,10 @@ impl AppProvider {
 
     pub fn all_results(&self, limit: usize) -> Vec<SearchResult> {
         let apps = self.apps.read().unwrap();
-        apps.iter().take(limit).map(|a| to_result(a, 1000)).collect()
+        apps.iter()
+            .take(limit)
+            .map(|a| to_result(a, 1000))
+            .collect()
     }
 
     /// GUI apps suitable for the Settings "Default apps" picker.
@@ -144,11 +147,7 @@ impl AppProvider {
         let apps = self.apps.read().unwrap();
         let q = query.trim();
         if q.is_empty() {
-            return apps
-                .iter()
-                .take(12)
-                .map(|a| to_result(a, 1000))
-                .collect();
+            return apps.iter().take(12).map(|a| to_result(a, 1000)).collect();
         }
 
         let q_lower = q.to_lowercase();
@@ -387,7 +386,9 @@ pub fn launch_app(exec: &str, terminal: bool) {
     // Detach fully so the app survives after blink hides.
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
-        .arg(format!("setsid -f {shell_cmd} >/dev/null 2>&1 || nohup {shell_cmd} >/dev/null 2>&1 &"))
+        .arg(format!(
+            "setsid -f {shell_cmd} >/dev/null 2>&1 || nohup {shell_cmd} >/dev/null 2>&1 &"
+        ))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

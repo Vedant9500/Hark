@@ -59,9 +59,7 @@ pub fn show_open_with_picker(
 
     let sub = Label::new(Some(&format!(
         "{} · {}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file"),
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
         type_label
     )));
     sub.add_css_class("blink-action-panel-shortcut");

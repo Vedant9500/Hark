@@ -209,7 +209,6 @@ pub(crate) fn unit_display_name(canon: &str) -> String {
     }
 }
 
-
 pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     // mass
     ("kg", "kg"),

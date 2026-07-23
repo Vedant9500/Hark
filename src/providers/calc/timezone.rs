@@ -16,9 +16,8 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase().trim().to_string();
 
     // now in <place> / time in <place>
-    static RE_NOW_TZ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*(?:now|time)\s+(?:in|at)\s+(.+?)\s*$").unwrap()
-    });
+    static RE_NOW_TZ: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*(?:now|time)\s+(?:in|at)\s+(.+?)\s*$").unwrap());
     if let Some(c) = RE_NOW_TZ.captures(&lower) {
         let place = c.get(1)?.as_str().trim();
         let (tz, label) = resolve_place(place)?;
@@ -130,7 +129,13 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
                 let (from_tz, from_label) = local_as_tz()?;
                 let (to_tz, to_label) = resolve_place(to_token)?;
                 return build_tz_conversion(
-                    hour, minute, second, from_tz, &from_label, to_tz, &to_label,
+                    hour,
+                    minute,
+                    second,
+                    from_tz,
+                    &from_label,
+                    to_tz,
+                    &to_label,
                 );
             }
         }
@@ -152,7 +157,13 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
             let (from_tz, from_label) = resolve_place(from_token)?;
             let (to_tz, to_label) = resolve_place(to_token)?;
             return build_tz_conversion(
-                hour, minute, second, from_tz, &from_label, to_tz, &to_label,
+                hour,
+                minute,
+                second,
+                from_tz,
+                &from_label,
+                to_tz,
+                &to_label,
             );
         }
     }
@@ -182,10 +193,8 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         .unwrap()
     });
     static RE2: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$",
-        )
-        .unwrap()
+        Regex::new(r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$")
+            .unwrap()
     });
     static RE3: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -228,7 +237,8 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         if c.get(2).is_none() && c.get(3).is_none() {
             return None;
         }
-        let (from_tz, from_label) = resolve_place(from_prefix).or_else(|| predict_tz(from_prefix))?;
+        let (from_tz, from_label) =
+            resolve_place(from_prefix).or_else(|| predict_tz(from_prefix))?;
         let (to_tz, to_label) = if to_prefix.is_empty() {
             return None;
         } else if to_prefix.len() < 2 {
@@ -277,7 +287,9 @@ pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
         .iter()
         .filter(|(alias, _, _)| {
             let a = *alias;
-            a.starts_with(&p) || p.starts_with(a) || a.replace('_', "").starts_with(&p.replace('_', ""))
+            a.starts_with(&p)
+                || p.starts_with(a)
+                || a.replace('_', "").starts_with(&p.replace('_', ""))
         })
         .map(|(a, iana, label)| {
             let compact_a = a.replace('_', "");
@@ -493,13 +505,12 @@ pub(crate) fn build_tz_conversion(
 
     let copy = format!("{} {}", to_dt.format("%H:%M"), to_label);
     // Left panel title like Raycast query echo when from local
-    let left_display = if from_label.eq_ignore_ascii_case("LOCAL")
-        || from_label.eq_ignore_ascii_case("HERE")
-    {
-        format!("{left_title} here")
-    } else {
-        format!("{left_title} {from_label}")
-    };
+    let left_display =
+        if from_label.eq_ignore_ascii_case("LOCAL") || from_label.eq_ignore_ascii_case("HERE") {
+            format!("{left_title} here")
+        } else {
+            format!("{left_title} {from_label}")
+        };
 
     Some(tz_result(
         &format!("{from_label}→{to_label}:{hour}:{minute}"),
@@ -562,13 +573,13 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
     // Common aliases / abbreviations not listed above
     let iana = match t.as_str() {
         "utc" | "gmt" | "z" => "UTC",
-        "cet" => "Europe/Paris",       // CET/CEST with DST
+        "cet" => "Europe/Paris", // CET/CEST with DST
         "cest" => "Europe/Paris",
         "eet" | "eest" => "Europe/Bucharest",
         "wet" | "west" => "Europe/Lisbon",
-        "bst" => "Europe/London",      // British Summer — London handles GMT/BST
+        "bst" => "Europe/London", // British Summer — London handles GMT/BST
         "gmt+0" | "utc+0" => "UTC",
-        "ist" => "Asia/Kolkata",       // India Standard Time
+        "ist" => "Asia/Kolkata", // India Standard Time
         "ist-india" | "india" => "Asia/Kolkata",
         "jst" | "japan" => "Asia/Tokyo",
         "kst" | "korea" => "Asia/Seoul",
@@ -666,8 +677,6 @@ pub(crate) fn local_as_tz() -> Option<(Tz, String)> {
     Some((tz, "LOCAL".into()))
 }
 
-
-
 #[cfg(test)]
 mod timezone_query_tests {
     use super::{resolve_place, try_timezone};
@@ -722,11 +731,7 @@ mod timezone_query_tests {
 
     #[test]
     fn classic_zone_pairs() {
-        for q in [
-            "16:00 cet to ist",
-            "4pm est to pst",
-            "09:30 ist to utc",
-        ] {
+        for q in ["16:00 cet to ist", "4pm est to pst", "09:30 ist to utc"] {
             assert!(try_timezone(q).is_some(), "expected hit for {q}");
         }
     }

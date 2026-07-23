@@ -111,7 +111,6 @@ fn bind_socket(path: &std::path::Path) -> Option<UnixListener> {
     }
 }
 
-
 #[cfg(test)]
 mod ipc_tests {
     use super::*;

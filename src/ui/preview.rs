@@ -1,17 +1,15 @@
 use super::dnd::{DragSession, PathDragBinding};
 use super::thumbnails::{freedesktop_thumbnail, store_freedesktop_thumbnail};
-use std::process::Command;
 use crate::providers::{Action, ResultKind, SearchResult};
 use gtk::gdk::{self, Texture};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::glib;
 use gtk::prelude::*;
-use gtk::{
-    Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, Separator, Stack,
-};
+use gtk::{Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, Separator, Stack};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
@@ -291,7 +289,6 @@ impl PreviewPanel {
         next
     }
 
-
     pub fn clear(&self) {
         self.cancel_debounce();
         self.gen.set(self.gen.get().wrapping_add(1));
@@ -448,7 +445,12 @@ impl PreviewPanel {
         }
     }
 
-    fn insert_cache(cache: &RefCell<HashMap<PathBuf, CachedTexture>>, order: &RefCell<Vec<PathBuf>>, path: PathBuf, entry: CachedTexture) {
+    fn insert_cache(
+        cache: &RefCell<HashMap<PathBuf, CachedTexture>>,
+        order: &RefCell<Vec<PathBuf>>,
+        path: PathBuf,
+        entry: CachedTexture,
+    ) {
         let mut map = cache.borrow_mut();
         let mut order = order.borrow_mut();
         if map.contains_key(&path) {
@@ -480,11 +482,7 @@ impl PreviewPanel {
         // Already showing this exact file revision — nothing to do.
         if self.last_path.borrow().as_ref() == Some(&path)
             && self.picture.paintable().is_some()
-            && self
-                .cache
-                .borrow()
-                .get(&path)
-                .is_some_and(|c| c.fp == fp)
+            && self.cache.borrow().get(&path).is_some_and(|c| c.fp == fp)
         {
             return;
         }
@@ -636,8 +634,8 @@ impl PreviewPanel {
             let decoded = rx.recv().await.ok().flatten();
             worker_busy2.set(false);
 
-            let still_current = gen_cell2.get() == req_gen
-                && last_path2.borrow().as_ref() == Some(&req_path);
+            let still_current =
+                gen_cell2.get() == req_gen && last_path2.borrow().as_ref() == Some(&req_path);
 
             if still_current {
                 // Clear this request only if nothing newer replaced it.
@@ -957,8 +955,8 @@ pub fn media_kind(path: &Path) -> MediaKind {
         "mp3" | "flac" | "ogg" | "wav" | "m4a" | "aac" | "opus" | "wma" | "aiff" => {
             MediaKind::Audio
         }
-        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "epub" | "xls" | "xlsx"
-        | "ppt" | "pptx" | "csv" => MediaKind::Document,
+        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "epub" | "xls" | "xlsx" | "ppt"
+        | "pptx" | "csv" => MediaKind::Document,
         "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" => MediaKind::Archive,
         "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "h" | "cpp" | "hpp" | "java"
         | "kt" | "swift" | "rb" | "php" | "sh" | "bash" | "zsh" | "toml" | "yaml" | "yml"
@@ -1081,4 +1079,3 @@ fn format_modified(time: SystemTime) -> String {
         }
     }
 }
-

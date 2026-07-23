@@ -507,11 +507,7 @@ fn translate_http(
     free_backends_race(text, source, target)
 }
 
-fn free_backends_race(
-    text: &str,
-    source: &str,
-    target: &str,
-) -> Result<(String, String), String> {
+fn free_backends_race(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String), String>>();
     let t1 = text.to_string();
     let s1 = source.to_string();
@@ -583,8 +579,8 @@ fn libretranslate(
         #[serde(default, rename = "translatedText")]
         translated_text: String,
     }
-    let resp: LtResp = serde_json::from_slice(&bytes)
-        .map_err(|_| "Bad LibreTranslate response".to_string())?;
+    let resp: LtResp =
+        serde_json::from_slice(&bytes).map_err(|_| "Bad LibreTranslate response".to_string())?;
     let translated = if !resp.translated_text.is_empty() {
         resp.translated_text
     } else {
@@ -617,13 +613,21 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
             format!("Google translate {e}")
         }
     })?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| "Bad Google translate response".to_string())?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Bad Google translate response".to_string())?;
     // Response: [[["Hello world","你好世界",...],...],...]
     let mut translated = String::new();
-    if let Some(arr) = v.as_array().and_then(|a| a.first()).and_then(|x| x.as_array()) {
+    if let Some(arr) = v
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_array())
+    {
         for part in arr {
-            if let Some(s) = part.as_array().and_then(|p| p.first()).and_then(|t| t.as_str()) {
+            if let Some(s) = part
+                .as_array()
+                .and_then(|p| p.first())
+                .and_then(|t| t.as_str())
+            {
                 translated.push_str(s);
             }
         }
@@ -663,8 +667,8 @@ fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), 
     struct MmData {
         translated_text: Option<String>,
     }
-    let resp: MmResp = serde_json::from_slice(&bytes)
-        .map_err(|_| "Bad MyMemory response".to_string())?;
+    let resp: MmResp =
+        serde_json::from_slice(&bytes).map_err(|_| "Bad MyMemory response".to_string())?;
     let translated = resp
         .response_data
         .and_then(|d| d.translated_text)
@@ -773,10 +777,8 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
         const MAX_MEM: usize = 256;
         if g.len() > MAX_MEM {
             // Drop oldest by fetched_at until under cap.
-            let mut keys: Vec<(u64, String)> = g
-                .iter()
-                .map(|(k, v)| (v.fetched_at, k.clone()))
-                .collect();
+            let mut keys: Vec<(u64, String)> =
+                g.iter().map(|(k, v)| (v.fetched_at, k.clone())).collect();
             keys.sort_by_key(|(ts, _)| *ts);
             let remove_n = g.len() - MAX_MEM;
             for (_, k) in keys.into_iter().take(remove_n) {
@@ -812,10 +814,8 @@ fn fail_put(key: &str, msg: &str) {
         g.insert(key.to_string(), (msg.to_string(), now));
         const MAX_FAIL: usize = 64;
         if g.len() > MAX_FAIL {
-            let mut keys: Vec<(u64, String)> = g
-                .iter()
-                .map(|(k, (_, at))| (*at, k.clone()))
-                .collect();
+            let mut keys: Vec<(u64, String)> =
+                g.iter().map(|(k, (_, at))| (*at, k.clone())).collect();
             keys.sort_by_key(|(ts, _)| *ts);
             let remove_n = g.len() - MAX_FAIL;
             for (_, k) in keys.into_iter().take(remove_n) {

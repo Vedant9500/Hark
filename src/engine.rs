@@ -223,9 +223,9 @@ impl Engine {
 
         // Exact/prefix path names beat weak app fuzzy (e.g. "glassbox" folder vs
         // Flatseal/Chrome letter soup). Drop apps that only fuzzy-matched.
-        let strong_path = results.iter().any(|r| {
-            matches!(r.kind, ResultKind::Folder | ResultKind::File) && r.score >= 30_000
-        });
+        let strong_path = results
+            .iter()
+            .any(|r| matches!(r.kind, ResultKind::Folder | ResultKind::File) && r.score >= 30_000);
         if strong_path {
             results.retain(|r| !matches!(r.kind, ResultKind::App) || r.score >= 15_000);
         }
@@ -358,10 +358,7 @@ impl Engine {
     }
 
     /// Secondary actions for the action panel (`Ctrl+K`).
-    pub fn secondary_actions(
-        &self,
-        item: &SearchResult,
-    ) -> Vec<crate::providers::ActionSpec> {
+    pub fn secondary_actions(&self, item: &SearchResult) -> Vec<crate::providers::ActionSpec> {
         crate::providers::secondary_actions(item)
     }
 
@@ -708,11 +705,7 @@ fn is_force_files_query(q: &str, files: &FileProvider) -> bool {
         return false;
     }
     // Path-shaped (keep case: `/`, `~/`, `./`, `.ext` / `.hidden`).
-    if t.starts_with('/')
-        || t.starts_with("~/")
-        || t.starts_with("./")
-        || t.starts_with('.')
-    {
+    if t.starts_with('/') || t.starts_with("~/") || t.starts_with("./") || t.starts_with('.') {
         return true;
     }
     // Prefix modes: `f foo`, `File foo`, `FOLDER bar` (ASCII-insensitive).
@@ -735,9 +728,7 @@ fn strip_force_files_prefix(q: &str) -> Option<&str> {
     // Match longest prefix first.
     for pref in ["folder", "file", "f"] {
         let pb = pref.as_bytes();
-        if bytes.len() >= pb.len()
-            && bytes[..pb.len()].eq_ignore_ascii_case(pb)
-        {
+        if bytes.len() >= pb.len() && bytes[..pb.len()].eq_ignore_ascii_case(pb) {
             let rest = &q[pb.len()..];
             if rest.is_empty() {
                 return Some(rest);
@@ -797,7 +788,6 @@ fn copy_to_clipboard(text: &str) {
         let _ = child.wait();
     }
 }
-
 
 #[cfg(test)]
 mod force_files_tests {

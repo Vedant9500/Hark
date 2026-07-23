@@ -35,9 +35,8 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     }
 
     // unix timestamp
-    static RE_UNIX: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*(?:unix|epoch|timestamp)\s+([+-]?\d+)\s*$").unwrap()
-    });
+    static RE_UNIX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*(?:unix|epoch|timestamp)\s+([+-]?\d+)\s*$").unwrap());
     if let Some(c) = RE_UNIX.captures(&lower) {
         let ts: i64 = c.get(1)?.as_str().parse().ok()?;
         let dt = chrono::DateTime::from_timestamp(ts, 0)?;
@@ -59,11 +58,7 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     // "to unix" / "unix now"
     if matches!(lower.as_str(), "unix" | "epoch" | "to unix" | "unix now") {
         let ts = now.timestamp().to_string();
-        return Some(result_calc(
-            ts.clone(),
-            "Current unix timestamp".into(),
-            ts,
-        ));
+        return Some(result_calc(ts.clone(), "Current unix timestamp".into(), ts));
     }
 
     // in N units / N units from now / N units ago
@@ -85,11 +80,7 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         };
         let then = now + delta;
         let s = then.format("%Y-%m-%d %H:%M:%S %Z").to_string();
-        return Some(result_calc(
-            s.clone(),
-            format!("{n} {unit} {dir}"),
-            s,
-        ));
+        return Some(result_calc(s.clone(), format!("{n} {unit} {dir}"), s));
     }
 
     // days until / days since YYYY-MM-DD
@@ -149,7 +140,11 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         }
         if let Ok(d) = NaiveDate::parse_from_str(q, fmt) {
             let s = d.format("%A, %d %B %Y").to_string();
-            return Some(result_calc(s.clone(), format!("date · day {}", d.weekday()), s));
+            return Some(result_calc(
+                s.clone(),
+                format!("date · day {}", d.weekday()),
+                s,
+            ));
         }
     }
 
@@ -157,7 +152,11 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     if matches!(lower.as_str(), "week" | "week number" | "iso week") {
         let w = now.iso_week();
         let s = format!("Week {} · {}", w.week(), now.format("%Y"));
-        return Some(result_calc(s.clone(), "ISO week".into(), w.week().to_string()));
+        return Some(result_calc(
+            s.clone(),
+            "ISO week".into(),
+            w.week().to_string(),
+        ));
     }
 
     // day of year

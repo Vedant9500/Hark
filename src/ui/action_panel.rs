@@ -2,9 +2,7 @@
 
 use crate::providers::ActionSpec;
 use gtk::prelude::*;
-use gtk::{
-    Align, Box as GtkBox, Button, Label, Orientation, Popover, PositionType, Widget,
-};
+use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Popover, PositionType, Widget};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

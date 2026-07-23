@@ -139,10 +139,7 @@ fn read_power_snapshot() -> PowerSnapshot {
                     .any(|b| b.status.eq_ignore_ascii_case("discharging"));
                 let any_on_ac = batteries.iter().any(|b| {
                     let s = b.status.to_ascii_lowercase();
-                    matches!(
-                        s.as_str(),
-                        "charging" | "full" | "charged" | "not charging"
-                    )
+                    matches!(s.as_str(), "charging" | "full" | "charged" | "not charging")
                 });
                 if any_discharging && !any_on_ac {
                     PowerSource::Battery
@@ -230,10 +227,7 @@ fn format_result(snap: &PowerSnapshot) -> SearchResult {
         }
         PowerSource::Unknown => {
             if snap.batteries.is_empty() && snap.ac_online.is_none() {
-                (
-                    "Power status unavailable".into(),
-                    "battery-missing",
-                )
+                ("Power status unavailable".into(), "battery-missing")
             } else {
                 let pct = primary_capacity(snap);
                 let title = match pct {
@@ -369,7 +363,9 @@ fn estimate_time(b: &BatteryInfo, source: PowerSource) -> Option<String> {
     }
 
     let status = b.status.to_ascii_lowercase();
-    let secs = if status == "discharging" || matches!(source, PowerSource::Battery) && status != "charging" {
+    let secs = if status == "discharging"
+        || matches!(source, PowerSource::Battery) && status != "charging"
+    {
         // time to empty
         if energy_now <= 0.0 {
             return None;

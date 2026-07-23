@@ -78,8 +78,7 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
                         i = j;
                     }
                 }
-                let mut num: f64 =
-                    std::str::from_utf8(&bytes[start..i]).ok()?.parse().ok()?;
+                let mut num: f64 = std::str::from_utf8(&bytes[start..i]).ok()?.parse().ok()?;
                 let (scaled, ni) = apply_magnitude_suffix(bytes, i, num)?;
                 num = scaled;
                 i = ni;
@@ -96,7 +95,9 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
                         break;
                     }
                 }
-                let id = std::str::from_utf8(&bytes[start..i]).ok()?.to_ascii_lowercase();
+                let id = std::str::from_utf8(&bytes[start..i])
+                    .ok()?
+                    .to_ascii_lowercase();
                 out.push(Tok::Ident(id));
             }
             _ => return None,
@@ -118,7 +119,11 @@ fn parse_add(tokens: &[Tok], i: &mut usize) -> Option<f64> {
         }
         *i += 1;
         let right = parse_mul(tokens, i)?;
-        left = if *op == '+' { left + right } else { left - right };
+        left = if *op == '+' {
+            left + right
+        } else {
+            left - right
+        };
     }
     Some(left)
 }

@@ -15,7 +15,9 @@ pub(crate) static RE_MAGNITUDE: Lazy<Regex> = Lazy::new(|| {
 });
 
 pub(crate) fn looks_like_math(q: &str) -> bool {
-    if q.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ' ') {
+    if q.chars()
+        .all(|c| c.is_ascii_digit() || c == '.' || c == ' ')
+    {
         return false;
     }
     RE_MATHISH.is_match(q)
@@ -117,7 +119,6 @@ pub(crate) fn base_result(v: u64, original: &str) -> SearchResult {
         title,
     )
 }
-
 
 #[cfg(test)]
 mod math_gate_tests {

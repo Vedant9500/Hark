@@ -1,7 +1,7 @@
 mod action_panel;
 mod dnd;
-mod open_with;
 mod footer;
+mod open_with;
 mod preview;
 mod rows;
 mod settings;
@@ -13,8 +13,8 @@ use crate::theme::ThemeManager;
 use action_panel::ActionPanel;
 use dnd::DragSession;
 use footer::{action_chip_button, footer_divider, keycap_label, update_footer};
-use gio::Cancellable;
 use gio::prelude::*;
+use gio::Cancellable;
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
@@ -260,7 +260,14 @@ impl Launcher {
                 engine.config().snapshot().ui.layout_mode,
                 crate::config::LayoutMode::Compact
             );
-            apply_body_chrome(compact0, true, &body, &header_sep, &footer_sep, Some(&scroll));
+            apply_body_chrome(
+                compact0,
+                true,
+                &body,
+                &header_sep,
+                &footer_sep,
+                Some(&scroll),
+            );
         }
 
         // ========== SETTINGS VIEW ==========
@@ -287,8 +294,7 @@ impl Launcher {
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
-        let search_debounce: Rc<RefCell<Option<glib::SourceId>>> =
-            Rc::new(RefCell::new(None));
+        let search_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let session_queries: Rc<RefCell<VecDeque<String>>> =
             Rc::new(RefCell::new(VecDeque::with_capacity(12)));
 
@@ -355,9 +361,8 @@ impl Launcher {
                 } else {
                     SEARCH_DEBOUNCE_MS
                 };
-                let id = glib::timeout_add_local(
-                    std::time::Duration::from_millis(wait_ms),
-                    move || {
+                let id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(wait_ms), move || {
                         *debounce_slot.borrow_mut() = None;
                         refresh_results(
                             &engine,
@@ -382,8 +387,7 @@ impl Launcher {
                             Some(&scroll_c),
                         );
                         glib::ControlFlow::Break
-                    },
-                );
+                    });
                 *search_debounce.borrow_mut() = Some(id);
             });
         }
@@ -435,10 +439,7 @@ impl Launcher {
                 let ui = engine.config().snapshot().ui.clone();
                 ui_icon_size.set(ui.icon_size as i32);
                 ui_symbolic.set(ui.symbolic_icons);
-                ui_compact.set(matches!(
-                    ui.layout_mode,
-                    crate::config::LayoutMode::Compact
-                ));
+                ui_compact.set(matches!(ui.layout_mode, crate::config::LayoutMode::Compact));
                 refresh_results(
                     &engine,
                     &search.text(),
@@ -750,7 +751,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
-                        &actions_chip,
+                                        &actions_chip,
                                     );
                                 }
                             }
@@ -805,12 +806,7 @@ impl Launcher {
                     Key::Tab => {
                         // Tab → autocomplete selected suggestion into the search box
                         // (↓/↑ still navigate). Soft SetQuery scopes fill their query.
-                        tab_complete_selected(
-                            &results,
-                            &selected,
-                            &list,
-                            &search,
-                        );
+                        tab_complete_selected(&results, &selected, &list, &search);
                         glib::Propagation::Stop
                     }
                     Key::Down => {
@@ -867,7 +863,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
-                        &actions_chip,
+                                        &actions_chip,
                                     );
                                     return glib::Propagation::Stop;
                                 }
@@ -920,7 +916,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
-                        &actions_chip,
+                                        &actions_chip,
                                     );
                                     return glib::Propagation::Stop;
                                 }
@@ -957,7 +953,7 @@ impl Launcher {
                                         &ui_icon_size,
                                         &ui_symbolic,
                                         &ignore_focus_loss,
-                        &actions_chip,
+                                        &actions_chip,
                                     );
                                     return glib::Propagation::Stop;
                                 }
@@ -1054,10 +1050,8 @@ impl Launcher {
         let ui = self.engine.config().snapshot().ui.clone();
         self.ui_icon_size.set(ui.icon_size as i32);
         self.ui_symbolic.set(ui.symbolic_icons);
-        self.ui_compact.set(matches!(
-            ui.layout_mode,
-            crate::config::LayoutMode::Compact
-        ));
+        self.ui_compact
+            .set(matches!(ui.layout_mode, crate::config::LayoutMode::Compact));
         refresh_results(
             &self.engine,
             "",
@@ -1352,10 +1346,7 @@ mod tab_complete_tests {
         };
         let target = home.join("Documents");
         let completed = complete_path_query("~/Doc", &target);
-        assert!(
-            completed.starts_with("~/Documents"),
-            "got {completed}"
-        );
+        assert!(completed.starts_with("~/Documents"), "got {completed}");
     }
 
     #[test]
@@ -1376,9 +1367,7 @@ mod tab_complete_tests {
     }
 }
 
-
 /// Apply an action from the secondary panel (or a keyboard shortcut).
-
 
 fn run_secondary_action<F: Fn() + 'static>(
     engine: &Arc<Engine>,
@@ -1434,13 +1423,12 @@ fn run_secondary_action<F: Fn() + 'static>(
                     search.grab_focus_without_selecting();
                 }
                 ExecuteOutcome::Launched => {
-                    if matches!(
-                        spec.id,
-                        "open" | "terminal" | "reveal" | "reveal_install"
-                    ) && !matches!(
-                        item_kind,
-                        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
-                    ) {
+                    if matches!(spec.id, "open" | "terminal" | "reveal" | "reveal_install")
+                        && !matches!(
+                            item_kind,
+                            ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                        )
+                    {
                         let final_q = search.text().to_string();
                         let recent: Vec<String> =
                             session_queries.borrow().iter().cloned().collect();
@@ -1515,16 +1503,12 @@ fn run_secondary_action<F: Fn() + 'static>(
         ignore_focus_loss.set(true);
         let ignore_focus_loss = ignore_focus_loss.clone();
         let window = window.clone();
-        dialog.choose(
-            Some(&window),
-            None::<&Cancellable>,
-            move |result| {
-                ignore_focus_loss.set(false);
-                if matches!(result, Ok(1)) {
-                    finish(spec);
-                }
-            },
-        );
+        dialog.choose(Some(&window), None::<&Cancellable>, move |result| {
+            ignore_focus_loss.set(false);
+            if matches!(result, Ok(1)) {
+                finish(spec);
+            }
+        });
     } else {
         finish(spec);
     }
@@ -1606,8 +1590,7 @@ fn activate_result<F: Fn()>(
                     ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
                 ) {
                     let final_q = search.text().to_string();
-                    let recent: Vec<String> =
-                        session_queries.borrow().iter().cloned().collect();
+                    let recent: Vec<String> = session_queries.borrow().iter().cloned().collect();
                     engine.learn_typos(&final_q, &recent, &item.id, &item.title);
                     engine.record_usage(&item.id);
                 }
@@ -2052,14 +2035,10 @@ fn apply_deep_hits(
         return;
     }
 
-    let prev_id = results
-        .borrow()
-        .get(selected.get())
-        .map(|r| r.id.clone());
+    let prev_id = results.borrow().get(selected.get()).map(|r| r.id.clone());
 
     let mut merged = results.borrow().clone();
-    let mut seen: std::collections::HashSet<String> =
-        merged.iter().map(|r| r.id.clone()).collect();
+    let mut seen: std::collections::HashSet<String> = merged.iter().map(|r| r.id.clone()).collect();
     let mut added = 0usize;
     for r in deep_hits {
         if seen.insert(r.id.clone()) {
@@ -2111,7 +2090,6 @@ fn apply_deep_hits(
         preview.clear();
     }
 }
-
 
 /// Scroll the highlighted result into the list viewport.
 ///

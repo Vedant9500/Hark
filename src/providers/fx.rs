@@ -99,9 +99,7 @@ impl FxStore {
             return;
         }
         // Reserve the attempt slot before spawn so concurrent converts don't all pass backoff.
-        self.shared
-            .last_attempt_secs
-            .store(now, Ordering::Relaxed);
+        self.shared.last_attempt_secs.store(now, Ordering::Relaxed);
 
         let shared = self.shared.clone();
         thread::spawn(move || {
@@ -155,9 +153,8 @@ pub fn normalize_currency(token: &str) -> Option<&'static str> {
         "MXN" => Some("MXN"),
         "BRL" | "REAL" | "REAIS" => Some("BRL"),
         "ZAR" | "RAND" => Some("ZAR"),
-        "SEK" | "NOK" | "DKK" | "PLN" | "TRY" | "RUB" | "AED" | "SAR" | "THB"
-        | "IDR" | "PHP" | "MYR" | "NZD" | "TWD" | "ILS" | "CZK" | "HUF" | "RON"
-        | "BGN" | "ISK" => {
+        "SEK" | "NOK" | "DKK" | "PLN" | "TRY" | "RUB" | "AED" | "SAR" | "THB" | "IDR" | "PHP"
+        | "MYR" | "NZD" | "TWD" | "ILS" | "CZK" | "HUF" | "RON" | "BGN" | "ISK" => {
             // return leaked static via match arms for known 3-letter
             match u.as_str() {
                 "SEK" => Some("SEK"),

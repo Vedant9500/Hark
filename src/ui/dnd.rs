@@ -8,12 +8,12 @@
 //! - release exclusive keyboard grab during drag so drop targets can focus
 //! - offer COPY|MOVE|ASK (Hyprland often prefers MOVE; we never delete)
 
+use super::thumbnails::freedesktop_thumbnail;
 use gtk::gdk::{self, ContentProvider, DragAction, FileList};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{DragSource, Widget};
-use super::thumbnails::freedesktop_thumbnail;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -327,8 +327,20 @@ fn is_image_path(path: &Path) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "avif" | "jxl" | "heic"
-            | "heif" | "tif" | "tiff" | "ico"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "svg"
+            | "avif"
+            | "jxl"
+            | "heic"
+            | "heif"
+            | "tif"
+            | "tiff"
+            | "ico"
     )
 }
 

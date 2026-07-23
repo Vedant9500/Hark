@@ -85,11 +85,7 @@ pub(crate) fn plan_deep_jobs(
     }
 
     // Absolute / home / drive path globs
-    if q.starts_with('/')
-        || q.starts_with('~')
-        || q.starts_with("./")
-        || is_drive_path_query(q)
-    {
+    if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") || is_drive_path_query(q) {
         if q.contains('*') || q.contains('?') {
             return plan_deep_absolute_glob(q, results, deep, mounts);
         }
@@ -197,9 +193,7 @@ fn plan_deep_for_name(
         && q_lower
             .rsplit_once('.')
             .map(|(_, e)| {
-                !e.is_empty()
-                    && e.len() <= 8
-                    && e.chars().all(|c| c.is_ascii_alphanumeric())
+                !e.is_empty() && e.len() <= 8 && e.chars().all(|c| c.is_ascii_alphanumeric())
             })
             .unwrap_or(false);
     let specific_glob = (q_lower.contains('*') || q_lower.contains('?'))
@@ -352,18 +346,13 @@ fn plan_deep_absolute_glob(
     job_from_roots(
         vec![dir],
         Vec::new(),
-        if pat_l.is_empty() {
-            None
-        } else {
-            Some(pat_l)
-        },
+        if pat_l.is_empty() { None } else { Some(pat_l) },
         false,
         deep,
     )
     .into_iter()
     .collect()
 }
-
 
 /// Strip optional `f`/`file`/`folder` mode prefix (ASCII case-insensitive).
 /// Requires whitespace after the keyword so `firefox` is unchanged.
@@ -415,7 +404,9 @@ pub fn is_path_glob_query(query: &str) -> bool {
     }
     if q.contains('/') || q.contains('*') || q.contains('?') {
         // Bare `*` / `**` alone is useless noise.
-        return q.chars().any(|c| c != '*' && c != '?' && c != '/' && !c.is_whitespace());
+        return q
+            .chars()
+            .any(|c| c != '*' && c != '?' && c != '/' && !c.is_whitespace());
     }
     // Extension shorthand: `.md`, `.png` (not `.gitignore` — has no extra dots after first).
     is_extension_shorthand(q)
@@ -515,9 +506,7 @@ fn scope_to_segments(scope: &str) -> (Vec<String>, Option<PathBuf>) {
         let segments: Vec<String> = abs
             .components()
             .filter_map(|c| match c {
-                std::path::Component::Normal(s) => {
-                    Some(s.to_string_lossy().to_lowercase())
-                }
+                std::path::Component::Normal(s) => Some(s.to_string_lossy().to_lowercase()),
                 _ => None,
             })
             .collect();
@@ -556,10 +545,7 @@ fn scoped_query_is_confident(
     // Bare folder name: only if index knows that folder.
     if let Some(index) = index {
         if let Some(seg) = segments.first() {
-            if index
-                .iter()
-                .any(|it| it.is_dir && it.name_lower == *seg)
-            {
+            if index.iter().any(|it| it.is_dir && it.name_lower == *seg) {
                 return true;
             }
         }
@@ -657,7 +643,11 @@ fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)> {
     // only when the user has a trailing path that would fully resolve —
     // actually we always show hints when scope is empty/partial prefix.
     // When scope is empty or a prefix of folder names, show suggestions.
-    Some((name.to_string(), scope.to_string(), kw_display.trim().to_string()))
+    Some((
+        name.to_string(),
+        scope.to_string(),
+        kw_display.trim().to_string(),
+    ))
 }
 
 /// Folder soft-hints after ` in ` / partial scope typing.
@@ -682,8 +672,8 @@ fn scope_folder_suggestions(
             // Heuristic: if scope ends with `/` or last segment matches a dir
             // exactly AND there are name matches, skip hints.
             let last = sq.segments.last().map(|s| s.as_str()).unwrap_or("");
-            let exact_dir = !last.is_empty()
-                && index.iter().any(|it| it.is_dir && it.name_lower == last);
+            let exact_dir =
+                !last.is_empty() && index.iter().any(|it| it.is_dir && it.name_lower == last);
             // Partial last segment: "gla" matches glassbox → keep hints.
             let last_is_partial = !last.is_empty()
                 && index.iter().any(|it| {
@@ -719,11 +709,10 @@ fn scope_folder_suggestions(
             continue;
         }
 
-        let (ok, score_boost, completion_scope) =
-            match scope_folder_match(item, &scope_lower) {
-                Some(v) => v,
-                None => continue,
-            };
+        let (ok, score_boost, completion_scope) = match scope_folder_match(item, &scope_lower) {
+            Some(v) => v,
+            None => continue,
+        };
         if !ok {
             continue;
         }
@@ -813,20 +802,14 @@ fn scope_folder_suggestions(
 
 /// Match an indexed folder against a partial scope string.
 /// Returns (matched, score_boost, completion scope string for SetQuery).
-fn scope_folder_match(
-    item: &IndexedPath,
-    scope_lower: &str,
-) -> Option<(bool, i64, String)> {
+fn scope_folder_match(item: &IndexedPath, scope_lower: &str) -> Option<(bool, i64, String)> {
     if scope_lower.is_empty() {
         return Some((true, 0, item.name_lower.clone()));
     }
 
     // Multi-segment scope: `glassbox/do`
     if scope_lower.contains('/') {
-        let parts: Vec<&str> = scope_lower
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
+        let parts: Vec<&str> = scope_lower.split('/').filter(|s| !s.is_empty()).collect();
         if parts.is_empty() {
             return Some((true, 0, item.name_lower.clone()));
         }
@@ -892,7 +875,6 @@ fn scope_folder_match(
     None
 }
 
-
 fn is_extension_shorthand(q: &str) -> bool {
     let Some(rest) = q.strip_prefix('.') else {
         return false;
@@ -934,11 +916,7 @@ pub(crate) fn search_index(
         return Vec::new();
     }
 
-    if q.starts_with('/')
-        || q.starts_with('~')
-        || q.starts_with("./")
-        || is_drive_path_query(q)
-    {
+    if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") || is_drive_path_query(q) {
         if q.contains('*') || q.contains('?') {
             let mut results = search_absolute_glob(q, index, path_style, mounts);
             if deep != DeepMode::Skip {
@@ -991,15 +969,7 @@ pub(crate) fn search_index(
         let mut results = search_glob(index, &gq, path_style, mounts);
         // Relative scope under a known dir: live list/walk for freshness
         // (index may be stale or shallow). Absolute globs already live-list.
-        maybe_live_relative_glob(
-            &gq,
-            index,
-            path_style,
-            mounts,
-            excludes,
-            deep,
-            &mut results,
-        );
+        maybe_live_relative_glob(&gq, index, path_style, mounts, excludes, deep, &mut results);
         if deep != DeepMode::Skip {
             maybe_deep_for_glob(
                 &gq,
@@ -1020,7 +990,16 @@ pub(crate) fn search_index(
         // No index yet — still allow live deep when pinned roots exist.
         Vec::new()
     } else {
-        score_free_text_full(index, q, &q_lower, matcher, allow_fuzzy, path_style, mounts, hot_indices)
+        score_free_text_full(
+            index,
+            q,
+            &q_lower,
+            matcher,
+            allow_fuzzy,
+            path_style,
+            mounts,
+            hot_indices,
+        )
     };
 
     if deep != DeepMode::Skip {
@@ -1082,11 +1061,7 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
         // Path-scoped glob (including `src/**/*.rs`) always benefits from live deep.
         return true;
     }
-    if q.starts_with('/')
-        || q.starts_with('~')
-        || q.starts_with("./")
-        || is_drive_path_query(q)
-    {
+    if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") || is_drive_path_query(q) {
         // Absolute / drive glob — deep only if pattern exists.
         return q.contains('*') || q.contains('?');
     }
@@ -1099,10 +1074,7 @@ pub(crate) fn index_results_are_strong(results: &[SearchResult]) -> bool {
 }
 
 /// Index-aware scoped parse for FileProvider / engine.
-pub(crate) fn parse_scoped_for_query(
-    q: &str,
-    index: &[IndexedPath],
-) -> Option<()> {
+pub(crate) fn parse_scoped_for_query(q: &str, index: &[IndexedPath]) -> Option<()> {
     parse_scoped_query(q, Some(index)).map(|_| ())
 }
 
@@ -1129,7 +1101,11 @@ fn looks_specific_for_deep(q: &str) -> bool {
     }
     if q.contains('*') || q.contains('?') {
         // Glob with some literal chars.
-        return q.chars().filter(|c| *c != '*' && *c != '?' && *c != '.').count() >= 2;
+        return q
+            .chars()
+            .filter(|c| *c != '*' && *c != '?' && *c != '.')
+            .count()
+            >= 2;
     }
     // Filename with extension (e.g. main.rs, optimization.md) — best deep signal.
     if q.contains('.') {
@@ -1145,8 +1121,10 @@ fn looks_specific_for_deep(q: &str) -> bool {
 fn index_is_strong(results: &[SearchResult]) -> bool {
     // Only file/folder strength — mixed engine results may include high-score apps.
     results.iter().any(|r| {
-        matches!(r.kind, crate::providers::ResultKind::File | crate::providers::ResultKind::Folder)
-            && r.score >= DEEP_SKIP_IF_INDEX_SCORE
+        matches!(
+            r.kind,
+            crate::providers::ResultKind::File | crate::providers::ResultKind::Folder
+        ) && r.score >= DEEP_SKIP_IF_INDEX_SCORE
     })
 }
 
@@ -1201,9 +1179,7 @@ fn maybe_deep_for_name(
         && q_lower
             .rsplit_once('.')
             .map(|(_, e)| {
-                !e.is_empty()
-                    && e.len() <= 8
-                    && e.chars().all(|c| c.is_ascii_alphanumeric())
+                !e.is_empty() && e.len() <= 8 && e.chars().all(|c| c.is_ascii_alphanumeric())
             })
             .unwrap_or(false);
     let specific_glob = (q_lower.contains('*') || q_lower.contains('?'))
@@ -1605,15 +1581,7 @@ fn live_deep_search(
     };
 
     live_deep_under_roots(
-        &roots,
-        segments,
-        name_pat,
-        dir_scope,
-        path_style,
-        mounts,
-        excludes,
-        existing,
-        deep,
+        &roots, segments, name_pat, dir_scope, path_style, mounts, excludes, existing, deep,
     )
 }
 
@@ -1742,7 +1710,9 @@ fn live_deep_under_roots(
             }
             // Early exit: enough exact name hits.
             if hit_paths.len() >= FILE_RESULT_LIMIT
-                && hit_paths.iter().all(|(s, _, _)| *s >= 45_000 - DEEP_SCORE_PENALTY)
+                && hit_paths
+                    .iter()
+                    .all(|(s, _, _)| *s >= 45_000 - DEEP_SCORE_PENALTY)
             {
                 break 'roots;
             }
@@ -1826,7 +1796,10 @@ fn parse_glob_query(q: &str) -> Option<GlobQuery> {
     if q.contains(char::is_whitespace) && !q.contains('/') {
         return None;
     }
-    if !q.chars().any(|c| c != '*' && c != '?' && c != '/' && !c.is_whitespace()) {
+    if !q
+        .chars()
+        .any(|c| c != '*' && c != '?' && c != '/' && !c.is_whitespace())
+    {
         return None;
     }
 
@@ -2241,7 +2214,6 @@ fn split_glob_path(path: &Path) -> (PathBuf, String) {
     (path.to_path_buf(), String::new())
 }
 
-
 /// Free-text top-K over the index.
 ///
 /// - Short queries (< [`HOT_SKIP_MIN_QUERY_LEN`]): full scan only (baseline cost; discovery).
@@ -2260,7 +2232,15 @@ fn score_free_text_full(
     let use_hot = q_chars >= HOT_SKIP_MIN_QUERY_LEN && !hot_indices.is_empty();
 
     if !use_hot {
-        return score_free_text_baseline(index, q, q_lower, matcher, allow_fuzzy, path_style, mounts);
+        return score_free_text_baseline(
+            index,
+            q,
+            q_lower,
+            matcher,
+            allow_fuzzy,
+            path_style,
+            mounts,
+        );
     }
 
     let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
@@ -2298,14 +2278,7 @@ fn score_free_text_full(
         push_heap(&mut heap, score, item.depth, idx);
     }
 
-    finish_free_text_fuzzy(
-        &mut heap,
-        index,
-        q,
-        q_lower,
-        matcher,
-        allow_fuzzy,
-    );
+    finish_free_text_fuzzy(&mut heap, index, q, q_lower, matcher, allow_fuzzy);
     heap_to_results(heap, index, path_style, mounts)
 }
 
@@ -2482,7 +2455,10 @@ fn display_name(name: &str) -> String {
 
 fn decode_session_name(name: &str) -> String {
     let inner = name.trim_matches('-');
-    if let Some(rest) = inner.strip_prefix("D--").or_else(|| inner.strip_prefix("C--")) {
+    if let Some(rest) = inner
+        .strip_prefix("D--")
+        .or_else(|| inner.strip_prefix("C--"))
+    {
         return rest.replace("--", " ").trim().to_string();
     }
     if let Some(rest) = inner.strip_prefix("mnt-windows_d-") {
@@ -2598,7 +2574,12 @@ mod tests {
     #[test]
     fn scope_folder_hints_after_in() {
         let index = vec![
-            make_indexed(PathBuf::from("/home/u/glassbox"), "glassbox".into(), true, 1),
+            make_indexed(
+                PathBuf::from("/home/u/glassbox"),
+                "glassbox".into(),
+                true,
+                1,
+            ),
             make_indexed(
                 PathBuf::from("/home/u/glassbox/docs"),
                 "docs".into(),
@@ -2618,7 +2599,11 @@ mod tests {
 
         // Empty scope after ` in `
         let hints = scope_folder_suggestions("optimization.md in ", &index, &style, &mounts);
-        assert!(hints.is_some(), "hint parse={:?} empty-scope folders", parse_scope_hint_query("optimization.md in "));
+        assert!(
+            hints.is_some(),
+            "hint parse={:?} empty-scope folders",
+            parse_scope_hint_query("optimization.md in ")
+        );
         let hints = hints.unwrap();
         assert!(
             hints.iter().any(|h| h.title == "glassbox"),
@@ -2626,7 +2611,9 @@ mod tests {
             hints.iter().map(|h| &h.title).collect::<Vec<_>>()
         );
         assert!(
-            hints.iter().all(|h| matches!(h.action, Action::SetQuery(_))),
+            hints
+                .iter()
+                .all(|h| matches!(h.action, Action::SetQuery(_))),
             "hints should SetQuery"
         );
         assert!(
@@ -2638,7 +2625,11 @@ mod tests {
         let hints = scope_folder_suggestions("optimization.md in gla", &index, &style, &mounts)
             .expect("prefix hints");
         assert!(hints.iter().any(|h| h.title == "glassbox"));
-        assert!(hints.iter().all(|h| h.title.to_lowercase().starts_with("gla") || h.subtitle.contains("glassbox") || true));
+        assert!(hints
+            .iter()
+            .all(|h| h.title.to_lowercase().starts_with("gla")
+                || h.subtitle.contains("glassbox")
+                || true));
         if let Action::SetQuery(q) = &hints[0].action {
             assert!(q.contains(" in "), "filled query: {q}");
             assert!(q.starts_with("optimization.md"));
@@ -2679,7 +2670,10 @@ mod tests {
         assert!(!glob_match("a?c", "ac"));
 
         // /home/u/blink/docs/x — "blink" @ 8..13, "docs" @ 14..18
-        assert_eq!(find_path_segment("/home/u/blink/docs/x", "blink", 0), Some(13));
+        assert_eq!(
+            find_path_segment("/home/u/blink/docs/x", "blink", 0),
+            Some(13)
+        );
         assert_eq!(
             find_path_segment("/home/u/blink/docs/x", "docs", 13),
             Some(18)
@@ -2695,7 +2689,7 @@ mod tests {
         assert!(looks_specific_for_deep("main.rs"));
         assert!(looks_specific_for_deep("opt*.md"));
         assert!(looks_specific_for_deep("readme")); // len >= 5
-        // Too broad / short
+                                                    // Too broad / short
         assert!(!looks_specific_for_deep("ab"));
         assert!(!looks_specific_for_deep(".md"));
         assert!(!looks_specific_for_deep("*.md"));
@@ -2720,12 +2714,7 @@ mod tests {
         fs::write(junk.join("optimization.md"), "nope").unwrap();
 
         // Index only has the shallow project folder (as depth-2 index would).
-        let index = vec![make_indexed(
-            base.join("proj"),
-            "proj".into(),
-            true,
-            1,
-        )];
+        let index = vec![make_indexed(base.join("proj"), "proj".into(), true, 1)];
         let style = PathStyle::Label;
         let mounts: Vec<MountInfo> = vec![];
         let excludes = ExcludeSet::from_list(&[]);
@@ -2788,15 +2777,16 @@ mod tests {
                 .iter()
                 .any(|r| r.id.contains("widgets/optimization.md")),
             "pinned deep root should find nested file, got {:?}",
-            pinned_results.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
+            pinned_results
+                .iter()
+                .map(|r| r.id.clone())
+                .collect::<Vec<_>>()
         );
 
         // Scoped `in` deep walk under project
         let mut scoped = search_glob(
             &index,
-            &scoped_to_glob(
-                &parse_scoped_query("optimization.md in proj", Some(&index)).unwrap(),
-            ),
+            &scoped_to_glob(&parse_scoped_query("optimization.md in proj", Some(&index)).unwrap()),
             &style,
             &mounts,
         );
@@ -2827,7 +2817,6 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 }
-
 
 /// `D:/path`, `d:\path`, optional `Windows D:/path` → real mount target.
 fn is_drive_path_query(q: &str) -> bool {
@@ -3069,7 +3058,10 @@ mod hot_skip_tests {
 
     #[test]
     fn hot_strong_enough_gate() {
-        assert!(hot_strong_enough(HOT_SKIP_FULL_SCORE, HOT_SKIP_MIN_QUERY_LEN));
+        assert!(hot_strong_enough(
+            HOT_SKIP_FULL_SCORE,
+            HOT_SKIP_MIN_QUERY_LEN
+        ));
         assert!(hot_strong_enough(50_000, 5));
         // Weak contains-only (~15k band) must fall through to full index.
         assert!(!hot_strong_enough(15_000, 5));

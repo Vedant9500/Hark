@@ -7,9 +7,8 @@ use regex::Regex;
 pub(crate) fn normalize_money_query(q: &str) -> String {
     let mut s = q.to_string();
     // $100 / €50 / £20 / ₹1000 at start
-    static RE_SYM: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*([$€£¥₹₩₽])\s*([+-]?\d+(?:\.\d+)?)\s*").unwrap()
-    });
+    static RE_SYM: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*([$€£¥₹₩₽])\s*([+-]?\d+(?:\.\d+)?)\s*").unwrap());
     if let Some(c) = RE_SYM.captures(&s) {
         let sym = c.get(1).unwrap().as_str();
         let num = c.get(2).unwrap().as_str();
@@ -19,9 +18,8 @@ pub(crate) fn normalize_money_query(q: &str) -> String {
         }
     }
     // 100$ → 100 usd
-    static RE_SYM_AFTER: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)([+-]?\d+(?:\.\d+)?)\s*([$€£¥₹])\b").unwrap()
-    });
+    static RE_SYM_AFTER: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)([+-]?\d+(?:\.\d+)?)\s*([$€£¥₹])\b").unwrap());
     if let Some(c) = RE_SYM_AFTER.captures(&s) {
         let num = c.get(1).unwrap().as_str();
         let sym = c.get(2).unwrap().as_str();
@@ -86,9 +84,9 @@ pub(crate) fn fx_result(value: f64, from: &str, to: &str, fx: &FxStore) -> Optio
 
 pub(crate) fn predict_currency(prefix: &str, from: &str) -> Option<&'static str> {
     const CODES: &[&str] = &[
-        "USD", "EUR", "GBP", "INR", "JPY", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD", "KRW",
-        "MXN", "BRL", "ZAR", "SEK", "NOK", "DKK", "PLN", "TRY", "RUB", "AED", "SAR", "THB",
-        "NZD", "TWD", "ILS",
+        "USD", "EUR", "GBP", "INR", "JPY", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD", "KRW", "MXN",
+        "BRL", "ZAR", "SEK", "NOK", "DKK", "PLN", "TRY", "RUB", "AED", "SAR", "THB", "NZD", "TWD",
+        "ILS",
     ];
     // Aliases for prediction
     const ALIASES: &[(&str, &str)] = &[

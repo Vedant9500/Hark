@@ -54,7 +54,9 @@ impl HotPaths {
     /// Force rebuild (after index swap).
     pub fn rebuild(&self, index: &[IndexedPath]) {
         // Oversample: some usage paths may not be in the (shallow) index.
-        let wanted = self.usage.top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
+        let wanted = self
+            .usage
+            .top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
         let set = build_hot_set(index, &wanted, HOT_CAP);
         *self.set.write().unwrap() = set;
         self.dirty.store(false, Ordering::Relaxed);
@@ -71,11 +73,7 @@ impl HotPaths {
 }
 
 /// Map absolute paths → first index position (`path_lower` key).
-pub(crate) fn build_hot_set(
-    index: &[IndexedPath],
-    wanted_paths: &[String],
-    cap: usize,
-) -> HotSet {
+pub(crate) fn build_hot_set(index: &[IndexedPath], wanted_paths: &[String], cap: usize) -> HotSet {
     if index.is_empty() || wanted_paths.is_empty() || cap == 0 {
         return HotSet::default();
     }

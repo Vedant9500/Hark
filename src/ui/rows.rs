@@ -59,10 +59,7 @@ impl ResultRowPool {
         for _ in 0..ROW_POOL_CAP {
             slots.push(PooledRow::new(drag_session));
         }
-        Self {
-            slots,
-            attached: 0,
-        }
+        Self { slots, attached: 0 }
     }
 
     pub fn apply(
@@ -265,7 +262,6 @@ impl PooledRow {
         } else {
             self.drag.set_path(None);
         }
-
     }
 }
 
@@ -428,7 +424,12 @@ fn fallback_icon(kind: ResultKind, icon_name: &str) -> &'static str {
 }
 
 fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> String {
-    let key = format!("{}\0{}\0{}", symbolic_icons as u8, requested, kind_key(kind));
+    let key = format!(
+        "{}\0{}\0{}",
+        symbolic_icons as u8,
+        requested,
+        kind_key(kind)
+    );
     ICON_RESOLVE_CACHE.with(|cache| {
         if let Some(hit) = cache.borrow().get(&key) {
             return hit.clone();
@@ -438,7 +439,12 @@ fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> 
         if cache.borrow().len() > 512 {
             cache.borrow_mut().clear();
             cache.borrow_mut().insert(
-                format!("{}\0{}\0{}", symbolic_icons as u8, requested, kind_key(kind)),
+                format!(
+                    "{}\0{}\0{}",
+                    symbolic_icons as u8,
+                    requested,
+                    kind_key(kind)
+                ),
                 resolved.clone(),
             );
         }

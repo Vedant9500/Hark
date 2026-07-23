@@ -116,7 +116,8 @@ impl ThemeManager {
             .unwrap_or_else(|| path.clone());
 
         let file = gio::File::for_path(&watch_path);
-        let Ok(monitor) = file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
+        let Ok(monitor) =
+            file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
         else {
             // Fallback when FileMonitor fails: apply once now. Do **not** poll every
             // few seconds — that keeps the CPU awake for battery life. User can
@@ -126,9 +127,7 @@ impl ThemeManager {
         };
 
         let this = self.clone();
-        let scheme_name = path
-            .file_name()
-            .map(|s| s.to_os_string());
+        let scheme_name = path.file_name().map(|s| s.to_os_string());
         monitor.connect_changed(move |_mon, file, _other, event| {
             use gio::FileMonitorEvent::*;
             match event {
@@ -174,4 +173,3 @@ fn normalize_hex(v: &str) -> String {
         format!("#{v}")
     }
 }
-

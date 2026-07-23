@@ -933,4 +933,3 @@ window.blink-window checkbutton label {{
 "#
     )
 }
-

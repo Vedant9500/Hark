@@ -1,4 +1,4 @@
-use crate::config::{discover_mounts, ExcludeSet, ConfigStore, MountInfo};
+use crate::config::{discover_mounts, ConfigStore, ExcludeSet, MountInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -155,12 +155,7 @@ impl IndexState {
         }
         for m in mounts.iter() {
             let key = m.target.to_string_lossy().to_string();
-            let enabled = cfg
-                .index
-                .include_mounts
-                .get(&key)
-                .copied()
-                .unwrap_or(true);
+            let enabled = cfg.index.include_mounts.get(&key).copied().unwrap_or(true);
             if enabled {
                 roots.push(key);
             }
@@ -203,12 +198,7 @@ impl IndexState {
         }
         for m in &mounts {
             let key = m.target.to_string_lossy().to_string();
-            let enabled = cfg
-                .index
-                .include_mounts
-                .get(&key)
-                .copied()
-                .unwrap_or(true);
+            let enabled = cfg.index.include_mounts.get(&key).copied().unwrap_or(true);
             if enabled && m.target.is_dir() {
                 roots.push(m.target.clone());
             }

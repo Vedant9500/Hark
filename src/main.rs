@@ -3,9 +3,9 @@ mod engine;
 mod ipc;
 mod providers;
 mod theme;
+mod typos;
 mod ui;
 mod usage;
-mod typos;
 
 #[cfg(feature = "bench")]
 mod bench;
@@ -153,7 +153,11 @@ fn run_search_once(query: &str) {
     let t0 = Instant::now();
     let results = engine.search(q);
     let index_ms = t0.elapsed().as_millis();
-    println!("index-only search: {} hits in {}ms", results.len(), index_ms);
+    println!(
+        "index-only search: {} hits in {}ms",
+        results.len(),
+        index_ms
+    );
     for (i, r) in results.iter().take(12).enumerate() {
         println!(
             "  [{i}] score={} kind={:?} title={}  {}",
@@ -176,4 +180,3 @@ fn run_search_once(query: &str) {
         }
     }
 }
-

@@ -72,11 +72,7 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     } else {
         formatted
     };
-    Some(result_calc(
-        title.clone(),
-        format!("duration · {q}"),
-        title,
-    ))
+    Some(result_calc(title.clone(), format!("duration · {q}"), title))
 }
 
 pub(crate) fn format_duration(secs: f64) -> String {

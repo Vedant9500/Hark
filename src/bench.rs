@@ -47,7 +47,11 @@ pub fn run_bench() {
     let apps_n = engine.apps_len();
     let cfg = engine.config().snapshot();
     let deep = cfg.index.deep_roots.join(", ");
-    let deep = if deep.is_empty() { "(none)".into() } else { deep };
+    let deep = if deep.is_empty() {
+        "(none)".into()
+    } else {
+        deep
+    };
     println!(
         "config: max_depth={} · deep_roots={} · apps={}",
         cfg.index.max_depth.clamp(1, 6),
@@ -160,23 +164,14 @@ pub fn run_bench() {
         mem_after.rss_kb,
         mem_after.rss_kb as i64 - mem_before.rss_kb as i64
     );
-    println!(
-        "hwm_kb:        {}  (peak RSS)",
-        mem_after.hwm_kb
-    );
-    println!(
-        "vsz_kb:        {}",
-        mem_after.vsz_kb
-    );
+    println!("hwm_kb:        {}  (peak RSS)", mem_after.hwm_kb);
+    println!("vsz_kb:        {}", mem_after.vsz_kb);
     println!("threads:       {}", mem_after.threads);
     println!(
         "cpu_user_ms:   {:.1}",
         cpu_after.user_ms - cpu_before.user_ms
     );
-    println!(
-        "cpu_sys_ms:    {:.1}",
-        cpu_after.sys_ms - cpu_before.sys_ms
-    );
+    println!("cpu_sys_ms:    {:.1}", cpu_after.sys_ms - cpu_before.sys_ms);
     println!(
         "cpu_total_ms:  {:.1}  over wall {:.0} ms",
         total_cpu_ms,
@@ -243,11 +238,12 @@ pub fn run_bench() {
     println!("done — paste tables into OPTIMIZATION.md Improvement log");
 }
 
-
 /// Choose a short app query that actually hits installed desktops (bench only).
 fn pick_bench_app_query(engine: &Engine) -> String {
     // Prefer classic baselines, then anything installed, else a letter.
-    for cand in ["fire", "chrom", "chrome", "blink", "term", "code", "discord"] {
+    for cand in [
+        "fire", "chrom", "chrome", "blink", "term", "code", "discord",
+    ] {
         let hits = engine.search_apps_only(cand);
         if !hits.is_empty() {
             return cand.to_string();
@@ -283,8 +279,7 @@ where
     }
     samples.sort_unstable();
     let median = samples[(samples.len() / 2).min(samples.len() - 1)];
-    let p95 =
-        samples[(((samples.len() as f64) * 0.95).ceil() as usize - 1).min(samples.len() - 1)];
+    let p95 = samples[(((samples.len() as f64) * 0.95).ceil() as usize - 1).min(samples.len() - 1)];
     (median, p95, hits)
 }
 
