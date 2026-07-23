@@ -8,9 +8,11 @@ pub(crate) static RE_MATHISH: Lazy<Regex> =
 
 /// `5k`, `1.5m`, `2 billion` — magnitude scales used as calc input.
 pub(crate) static RE_MAGNITUDE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)\d(?:[\d.]*)\s*(?:k|m|b|t|bn|tn|mil|hundreds?|thousands?|millions?|billions?|trillions?|lakhs?|lacs?|crores?)\b",
-    )
+    Regex::new(concat!(
+        r"(?i)\d(?:[\d.]*)\s*(?:k|m|b|t|bn|tn|mil|",
+        r"hundreds?|thousands?|millions?|billions?|trillions?|",
+        r"lakhs?|lacs?|crores?)\b",
+    ))
     .unwrap()
 });
 
@@ -61,9 +63,14 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
 
     // Numbers may include magnitude suffixes (`10% of 1.5m`, `tip 15% on 2k`).
     static RE_PCT: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|hundreds?|thousands?|millions?|billions?|trillions?|lakhs?|lacs?|crores?)?)?)\s*%\s*of\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|hundreds?|thousands?|millions?|billions?|trillions?|lakhs?|lacs?|crores?)?)?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"hundreds?|thousands?|millions?|billions?|trillions?|",
+            r"lakhs?|lacs?|crores?)?)?)\s*%\s*of\s*",
+            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"hundreds?|thousands?|millions?|billions?|trillions?|",
+            r"lakhs?|lacs?|crores?)?)?)\s*$",
+        ))
         .unwrap()
     });
     if let Some(c) = RE_PCT.captures(&lower) {
@@ -79,9 +86,14 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
     }
 
     static RE_TIP: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*tip\s+([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|hundreds?|thousands?|millions?|billions?|trillions?|lakhs?|lacs?|crores?)?)?)\s*%\s*(?:on|for)\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|hundreds?|thousands?|millions?|billions?|trillions?|lakhs?|lacs?|crores?)?)?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*tip\s+([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"hundreds?|thousands?|millions?|billions?|trillions?|",
+            r"lakhs?|lacs?|crores?)?)?)\s*%\s*(?:on|for)\s*",
+            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"hundreds?|thousands?|millions?|billions?|trillions?|",
+            r"lakhs?|lacs?|crores?)?)?)\s*$",
+        ))
         .unwrap()
     });
     if let Some(c) = RE_TIP.captures(&lower) {

@@ -1639,7 +1639,8 @@ fn build_appearance_page(
     let (outer, body) = page_shell(
         "preferences-desktop-theme-symbolic",
         "Appearance",
-        "Tweak layout density, transparency, accent colour, type scale, and icons. Colours still follow your Caelestia scheme.",
+        "Tweak layout density, transparency, accent colour, type scale, and icons. \
+         Colours still follow your Caelestia scheme.",
     );
 
     let ui = cfg.ui.clone();
@@ -2061,7 +2062,9 @@ fn build_appearance_page(
     body.append(&reset_card);
 
     let note = Label::new(Some(
-        "Base colours come from Caelestia (~/.local/state/caelestia/scheme.json). Accent override only changes the highlight colour. Icon size applies on the next search refresh.",
+        "Base colours come from Caelestia (~/.local/state/caelestia/scheme.json). \
+         Accent override only changes the highlight colour. Icon size applies on the next \
+         search refresh.",
     ));
     note.add_css_class("blink-hint");
     note.set_halign(gtk::Align::Start);
@@ -2197,7 +2200,9 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     body.append(&card);
 
     let note = Label::new(Some(
-        "Paste Chinese (or type tr …). Shows Translating… then fills in (network off the UI thread). Empty endpoint uses free Google/MyMemory. Prefer local LibreTranslate for privacy.",
+        "Paste Chinese (or type tr …). Shows Translating… then fills in (network off the UI \
+         thread). Empty endpoint uses free Google/MyMemory. Prefer local LibreTranslate for \
+         privacy.",
     ));
     note.add_css_class("blink-hint");
     note.set_halign(gtk::Align::Start);

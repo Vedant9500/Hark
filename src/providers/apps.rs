@@ -409,7 +409,14 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         write!(
             f,
-            "[Desktop Entry]\n             Type=Application\n             Name=Sublime Text\n             GenericName=Text Editor\n             Comment=Sophisticated text editor\n             Exec=/usr/bin/subl %F\n             Icon=sublime-text\n             Keywords=subl;editor;\n"
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Sublime Text\n\
+             GenericName=Text Editor\n\
+             Comment=Sophisticated text editor\n\
+             Exec=/usr/bin/subl %F\n\
+             Icon=sublime-text\n\
+             Keywords=subl;editor;\n"
         )
         .unwrap();
 

@@ -63,9 +63,12 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
 
     // in N units / N units from now / N units ago
     static RE_REL: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(?:in\s+)?([+-]?\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|months?|mo|years?|y|yrs?)\s*(ago|from now|later)?\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(?:in\s+)?([+-]?\d+(?:\.\d+)?)\s*",
+            r"(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|",
+            r"days?|d|weeks?|w|months?|mo|years?|y|yrs?)\s*",
+            r"(ago|from now|later)?\s*$",
+        ))
         .unwrap()
     });
     if let Some(c) = RE_REL.captures(&lower) {

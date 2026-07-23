@@ -10,9 +10,10 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         return None;
     }
     static RE_TOKEN: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)([+-])?\s*(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|w)",
-        )
+        Regex::new(concat!(
+            r"(?i)([+-])?\s*(\d+(?:\.\d+)?)\s*",
+            r"(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|w)",
+        ))
         .unwrap()
     });
     let mut total_secs: f64 = 0.0;

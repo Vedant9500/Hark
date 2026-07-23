@@ -6,12 +6,12 @@ Scope: `src/` only (~21.7k LOC). Build artifacts, packaging, and docs are out of
 | Part | Name | Approx. LOC | Status |
 |------|------|-------------|--------|
 | 1 | Core & App Shell | ~3,530 | ✅ complete |
-| 2 | UI Shell | ~3,790 | ⬜ pending |
-| 3 | UI Features & Theme | ~4,760 | ⬜ pending |
-| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
+| 2 | UI Shell | ~3,790 | ✅ complete |
+| 3 | UI Features & Theme | ~4,760 | ✅ complete |
+| 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ✅ complete |
 | 5 | Files Provider | ~4,660 | ⬜ pending |
 
-**Overall status:** 1 / 5 complete
+**Overall status:** 4 / 5 complete
 
 **Style reference:** [Rust Style Guide](https://doc.rust-lang.org/style-guide/) (default Rust style; project uses `rustfmt.toml` edition 2021, `max_width = 100`).
 
@@ -141,19 +141,59 @@ Then re-check Part 1 files; remaining manual nits are only the `mod` sort in `ma
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/mod.rs` | 2219 | ⬜ |
-| `src/ui/rows.rs` | 490 | ⬜ |
-| `src/ui/dnd.rs` | 356 | ⬜ |
-| `src/ui/action_panel.rs` | 249 | ⬜ |
-| `src/ui/thumbnails.rs` | 225 | ⬜ |
-| `src/ui/style.css` | 166 | ⬜ |
-| `src/ui/footer.rs` | 80 | ⬜ |
+| `src/ui/mod.rs` | ~2197 | ✅ |
+| `src/ui/rows.rs` | ~496 | ✅ |
+| `src/ui/dnd.rs` | ~368 | ✅ |
+| `src/ui/action_panel.rs` | ~247 | ✅ |
+| `src/ui/thumbnails.rs` | 225 | ✅ |
+| `src/ui/style.css` | 166 | ✅ (CSS; not rustfmt) |
+| `src/ui/footer.rs` | 80 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewer notes:**
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
 
-- 
-- 
+### Verdict
+
+**Clean.** All six Rust files pass `rustfmt --check` with project `rustfmt.toml` (edition 2021, max_width 100). No tabs, no trailing whitespace, no double blank lines, no lines over 100 columns, no block comments in Rust. Naming and module layout match the guide. No mandatory fixes.
+
+*(Already reformatted by the earlier full-crate `cargo fmt` from Part 1.)*
+
+### Findings
+
+#### No P1 issues
+
+| Check | Result |
+|--------|--------|
+| rustfmt layout | Pass — all 6 `.rs` files |
+| Max width 100 | Pass |
+| Spaces / no tabs | Pass |
+| Trailing whitespace | Pass |
+| Blank lines (0 or 1) | Pass |
+| Module order (`ui/mod.rs`) | Pass — alpha: `action_panel`, `dnd`, `footer`, `open_with`, `preview`, `rows`, `settings`, `thumbnails` |
+| Naming | Pass — `snake_case` / `UpperCamelCase` / `SCREAMING_SNAKE_CASE`; `box_` for reserved `box` (guide-approved) |
+| Prefer `//` over `/* */` (Rust) | Pass |
+| Block indent | Pass |
+
+#### Informational / out of Rust style-guide scope
+
+| Item | Notes |
+|------|--------|
+| `src/ui/style.css` | GTK CSS, not Rust. Uses 2-space indent and `/* */` comments (normal for CSS). Not governed by the Rust Style Guide or rustfmt. |
+| `footer.rs` module docs | Sibling files use `//!` crate/module docs; `footer.rs` has none. Soft consistency preference only. |
+| `#[allow(dead_code)]` | Present on a few helpers/fields (`footer`, `dnd`, `mod.rs`). Not a formatting/style-guide violation. |
+| Import grouping | `group_imports` default is Preserve; rustfmt accepts current order. No reorder needed. |
+
+### What looks good
+
+- Strong `//!` module docs on `rows`, `dnd`, `action_panel`, `thumbnails`
+- Expression-oriented control flow (`if let`, early returns, `let … = match`)
+- Multi-line function args use trailing commas
+- Constants properly `SCREAMING_SNAKE_CASE` (`WINDOW_WIDTH`, `SEARCH_DEBOUNCE_MS`, …)
+- Large `ui/mod.rs` stays within width and rustfmt layout rules
+
+### Fixes applied
+
+None required for Part 2.
 
 ---
 
@@ -163,17 +203,55 @@ Then re-check Part 1 files; remaining manual nits are only the `mod` sort in `ma
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/settings.rs` | 2221 | ⬜ |
-| `src/ui/preview.rs` | 1084 | ⬜ |
-| `src/theme/css.rs` | 936 | ⬜ |
-| `src/ui/open_with.rs` | 345 | ⬜ |
-| `src/theme/mod.rs` | 177 | ⬜ |
+| `src/ui/settings.rs` | ~2208 | ✅ |
+| `src/ui/preview.rs` | ~1081 | ✅ |
+| `src/theme/css.rs` | ~935 | ✅ |
+| `src/ui/open_with.rs` | ~343 | ✅ |
+| `src/theme/mod.rs` | ~175 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewer notes:**
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
 
-- 
-- 
+### Verdict
+
+**Mostly clean.** All five files already pass `rustfmt --check`. One hard style-guide issue: three UI strings in `settings.rs` exceeded the 100-column max (rustfmt does not reflow string literals). Fixed by wrapping with `\` string continuations. No other mandatory fixes.
+
+### Findings
+
+#### P1 — line width > 100 (settings copy strings) — **fixed**
+
+Style guide: max line width 100. These were single-line string literals:
+
+| Location | Was | Fix |
+|----------|-----|-----|
+| `settings.rs` Appearance page_shell subtitle | ~128 cols | `\`-continued string |
+| `settings.rs` Appearance note label | ~180 cols | `\`-continued string |
+| `settings.rs` Tools note label | ~185 cols | `\`-continued string |
+
+String values unchanged (verified with a small rustc join check). `cargo check` still green.
+
+#### No other P1 issues
+
+| Check | Result |
+|--------|--------|
+| rustfmt layout | Pass (all 5 files) |
+| Tabs / trailing space / double blanks | Pass |
+| Naming | Pass (`box_` for reserved `box` is guide-approved) |
+| Module order (`theme/mod.rs`) | Pass (`mod css;`) |
+| Prefer `//` in Rust | Pass — `/* */` inside `theme/css.rs` are **CSS comments in a format string**, not Rust block comments |
+
+#### Informational
+
+| Item | Notes |
+|------|--------|
+| Module docs | `open_with.rs` has `//!`; `settings.rs` / `preview.rs` / `theme/*` do not — soft consistency only |
+| `theme/css.rs` | Large raw CSS template string; indent inside the string is CSS convention (2-space), not Rust block indent |
+| `#[allow(dead_code)]` / clippy allows | Present; not a formatting violation |
+
+### Fixes applied (2026-07-23)
+
+- [x] Wrap three long user-facing strings in `src/ui/settings.rs` to ≤100 columns
+- [x] Re-check: no Part 3 lines > 100; rustfmt clean; `cargo check --features "layer-shell,bench"` OK
 
 ---
 
@@ -183,27 +261,66 @@ Then re-check Part 1 files; remaining manual nits are only the `mod` sort in `ma
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/providers/mod.rs` | 327 | ⬜ |
-| `src/providers/apps.rs` | 434 | ⬜ |
-| `src/providers/fx.rs` | 264 | ⬜ |
-| `src/providers/http.rs` | 78 | ⬜ |
-| `src/providers/translate.rs` | 1016 | ⬜ |
-| `src/providers/calc/mod.rs` | 148 | ⬜ |
-| `src/providers/calc/expr.rs` | 386 | ⬜ |
-| `src/providers/calc/math.rs` | 147 | ⬜ |
-| `src/providers/calc/units.rs` | 548 | ⬜ |
-| `src/providers/calc/timezone.rs` | 743 | ⬜ |
-| `src/providers/calc/datetime.rs` | 175 | ⬜ |
-| `src/providers/calc/duration.rs` | 111 | ⬜ |
-| `src/providers/calc/currency.rs` | 130 | ⬜ |
-| `src/providers/calc/battery.rs` | 448 | ⬜ |
-| `src/providers/calc/util.rs` | 71 | ⬜ |
+| `src/providers/mod.rs` | ~322 | ✅ |
+| `src/providers/apps.rs` | ~435 | ✅ |
+| `src/providers/fx.rs` | ~261 | ✅ |
+| `src/providers/http.rs` | 78 | ✅ |
+| `src/providers/translate.rs` | ~1016 | ✅ |
+| `src/providers/calc/mod.rs` | ~150 | ✅ |
+| `src/providers/calc/expr.rs` | ~391 | ✅ |
+| `src/providers/calc/math.rs` | ~148 | ✅ |
+| `src/providers/calc/units.rs` | ~547 | ✅ |
+| `src/providers/calc/timezone.rs` | ~748 | ✅ |
+| `src/providers/calc/datetime.rs` | ~174 | ✅ |
+| `src/providers/calc/duration.rs` | ~107 | ✅ |
+| `src/providers/calc/currency.rs` | ~128 | ✅ |
+| `src/providers/calc/battery.rs` | ~444 | ✅ |
+| `src/providers/calc/util.rs` | 70 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewer notes:**
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23 against https://doc.rust-lang.org/style-guide/
 
-- 
-- 
+### Verdict
+
+**Mostly clean.** All 15 files already pass `rustfmt --check`. Main issue: **13 lines over 100 columns** — almost all long regex string literals (rustfmt will not reflow them) plus one test desktop-file fixture. Fixed by splitting regexes with `concat!(…)` and wrapping the desktop fixture with `\` string continuations. Module order, naming, tabs, blanks: good.
+
+### Findings
+
+#### P1 — line width > 100 — **fixed**
+
+| File | Lines | Kind | Fix |
+|------|-------|------|-----|
+| `apps.rs` | 1 | Test `.desktop` fixture string (~284 cols) | Multi-line string with `\n\` |
+| `calc/math.rs` | 3 | Magnitude / % / tip regexes | `concat!(r"…", r"…")` |
+| `calc/units.rs` | 2 | Convert regexes | `concat!` |
+| `calc/timezone.rs` | 5 | TZ query / predict regexes | `concat!` |
+| `calc/datetime.rs` | 1 | Relative time regex | `concat!` |
+| `calc/duration.rs` | 1 | Duration token regex | `concat!` |
+
+Pattern semantics unchanged (`concat!` joins at compile time). Tests: **71 passed**, 2 ignored.
+
+#### No other P1 issues
+
+| Check | Result |
+|--------|--------|
+| rustfmt layout | Pass (all 15 files) |
+| Tabs / trailing space / double blanks | Pass |
+| Module order (`providers/mod.rs`) | Pass — `apps`, `calc`, `files`, `fx`, `http`, `translate` |
+| Module order (`calc/mod.rs`) | Pass — alpha: battery…util |
+| Naming | Pass |
+
+#### Informational
+
+| Item | Notes |
+|------|--------|
+| Module docs | `http.rs` has `//!`; most calc modules do not — soft consistency only |
+| `files` module | Declared here but reviewed in Part 5 |
+
+### Fixes applied (2026-07-23)
+
+- [x] Wrap over-width regexes via `concat!` in math/units/timezone/datetime/duration
+- [x] Wrap desktop-entry test fixture in `apps.rs`
+- [x] `cargo fmt`; no Part 4 lines > 100; full test suite green
 
 ---
 

@@ -38,32 +38,36 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
 
     // TIME here|local (in|to|as) PLACE  — local → city
     static RE_HERE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to|as|->|→)\s+(.+?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(here|local)\s+(?:in|to|as|->|→)\s+(.+?)\s*$",
+        ))
         .unwrap()
     });
     // TIME in PLACE to here|local|PLACE — city → local (or city → city)
     // Also: TIME at PLACE to …
     static RE_IN_FROM_TO: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(?:in|at)\s+(.+?)\s+(?:to|as|->|→)\s+(.+?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(?:in|at)\s+(.+?)\s+(?:to|as|->|→)\s+(.+?)\s*$",
+        ))
         .unwrap()
     });
     // TIME in|to PLACE — local → city (no "here" word). Requires am/pm OR :mm so bare
     // "15 tokyo" is not stolen.
     static RE_IN_CITY: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+(.+?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(?:in|to)\s+(.+?)\s*$",
+        ))
         .unwrap()
     });
     // Classic: TIME FROM to TO (optional am/pm; FROM/TO may be multi-word)
     static RE_TZ: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s+(.+?)\s+(?:to|in|as|->|→)\s+(.+?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(.+?)\s+(?:to|in|as|->|→)\s+(.+?)\s*$",
+        ))
         .unwrap()
     });
     // Compact no-colon: 4pm est to pst
@@ -187,19 +191,24 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
 pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase();
     static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(here|local)\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(here|local)\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$",
+        ))
         .unwrap()
     });
     static RE2: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|to)\s+([a-zA-Z ]*?)\s*$")
-            .unwrap()
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(?:in|to)\s+([a-zA-Z ]*?)\s*$",
+        ))
+        .unwrap()
     });
     static RE3: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:in|at)\s+([a-zA-Z ]+?)\s+(?:to)\s+([a-zA-Z ]*?)\s*$",
-        )
+        Regex::new(concat!(
+            r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+",
+            r"(?:in|at)\s+([a-zA-Z ]+?)\s+(?:to)\s+([a-zA-Z ]*?)\s*$",
+        ))
         .unwrap()
     });
 

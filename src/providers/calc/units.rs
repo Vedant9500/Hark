@@ -5,17 +5,23 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub(crate) static RE_CONVERT: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+(?:to|in|as|->|→)\s+([a-zA-Z°²³/µμ]+(?:\^[23])?)?\s*$",
-    )
+    Regex::new(concat!(
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*",
+        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
+        r"(?:to|in|as|->|→)\s+",
+        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)?\s*$",
+    ))
     .unwrap()
 });
 
 // Incomplete: "10kg to pou" / "10 kg to" (target optional/partial)
 pub(crate) static RE_CONVERT_PARTIAL: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+(to|in|as|->|→)\s*([a-zA-Z°²³/µμ]*)\s*$",
-    )
+    Regex::new(concat!(
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*",
+        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
+        r"(to|in|as|->|→)\s*",
+        r"([a-zA-Z°²³/µμ]*)\s*$",
+    ))
     .unwrap()
 });
 
