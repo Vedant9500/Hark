@@ -10,13 +10,13 @@ except where the Performance Book’s **build configuration** chapter applies (`
 
 | Part | Name | Approx. LOC | Status |
 |------|------|-------------|--------|
-| 1 | Core & App Shell | ~3,500 | ⬜ pending |
+| 1 | Core & App Shell | ~3,500 | ✅ complete |
 | 2 | UI Shell | ~3,780 | ⬜ pending |
 | 3 | UI Features & Theme | ~4,750 | ⬜ pending |
 | 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
 | 5 | Files Provider | ~4,620 | ✅ complete |
 
-**Overall status:** 1 / 5 complete
+**Overall status:** 2 / 5 complete
 
 **References:**
 
@@ -92,58 +92,214 @@ micro-bench CLI. Highest leverage after Files search for end-to-end query latenc
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/main.rs` | ~182 | ⬜ |
-| `src/config.rs` | ~969 | ⬜ |
-| `src/engine.rs` | ~809 | ⬜ |
-| `src/ipc.rs` | ~193 | ⬜ |
-| `src/usage.rs` | ~289 | ⬜ |
-| `src/typos.rs` | ~565 | ⬜ |
-| `src/bench.rs` | ~485 | ⬜ |
+| `src/main.rs` | ~182 | ✅ |
+| `src/config.rs` | ~969 | ✅ |
+| `src/engine.rs` | ~809 | ✅ |
+| `src/ipc.rs` | ~193 | ✅ |
+| `src/usage.rs` | ~289 | ✅ |
+| `src/typos.rs` | ~565 | ✅ |
+| `src/bench.rs` | ~485 | ✅ |
 
 **Also in scope for this part:** `Cargo.toml` `[profile.release]`, `[features]` (`bench`, `layer-shell`).
 
-**Part status:** ⬜ pending  
-**Reviewed:** —  
-**Against:** https://nnethercote.github.io/perf-book/
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23  
+**Against:**
+
+- [The Rust Performance Book](https://nnethercote.github.io/perf-book/)
+- [Effective Rust](https://www.effective-rust.com/)
 
 ### Reviewer notes
 
-_(fill during review)_
-
 #### Verdict
 
-_(one paragraph)_
+**Orchestration is in good shape; no Part-5-scale hot-path leaks.** After the Files provider
+work, Core is mostly a careful merge layer: early outs for calc/translate/force-files, apps-before-
+files ranking, async deep only when needed, Arc config, debounced usage I/O, and a real
+`blink --bench` harness.
+
+There is **no hard P1** confined to this part. Remaining issues are moderate: per-open FS walks
+for deep-root auto-promote, lock `.unwrap()` / poison policy, pretty JSON for typos (vs compact
+usage), and micro costs on empty-query resolve. Effective Rust Item 20 applies — do not churn
+this layer without measurement; biggest search cost still lives in Files (Part 5).
 
 #### Findings
 
-##### P1 —
+##### P1 — none in Core alone
 
-##### P2 —
+Keystroke path is `Engine::search` → providers. Local work in engine is small (≤25 results,
+sort, boost, typo lookup). Any remaining **user-visible** free-text latency is dominated by
+`FileProvider` (already reviewed/fixed in Part 5). No Core-only change is expected to move p95
+as much as Files did.
 
-##### P3 / Info —
+##### P2 — auto-promote deep root walks the FS on every file open (**B12**, **E20**)
+
+`maybe_auto_promote_deep_root` (called from `Action::OpenPath` in `execute`):
+
+- Up to 6 parent levels × several marker probes (`.git`, `Cargo.toml`, `package.json`, …)
+- Each probe is `Path::exists()` / join — fine on local SSD, painful on slow / network mounts
+- Runs on the **UI thread** via `execute`
+
+**Fix ideas (measure first):**
+
+- Skip if parent is already under a pinned deep root
+- Cap to one `metadata` / stop early when path is under `$HOME` depth-N without markers
+- Defer promote to a background thread (config update is rare)
+
+Not every open needs this; only files opened deeper than index depth benefit.
+
+##### P2 — lock `.unwrap()` on config / usage / typos (**E17**, **E18**)
+
+Same pattern as Part 5: `RwLock` / `Mutex` with `.unwrap()` on poison. Release `panic = "abort"`
+means poison → process death. Poison only follows a prior panic under the lock.
+
+| Store | Locks |
+|-------|--------|
+| `ConfigStore` | `RwLock<Arc<BlinkConfig>>` |
+| `UsageStore` | `RwLock` + `Mutex` (last_save) |
+| `TypoStore` | `RwLock` + `Mutex` |
+
+**Recommendation:** same as Files — `parking_lot` or recover via `into_inner` on internal maps
+when next touching this code. Not a latency fix.
+
+##### P2 — `TypoStore` saves pretty JSON; `UsageStore` already compact (**B5**, **B12**)
+
+```rust
+// typos.rs maybe_save
+serde_json::to_string_pretty(&data)
+
+// usage.rs save
+serde_json::to_vec(&*g)  // compact
+```
+
+Aliases are capped (300) so pretty cost is small, but it is pure overhead (humans rarely hand-edit
+typos.json). Align with usage: compact `to_vec` + atomic rename (typos currently writes directly
+without `.tmp` rename — weaker crash safety than usage/config).
+
+##### P2 — empty-query path resolves usage ids with FS checks (**B12**)
+
+`empty_results` → `usage.top(20)` → `resolve_id` → `files.resolve_path` (`path.exists()`,
+`is_dir()`). Opening the launcher with an empty query can touch the disk up to ~20 times.
+Usually warm page cache; still a footgun on slow storage.
+
+**Fix ideas:** cache last-resolved SearchResults for top ids; skip `exists` and let open fail
+later; resolve apps first (no FS).
+
+##### P3 — per-result `usage.boost` takes a read lock each time (**B13**)
+
+```rust
+for r in &mut results {
+    r.score += self.usage.boost(&r.id);  // N ≤ 25
+}
+```
+
+Correct and cheap at N=25. Optional: one `read()` and score all ids under a single guard if
+profiling ever shows lock noise (unlikely).
+
+##### P3 — std `HashMap` for usage / typo maps (**B4**)
+
+Maps stay ≤500 / ≤300 entries. SipHash is fine; FxHash would be micro-gain only. **E20**: skip
+unless measured.
+
+##### P3 — typo learn path allocates for Levenshtein (**B5**)
+
+`levenshtein` / `near_title_prefix` build `Vec<char>` and temporary prefix `String`s. Only on
+**learn** (launch), not every keystroke. O(n·m) on short strings is fine. Optional later:
+stack buffers / byte paths for ASCII aliases.
+
+##### P3 / Effective Rust — types & APIs
+
+| Topic | Assessment |
+|-------|------------|
+| **E1** `ExecuteOutcome`, `DeepMode` (files), config enums | Good domain modeling |
+| **E4** `add_typo_alias` → `Result<String, String>` | UI-facing; acceptable |
+| **E8** `ConfigStore::snapshot` → `Arc` | Exemplary; docs push hot paths off `get()` |
+| **E8** Engine holds `Arc` providers | Share across threads cleanly |
+| **E16** | No `unsafe` in Part 1 |
+| **E17** | Warm/reindex on bg threads; IPC listener → channel → GTK main |
+| **E18** | Lock unwraps; IPC uses `unwrap_or` on read (good) |
+| **E20** | Provider gating (skip files when app prefix strong, skip deep on translate/calc) is purposeful |
+| **E27** | `typos` / `bench` have `//!`; `engine` / `config` / `ipc` thinner |
+| **E30** | Unit tests: force-files, deep-root, usage debounce, typo learn, IPC path; bench CLI is real tooling |
+
+##### Info — architecture already aligned with the books
+
+| Pattern | Where | Book lens |
+|---------|--------|-----------|
+| Release: LTO, `codegen-units=1`, `opt-level=3`, `strip`, `panic=abort` | `Cargo.toml` | **B1** |
+| `bench` feature keeps daemon lean | `main` + `Cargo.toml` | **B1**, **E26**-ish |
+| Hotkey: IPC toggle, no second GTK process when daemon up | `main` + `ipc` | **B12**, startup |
+| Index / apps warm + reindex off UI thread | `Engine::spawn_*` | **B13** |
+| No network FX at boot (deferred) | `new_headless` comment | **B12**, battery |
+| Calc / translate own query → skip apps/files/deep | `search` / `should_deep_search` | **E20**, **B14** |
+| Dedup by `id` without cloning `String` keys | `Engine::search` | **B5** |
+| Usage save debounce + atomic rename + compact JSON | `usage.rs` | **B12**, **B14** |
+| Config Arc swap; skip save when unchanged | `config.rs` | **B5**, **B12** |
+| `with()` for borrow without full clone | `ConfigStore` | **E8** |
+| Scoped-query memo lives in Files (engine reuses) | cross-part | **B14** |
+| `blink --bench` isolated provider probes + p95 | `bench.rs` | **B3** |
+
+#### Checklist snapshot (Part 1)
+
+| Lens | Result |
+|------|--------|
+| B1 Build config | Strong release profile; optional features correct |
+| B3 Benchmarking | Real CLI harness; use it before “optimizing” engine |
+| B4 Hashing | Small maps; ignore |
+| B5 Allocations | Fine for ≤25 merge; typos pretty JSON is the odd one out |
+| B12 I/O | Auto-promote + empty resolve are the only FS nits |
+| B13 / E17 | Warm/deep/IPC threading is sound |
+| B14 Caching | Usage/typo debounce; config Arc; deep/live in Files |
+| E16 unsafe | Pass |
+| E18 panics | Lock unwraps only |
+| E20 over-opt | Restraint good; no Core rewrites without bench |
 
 #### What already looks good
 
-- 
+- `Engine::search` ranking policy is explicit and documented in comments (apps vs files bands)
+- Translate / calc short-circuits prevent deep-walk stutters (comment in `should_deep_search`)
+- Dedup keeps first occurrence without `HashSet<String>` of owned ids
+- Config: Arc snapshot + equality-gated save (no thrash on no-op updates)
+- Usage: compact JSON, debounce, prune cap, `Drop` flush
+- IPC: stale socket reclaim, 0600 perms, short timeouts, optional ack
+- Headless engine for CLI/bench without eternal 45m thread
+- Feature-gated bench module so default builds stay small
 
 #### Suggested measurements
 
 ```bash
-# Release binary (always measure release for perf claims)
 cargo build --release --features "layer-shell,bench"
-
-# Built-in micro-bench CLI (if enabled)
 ./target/release/blink --bench
 
-# Optional: CPU / alloc profiling when chasing a finding
-# perf record / samply / heaptrack / dhat — pick what fits the suspect path
+# Empty-open / open-file latency if chasing P2s
+# samply record ./target/release/blink --daemon
 ```
 
-#### Fixes applied
+| Experiment | Success signal |
+|------------|----------------|
+| `iso_files` / `file` cases in `--bench` | Regression guard after any engine merge change |
+| Open file under deep tree | Wall time of `execute(OpenPath)` before/after promote deferral |
+| Empty query open | Time to first paint / first `empty_results` |
 
-- [ ] …
+#### Priority order for fixes (optional)
+
+1. **Defer or gate `maybe_auto_promote_deep_root`** if open feels slow on large/network trees  
+2. **Typo save: compact JSON + atomic rename** (parity with usage)  
+3. **Empty-state resolve:** fewer `exists` calls  
+4. Lock policy / `parking_lot` when touching concurrency  
+5. Do **not** micro-opt `usage.boost` or Levenshtein without numbers  
+
+#### Fixes applied (2026-07-23)
+
+- [x] **Deep-root auto-promote** — skip if path already under a pin; FS marker walk + promote on a **background thread** (no UI-thread `exists` storm); shared `promote_deep_root_arcs` for worker
+- [x] **Typos save** — compact `serde_json::to_vec` + atomic `.json.tmp` rename (parity with usage); test `save_is_compact_json`
+- [x] **Empty results** — cap path resolves to 8; `resolve_path` uses one `symlink_metadata` (not `exists` + `is_dir`)
+- [x] **Lock poison recovery** — `unwrap_or_else(|p| p.into_inner())` on config / usage / typo / mounts read used by resolve
+- [x] Tests: **74 passed**, 2 ignored
 
 ---
+
+
 
 ## Part 2 — UI Shell
 

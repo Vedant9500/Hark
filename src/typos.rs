@@ -85,7 +85,7 @@ impl TypoStore {
     /// O(1) lookup. Returns `(result_id, score_boost)` when an alias exists.
     pub fn lookup(&self, query: &str) -> Option<(String, i64)> {
         let key = normalize_alias(query)?;
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let e = g.aliases.get(&key)?;
         let boost = if e.count >= STRONG_COUNT {
             BOOST_STRONG
@@ -145,7 +145,7 @@ impl TypoStore {
 
     fn record_alias(&self, key: &str, result_id: &str) {
         let now = now_secs();
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         match g.aliases.get_mut(key) {
             Some(e) if e.id == result_id => {
                 e.count = e.count.saturating_add(1);
@@ -182,18 +182,31 @@ impl TypoStore {
         if !self.dirty.load(Ordering::Relaxed) {
             return;
         }
-        let mut last = self.last_save.lock().unwrap();
-        if !force && last.elapsed() < SAVE_DEBOUNCE {
-            return;
+        {
+            let last = self.last_save.lock().unwrap_or_else(|p| p.into_inner());
+            if !force && last.elapsed() < SAVE_DEBOUNCE {
+                return;
+            }
         }
-        let data = self.inner.read().unwrap().clone();
+        self.save();
+    }
+
+    /// Compact JSON + atomic replace (parity with [`crate::usage::UsageStore`]).
+    fn save(&self) {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Ok(s) = serde_json::to_string_pretty(&data) {
-            let _ = fs::write(&self.path, s);
+        let data = {
+            let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
+            match serde_json::to_vec(&*g) {
+                Ok(v) => v,
+                Err(_) => return,
+            }
+        };
+        let tmp = self.path.with_extension("json.tmp");
+        if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
             self.dirty.store(false, Ordering::Relaxed);
-            *last = Instant::now();
+            *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         }
     }
 
@@ -205,7 +218,7 @@ impl TypoStore {
 
     /// All aliases, strongest first (for Settings).
     pub fn list(&self) -> Vec<TypoAlias> {
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let now = now_secs();
         let mut items: Vec<TypoAlias> = g
             .aliases
@@ -226,7 +239,7 @@ impl TypoStore {
     pub fn remove(&self, alias: &str) -> bool {
         let key = alias.trim().to_lowercase();
         let removed = {
-            let mut g = self.inner.write().unwrap();
+            let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             g.aliases.remove(&key).is_some()
         };
         if removed {
@@ -239,7 +252,7 @@ impl TypoStore {
     /// Drop every learned alias.
     pub fn clear_all(&self) {
         {
-            let mut g = self.inner.write().unwrap();
+            let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             if g.aliases.is_empty() {
                 return;
             }
@@ -258,7 +271,7 @@ impl TypoStore {
         }
         let now = now_secs();
         {
-            let mut g = self.inner.write().unwrap();
+            let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             g.aliases.insert(
                 key,
                 AliasEntry {
@@ -279,7 +292,11 @@ impl TypoStore {
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().aliases.len()
+        self.inner
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .aliases
+            .len()
     }
 }
 
@@ -561,5 +578,19 @@ mod tests {
         assert!(normalize_alias("~/foo").is_none());
         assert!(normalize_alias("15% of 80").is_none());
         assert_eq!(normalize_alias("  Wats  ").as_deref(), Some("wats"));
+    }
+
+    #[test]
+    fn save_is_compact_json() {
+        let store = temp_store();
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        store.flush();
+        let raw = fs::read_to_string(&store.path).expect("read typos");
+        assert!(
+            !raw.contains("\n  "),
+            "expected compact JSON without pretty indentation"
+        );
+        assert!(raw.contains("wats"));
+        let _ = fs::remove_file(&store.path);
     }
 }

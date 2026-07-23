@@ -66,7 +66,7 @@ impl UsageStore {
         }
         let now = now_secs();
         {
-            let mut g = self.inner.write().unwrap();
+            let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             let e = g.entries.entry(id.to_string()).or_default();
             e.count = e.count.saturating_add(1);
             e.last = now;
@@ -79,7 +79,7 @@ impl UsageStore {
     }
 
     pub fn boost(&self, id: &str) -> i64 {
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let Some(e) = g.entries.get(id) else {
             return 0;
         };
@@ -88,7 +88,7 @@ impl UsageStore {
 
     /// Top ids by frecency, highest first.
     pub fn top(&self, n: usize) -> Vec<(String, i64)> {
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let now = now_secs();
         let mut items: Vec<(String, i64)> = g
             .entries
@@ -106,7 +106,7 @@ impl UsageStore {
         if n == 0 {
             return Vec::new();
         }
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let now = now_secs();
         let mut items: Vec<(String, i64)> = g
             .entries
@@ -134,7 +134,7 @@ impl UsageStore {
             return;
         }
         {
-            let last = self.last_save.lock().unwrap();
+            let last = self.last_save.lock().unwrap_or_else(|p| p.into_inner());
             if !force && last.elapsed() < SAVE_DEBOUNCE {
                 return;
             }
@@ -148,20 +148,16 @@ impl UsageStore {
         }
         // Compact JSON — humans rarely edit usage; pretty was pure overhead.
         let data = {
-            let g = self.inner.read().unwrap();
+            let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
             match serde_json::to_vec(&*g) {
                 Ok(v) => v,
                 Err(_) => return,
             }
         };
         let tmp = self.path.with_extension("json.tmp");
-        if fs::write(&tmp, data).is_ok() {
-            if fs::rename(&tmp, &self.path).is_ok() {
-                self.dirty.store(false, Ordering::Relaxed);
-                if let Ok(mut last) = self.last_save.lock() {
-                    *last = Instant::now();
-                }
-            }
+        if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
+            self.dirty.store(false, Ordering::Relaxed);
+            *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         }
     }
 }

@@ -92,17 +92,20 @@ impl FileProvider {
     }
 
     pub fn resolve_path(&self, path: &Path) -> Option<SearchResult> {
-        if !path.exists() {
-            return None;
-        }
-        let is_dir = path.is_dir();
+        // One syscall (not exists() + is_dir()). Missing paths drop out.
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        let is_dir = meta.is_dir();
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
         let path_style = self.state.config.with(|c| c.index.path_style.clone());
-        let mounts = self.state.mounts.read().unwrap();
+        let mounts = self
+            .state
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         Some(SearchResult {
             id: format!("path:{}", path.display()),
             title: name,
@@ -184,7 +187,7 @@ impl FileProvider {
         if deep != DeepMode::Skip {
             // Move into Arc cache once; return a Vec clone of the shared slice
             // (avoids holding two full owned Vecs like `put(results.clone())`).
-            return self.live_cache.put_returning(query, results);
+            return self.live_cache.put(query, results);
         }
         if let Some(cached) = self.live_cache.get(query) {
             // UI path: merge previous live hits into index-only results.

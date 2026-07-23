@@ -83,16 +83,12 @@ impl LiveCache {
         Some(entry.hits.clone())
     }
 
-    pub fn put(&self, query: &str, hits: Vec<SearchResult>) {
-        let _ = self.put_returning(query, hits);
-    }
-
     /// Cache `hits` and return them for the caller.
     ///
     /// Moves into an `Arc` once, stores that Arc, then clones elements out for the
     /// return `Vec` — avoids the old `results.clone()` + `put(clone)` pattern that
     /// briefly held two full owned vectors before the Arc conversion.
-    pub fn put_returning(&self, query: &str, hits: Vec<SearchResult>) -> Vec<SearchResult> {
+    pub fn put(&self, query: &str, hits: Vec<SearchResult>) -> Vec<SearchResult> {
         let key = Self::key_for(query);
         if key.is_empty() {
             return hits;
@@ -168,7 +164,7 @@ mod tests {
     #[test]
     fn put_get_and_key_normalize() {
         let c = LiveCache::new();
-        c.put("Foo.Bar", vec![hit("a")]);
+        let _ = c.put("Foo.Bar", vec![hit("a")]);
         assert_eq!(c.get("foo.bar").unwrap().len(), 1);
         assert_eq!(c.get("f foo.bar").unwrap().len(), 1);
         assert_eq!(c.get("file foo.bar").unwrap().len(), 1);
@@ -182,7 +178,7 @@ mod tests {
     #[test]
     fn empty_hits_negative_cached() {
         let c = LiveCache::new();
-        c.put("x", Vec::new());
+        let _ = c.put("x", Vec::new());
         assert_eq!(c.len(), 1);
         assert!(c.contains("x"));
         let hits = c.get("x").unwrap();
@@ -193,7 +189,7 @@ mod tests {
     fn contains_true_when_present() {
         let c = LiveCache::new();
         assert!(!c.contains("x"));
-        c.put("x", vec![hit("a")]);
+        let _ = c.put("x", vec![hit("a")]);
         assert!(c.contains("x"));
         assert!(c.contains("f x"));
     }

@@ -587,12 +587,12 @@ impl ConfigStore {
 
     /// Cheap shared handle to the current config (clone Arc only).
     pub fn snapshot(&self) -> Arc<BlinkConfig> {
-        self.inner.read().unwrap().clone()
+        self.inner.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Borrow config without cloning the full snapshot (hot paths).
     pub fn with<R>(&self, f: impl FnOnce(&BlinkConfig) -> R) -> R {
-        let g = self.inner.read().unwrap();
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         f(g.as_ref())
     }
 
@@ -600,7 +600,7 @@ impl ConfigStore {
     /// Swaps the Arc and writes disk **only when** the result differs from the
     /// previous snapshot (no-op promote/settings toggles must not thrash I/O).
     pub fn update<F: FnOnce(&mut BlinkConfig)>(&self, f: F) {
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         let mut cfg = (**g).clone();
         f(&mut cfg);
         cfg.ui.sanitize();

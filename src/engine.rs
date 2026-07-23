@@ -275,8 +275,18 @@ impl Engine {
         let mut results = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // Frecency top items
+        // Prefer apps first (no FS). Paths use a single metadata syscall and a
+        // hard cap so empty-open never hammers the disk with 20× exists/is_dir.
+        const MAX_PATH_RESOLVES: usize = 8;
+        let mut path_resolves = 0usize;
+
         for (id, score) in self.usage.top(20) {
+            if id.starts_with("path:") {
+                if path_resolves >= MAX_PATH_RESOLVES {
+                    continue;
+                }
+                path_resolves += 1;
+            }
             if let Some(mut r) = self.resolve_id(&id) {
                 r.score = 50_000 + score;
                 if seen.insert(r.id.clone()) {
@@ -321,8 +331,8 @@ impl Engine {
                 ExecuteOutcome::Launched
             }
             Action::OpenPath(path) => {
-                // Auto-promote parent project folder so future deep walks prefer it.
-                maybe_auto_promote_deep_root(self, path);
+                // Promote project roots off the UI thread (marker walks are FS-heavy).
+                self.schedule_auto_promote_deep_root(path);
                 let cfg = self.config.snapshot();
                 crate::providers::files::open_path_with(path, Some(&cfg.open_with));
                 ExecuteOutcome::Launched
@@ -629,21 +639,63 @@ pub enum ExecuteOutcome {
     TogglePreview,
 }
 
+impl Engine {
+    /// Cheap UI-thread gate, then FS marker walk + promote on a background thread.
+    fn schedule_auto_promote_deep_root(&self, path: &std::path::Path) {
+        // Already covered by a pinned deep root — nothing to do.
+        if path_under_any_deep_root(path, &self.config.snapshot().index.deep_roots) {
+            return;
+        }
+        let path = path.to_path_buf();
+        let config = self.config.clone();
+        let files = self.files.clone();
+        let apps = self.apps.clone();
+        thread::spawn(move || {
+            auto_promote_deep_root(&config, &files, &apps, &path);
+        });
+    }
+}
+
+/// True when `path` is equal to or nested under any configured deep root.
+fn path_under_any_deep_root(path: &std::path::Path, deep_roots: &[String]) -> bool {
+    for r in deep_roots {
+        let root = std::path::Path::new(r);
+        if root.as_os_str().is_empty() {
+            continue;
+        }
+        if path == root || path.starts_with(root) {
+            return true;
+        }
+    }
+    false
+}
+
 /// When the user opens a file deeper than the global index depth, promote a
 /// nearby project root so future deep walks prefer it. Never writes live hits
 /// into the persistent index — only pins a folder as a deep root.
 ///
 /// Never promotes `$HOME` / `/` even if a stray `package.json` (etc.) sits there.
-fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
+/// Runs on a worker thread — do not call from the GTK main loop.
+fn auto_promote_deep_root(
+    config: &ConfigStore,
+    files: &FileProvider,
+    apps: &AppProvider,
+    path: &std::path::Path,
+) {
     // Prefer the directory containing the file; if already a dir, use it.
-    let start = if path.is_dir() {
-        path.to_path_buf()
-    } else {
-        match path.parent() {
+    // Use symlink_metadata once instead of is_dir() (which may stat again).
+    let start = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => path.to_path_buf(),
+        Ok(_) | Err(_) => match path.parent() {
             Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
             _ => return,
-        }
+        },
     };
+
+    // Re-check after the open path may have raced with a settings change.
+    if path_under_any_deep_root(path, &config.snapshot().index.deep_roots) {
+        return;
+    }
 
     // Walk up a few levels looking for a project marker.
     const MARKERS: &[&str] = &[
@@ -664,7 +716,7 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
         }
         for m in MARKERS {
             if cur.join(m).exists() {
-                engine.promote_deep_root(&cur);
+                promote_deep_root_arcs(config, files, apps, &cur);
                 return;
             }
         }
@@ -675,8 +727,51 @@ fn maybe_auto_promote_deep_root(engine: &Engine, path: &std::path::Path) {
     }
 }
 
+/// Same as [`Engine::promote_deep_root`] but for background threads (owned Arcs).
+fn promote_deep_root_arcs(
+    config: &ConfigStore,
+    files: &FileProvider,
+    apps: &AppProvider,
+    path: &std::path::Path,
+) {
+    const MAX_DEEP_ROOTS: usize = 32;
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let abs = abs.canonicalize().unwrap_or(abs);
+    if crate::config::is_forbidden_deep_root(&abs) {
+        return;
+    }
+    let s = abs.to_string_lossy().to_string();
+    if s.is_empty() {
+        return;
+    }
+    let mut changed = false;
+    config.update(|c| {
+        if c.index.deep_roots.iter().any(|x| x == &s) {
+            return;
+        }
+        c.index.deep_roots.push(s);
+        if c.index.deep_roots.len() > MAX_DEEP_ROOTS {
+            let drop_n = c.index.deep_roots.len() - MAX_DEEP_ROOTS;
+            c.index.deep_roots.drain(0..drop_n);
+        }
+        changed = true;
+    });
+    if changed {
+        // Match Engine::force_reindex — off UI by construction here.
+        apps.reload();
+        files.force_rebuild();
+    }
+}
+
 #[cfg(test)]
 mod deep_root_tests {
+    use super::path_under_any_deep_root;
     use crate::config::is_forbidden_deep_root;
     use std::path::Path;
 
@@ -694,6 +789,20 @@ mod deep_root_tests {
             let project = home.join("blink");
             assert!(!is_forbidden_deep_root(&project));
         }
+    }
+
+    #[test]
+    fn under_deep_root_prefix() {
+        let roots = vec!["/home/u/proj".into(), "/mnt/d/code".into()];
+        assert!(path_under_any_deep_root(
+            Path::new("/home/u/proj/src/main.rs"),
+            &roots
+        ));
+        assert!(path_under_any_deep_root(Path::new("/home/u/proj"), &roots));
+        assert!(!path_under_any_deep_root(
+            Path::new("/home/u/other/file"),
+            &roots
+        ));
     }
 }
 
