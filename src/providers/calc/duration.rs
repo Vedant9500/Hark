@@ -1,10 +1,17 @@
+use super::timezone::parse_clock;
 use super::util::{relative_secs, result_calc};
-use crate::providers::SearchResult;
+use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase();
+
+    // Clock range: "7:26 - 9:32", "7:26am to 9:32pm", "22:00 - 6:30"
+    if let Some(r) = try_clock_range(&lower, q) {
+        return Some(r);
+    }
+
     // Must look like multi-unit duration, not plain math or conversion
     if lower.contains(" to ") || lower.contains(" in ") || lower.contains(" as ") {
         return None;
@@ -76,6 +83,80 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     Some(result_calc(title.clone(), format!("duration · {q}"), title))
 }
 
+/// Difference between two clock times on the same day (or overnight if end < start).
+///
+/// Accepts: `7:26 - 9:32`, `7:26-9:32`, `7:26 to 9:32`, `7:26am - 9:32pm`,
+/// `7:26:15 - 9:32:00`, `9pm - 11:30pm`.
+fn try_clock_range(lower: &str, original: &str) -> Option<SearchResult> {
+    // TIME SEP TIME — require at least one :mm (or am/pm on both sides) so bare
+    // math like "7 - 9" is not stolen.
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(concat!(
+            r"(?i)^\s*",
+            r"(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?",
+            r"\s*(?:-|–|—|to|until|till)\s*",
+            r"(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?",
+            r"\s*$",
+        ))
+        .unwrap()
+    });
+    let c = RE.captures(lower)?;
+
+    let start_min = c.get(2);
+    let start_ampm = c.get(4);
+    let end_min = c.get(6);
+    let end_ampm = c.get(8);
+
+    // Need a real clock signal: minutes and/or am/pm on at least one side,
+    // and not both sides bare hour-only without am/pm (avoids "7 - 9").
+    let start_clocky = start_min.is_some() || start_ampm.is_some();
+    let end_clocky = end_min.is_some() || end_ampm.is_some();
+    if !start_clocky && !end_clocky {
+        return None;
+    }
+    // If one side is bare hour and the other has only minutes without am/pm,
+    // still ok (e.g. "7 - 9:30"). Bare "7pm - 9" is ok via am/pm.
+
+    let (sh, sm, ss) = parse_clock(
+        c.get(1)?.as_str(),
+        start_min.map(|m| m.as_str()),
+        c.get(3).map(|m| m.as_str()),
+        start_ampm.map(|m| m.as_str()),
+    )?;
+    let (eh, em, es) = parse_clock(
+        c.get(5)?.as_str(),
+        end_min.map(|m| m.as_str()),
+        c.get(7).map(|m| m.as_str()),
+        end_ampm.map(|m| m.as_str()),
+    )?;
+
+    let start_secs = (sh * 3600 + sm * 60 + ss) as i64;
+    let mut end_secs = (eh * 3600 + em * 60 + es) as i64;
+    // Overnight: end before start → assume next day
+    if end_secs < start_secs {
+        end_secs += 24 * 3600;
+    }
+    let delta = (end_secs - start_secs) as f64;
+    let formatted = format_duration(delta);
+    let display = original.trim().to_string();
+    // Raycast-style dual-panel card (same layout as math / unit convert).
+    Some(SearchResult {
+        id: format!("calc:range:{display}:{formatted}"),
+        title: formatted.clone(),
+        subtitle: format!("time range · {display}"),
+        kind: ResultKind::Calc,
+        score: 10_000,
+        icon: Some("accessories-calculator".into()),
+        action: Action::Copy(formatted.clone()),
+        conversion: Some(ConversionView {
+            left_title: display,
+            left_badge: "time range".into(),
+            right_title: formatted,
+            right_badge: "duration".into(),
+        }),
+    })
+}
+
 pub(crate) fn format_duration(secs: f64) -> String {
     if secs < 0.001 {
         return "0s".into();
@@ -104,5 +185,71 @@ pub(crate) fn format_duration(secs: f64) -> String {
         "0s".into()
     } else {
         parts.join(" ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_duration, try_duration_expr};
+
+    #[test]
+    fn clock_range_basic() {
+        let r = try_duration_expr("7:26 - 9:32").expect("range");
+        assert_eq!(r.title, "2h 6min");
+        let conv = r.conversion.expect("card layout");
+        assert_eq!(conv.left_title, "7:26 - 9:32");
+        assert_eq!(conv.left_badge, "time range");
+        assert_eq!(conv.right_title, "2h 6min");
+        assert_eq!(conv.right_badge, "duration");
+    }
+
+    #[test]
+    fn clock_range_no_spaces() {
+        let r = try_duration_expr("7:26-9:32").expect("range");
+        assert_eq!(r.title, "2h 6min");
+    }
+
+    #[test]
+    fn clock_range_to_word() {
+        let r = try_duration_expr("7:26 to 9:32").expect("range");
+        assert_eq!(r.title, "2h 6min");
+    }
+
+    #[test]
+    fn clock_range_ampm() {
+        let r = try_duration_expr("7:26am - 9:32pm").expect("range");
+        assert_eq!(r.title, "14h 6min");
+    }
+
+    #[test]
+    fn clock_range_overnight() {
+        let r = try_duration_expr("22:00 - 6:30").expect("range");
+        assert_eq!(r.title, "8h 30min");
+    }
+
+    #[test]
+    fn clock_range_same_time() {
+        let r = try_duration_expr("12:00 - 12:00").expect("range");
+        assert_eq!(r.title, "0s");
+    }
+
+    #[test]
+    fn bare_hours_not_stolen() {
+        assert!(try_duration_expr("7 - 9").is_none());
+    }
+
+    #[test]
+    fn unit_duration_still_works() {
+        let r = try_duration_expr("10h 30min").expect("units");
+        assert_eq!(r.title, "10h 30min");
+        let r = try_duration_expr("2h + 30m").expect("ops");
+        assert_eq!(r.title, "2h 30min");
+    }
+
+    #[test]
+    fn format_duration_parts() {
+        assert_eq!(format_duration(0.0), "0s");
+        assert_eq!(format_duration(3661.0), "1h 1min 1s");
+        assert_eq!(format_duration(2.0 * 3600.0 + 6.0 * 60.0), "2h 6min");
     }
 }
