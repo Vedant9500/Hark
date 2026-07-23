@@ -31,8 +31,9 @@ pub fn show_open_with_picker(
         return;
     }
 
-    let apps = apps_for_path(&path);
+    // One content-type probe shared by the subtitle and app enumeration.
     let content_type = content_type_for_path(&path);
+    let apps = apps_for_content_type(&content_type);
     let type_label = gio::content_type_get_description(&content_type);
 
     ignore_focus_loss.set(true);
@@ -308,8 +309,7 @@ fn content_type_for_path(path: &Path) -> String {
     guess.to_string()
 }
 
-fn apps_for_path(path: &Path) -> Vec<gio::AppInfo> {
-    let ctype = content_type_for_path(path);
+fn apps_for_content_type(ctype: &str) -> Vec<gio::AppInfo> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
 
@@ -326,15 +326,15 @@ fn apps_for_path(path: &Path) -> Vec<gio::AppInfo> {
         }
     };
 
-    for app in gio::AppInfo::recommended_for_type(&ctype) {
+    for app in gio::AppInfo::recommended_for_type(ctype) {
         push(app, &mut seen, &mut out);
     }
-    for app in gio::AppInfo::all_for_type(&ctype) {
+    for app in gio::AppInfo::all_for_type(ctype) {
         push(app, &mut seen, &mut out);
     }
 
     // Some MIME types only have a default, not in all_for_type listings.
-    if let Some(app) = gio::AppInfo::default_for_type(&ctype, false) {
+    if let Some(app) = gio::AppInfo::default_for_type(ctype, false) {
         push(app, &mut seen, &mut out);
     }
 

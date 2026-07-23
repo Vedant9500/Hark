@@ -48,10 +48,6 @@ impl FileFp {
             mtime_ns,
         }
     }
-
-    fn of(path: &Path) -> Option<Self> {
-        std::fs::metadata(path).ok().map(|m| Self::from_meta(&m))
-    }
 }
 
 #[derive(Clone)]
@@ -321,7 +317,15 @@ impl PreviewPanel {
             }
         };
 
-        if path.is_dir() {
+        // One metadata probe for dir check, size/mtime labels, and texture fingerprint.
+        let fs_meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => {
+                self.clear();
+                return;
+            }
+        };
+        if fs_meta.is_dir() {
             self.clear();
             return;
         }
@@ -332,7 +336,8 @@ impl PreviewPanel {
             return;
         }
 
-        let meta = file_meta(&path);
+        let fp = FileFp::from_meta(&fs_meta);
+        let meta = file_meta_from(&path, &fs_meta);
         self.set_panel_visible(true);
         // Always offer the real file path for DnD from the preview.
         self.drag.set_path(Some(path.clone()));
@@ -345,7 +350,7 @@ impl PreviewPanel {
 
         // Images, video first-frame, and PDF page 1 share the picture pipeline.
         if media == MediaKind::Image || media == MediaKind::Video || is_pdf {
-            self.queue_image_load(path, item.title.clone(), meta);
+            self.queue_image_load(path, item.title.clone(), meta, fp);
             return;
         }
 
@@ -471,14 +476,8 @@ impl PreviewPanel {
     }
 
     /// Immediate cache path; debounce + single-flight decode while arrowing.
-    fn queue_image_load(&self, path: PathBuf, title: String, meta: String) {
-        let Some(fp) = FileFp::of(&path) else {
-            self.show_image_chrome(&title, &meta, "Could not load preview");
-            self.picture.set_paintable(Option::<&gdk::Paintable>::None);
-            *self.last_path.borrow_mut() = Some(path);
-            return;
-        };
-
+    /// `fp` comes from the single metadata probe in `update` (no second FS hit).
+    fn queue_image_load(&self, path: PathBuf, title: String, meta: String, fp: FileFp) {
         // Already showing this exact file revision — nothing to do.
         if self.last_path.borrow().as_ref() == Some(&path)
             && self.picture.paintable().is_some()
@@ -941,30 +940,64 @@ fn texture_from_pixels(px: DecodedPixels) -> Option<Texture> {
 }
 
 pub fn media_kind(path: &Path) -> MediaKind {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" | "tif" | "tiff"
-        | "heic" | "heif" | "avif" | "jxl" => MediaKind::Image,
-        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "wmv" | "flv" | "mpeg" | "mpg" => {
-            MediaKind::Video
-        }
-        "mp3" | "flac" | "ogg" | "wav" | "m4a" | "aac" | "opus" | "wma" | "aiff" => {
-            MediaKind::Audio
-        }
-        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "epub" | "xls" | "xlsx" | "ppt"
-        | "pptx" | "csv" => MediaKind::Document,
-        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" => MediaKind::Archive,
-        "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "h" | "cpp" | "hpp" | "java"
-        | "kt" | "swift" | "rb" | "php" | "sh" | "bash" | "zsh" | "toml" | "yaml" | "yml"
-        | "json" | "xml" | "html" | "css" | "scss" | "vue" | "svelte" | "lua" | "sql" => {
-            MediaKind::Code
-        }
-        _ => MediaKind::Other,
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return MediaKind::Other;
+    };
+    // Case-insensitive match without allocating a lowercased String.
+    if ext_is(
+        ext,
+        &[
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "heic",
+            "heif", "avif", "jxl",
+        ],
+    ) {
+        return MediaKind::Image;
     }
+    if ext_is(
+        ext,
+        &[
+            "mp4", "webm", "mkv", "mov", "avi", "m4v", "wmv", "flv", "mpeg", "mpg",
+        ],
+    ) {
+        return MediaKind::Video;
+    }
+    if ext_is(
+        ext,
+        &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "aiff"],
+    ) {
+        return MediaKind::Audio;
+    }
+    if ext_is(
+        ext,
+        &[
+            "pdf", "doc", "docx", "odt", "rtf", "txt", "md", "epub", "xls", "xlsx", "ppt", "pptx",
+            "csv",
+        ],
+    ) {
+        return MediaKind::Document;
+    }
+    if ext_is(
+        ext,
+        &["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst"],
+    ) {
+        return MediaKind::Archive;
+    }
+    if ext_is(
+        ext,
+        &[
+            "rs", "py", "js", "ts", "tsx", "jsx", "go", "c", "h", "cpp", "hpp", "java", "kt",
+            "swift", "rb", "php", "sh", "bash", "zsh", "toml", "yaml", "yml", "json", "xml",
+            "html", "css", "scss", "vue", "svelte", "lua", "sql",
+        ],
+    ) {
+        return MediaKind::Code;
+    }
+    MediaKind::Other
+}
+
+#[inline]
+fn ext_is(ext: &str, list: &[&str]) -> bool {
+    list.iter().any(|e| ext.eq_ignore_ascii_case(e))
 }
 
 fn icon_for_media(kind: MediaKind) -> &'static str {
@@ -1025,13 +1058,11 @@ fn media_badge(kind: MediaKind) -> &'static str {
     }
 }
 
-fn file_meta(path: &Path) -> String {
-    let mut parts = Vec::new();
-    if let Ok(meta) = std::fs::metadata(path) {
-        parts.push(format_size(meta.len()));
-        if let Ok(modified) = meta.modified() {
-            parts.push(format_modified(modified));
-        }
+fn file_meta_from(path: &Path, meta: &std::fs::Metadata) -> String {
+    let mut parts = Vec::with_capacity(3);
+    parts.push(format_size(meta.len()));
+    if let Ok(modified) = meta.modified() {
+        parts.push(format_modified(modified));
     }
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         parts.push(ext.to_ascii_uppercase());

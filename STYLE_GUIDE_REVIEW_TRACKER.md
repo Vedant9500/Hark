@@ -12,11 +12,11 @@ except where the Performance Book’s **build configuration** chapter applies (`
 |------|------|-------------|--------|
 | 1 | Core & App Shell | ~3,500 | ✅ complete |
 | 2 | UI Shell | ~3,780 | ✅ complete |
-| 3 | UI Features & Theme | ~4,750 | ⬜ pending |
+| 3 | UI Features & Theme | ~4,750 | ✅ complete |
 | 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
 | 5 | Files Provider | ~4,620 | ✅ complete |
 
-**Overall status:** 3 / 5 complete
+**Overall status:** 4 / 5 complete
 
 **References:**
 
@@ -496,39 +496,163 @@ Mostly cold paths (settings, theme apply) but preview can sit on the interactive
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/settings.rs` | ~2213 | ⬜ |
-| `src/ui/preview.rs` | ~1081 | ⬜ |
-| `src/theme/css.rs` | ~935 | ⬜ |
-| `src/ui/open_with.rs` | ~343 | ⬜ |
-| `src/theme/mod.rs` | ~175 | ⬜ |
+| `src/ui/settings.rs` | ~2213 | ✅ |
+| `src/ui/preview.rs` | ~1081 | ✅ |
+| `src/theme/css.rs` | ~935 | ✅ |
+| `src/ui/open_with.rs` | ~343 | ✅ |
+| `src/theme/mod.rs` | ~175 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewed:** —  
-**Against:** https://nnethercote.github.io/perf-book/
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23  
+**Against:**
+
+- [The Rust Performance Book](https://nnethercote.github.io/perf-book/)
+- [Effective Rust](https://www.effective-rust.com/)
 
 ### Reviewer notes
 
-_(fill during review)_
-
 #### Verdict
 
-_(one paragraph)_
+**Preview is the only interactive hot path; it is already well designed.** Debounce (45 ms),
+single-flight decode worker, gen tokens, FreeDesktop thumb first, LRU texture cache (24) with
+mtime/size fingerprint, and process spawns (`ffmpeg` / `pdftoppm`) off the GTK main loop —
+this is the right Performance Book shape for a media side-panel.
+
+Settings + theme are **cold / user-driven**: full settings UI is built once at launcher start
+(all pages eagerly), and appearance steppers re-read `scheme.json` and inject ~19 KB of CSS on
+every click. That can hitch while scrubbing opacity/radius, but it is not on the keystroke or
+result-list path. Open With is infrequent and does MIME + GIO app enumeration on the main thread
+when the popover opens — acceptable for a modal-ish picker (**E20**).
+
+**No Part-3 P1.** Remaining items are main-thread FS on selection, full CSS regenerate per
+tweak, eager settings construction, and small idiomatic nits.
 
 #### Findings
 
-##### P1 —
+##### P1 — none confined to UI Features & Theme
 
-##### P2 —
+Selection → `PreviewPanel::update` either paints a cache hit or schedules a debounced worker.
+Heavy decode never runs on the main loop. Settings/theme/open-with are off the search hot path.
+Do not rewrite CSS generation or settings structure without measuring (**E20**).
 
-##### P3 / Info —
+##### P2 — selection update does multiple main-thread FS probes (**B12**, **B5**) — **fixed**
+
+Was: `is_dir` + `file_meta` metadata + `FileFp::of` metadata (same inode thrice) and
+`media_kind` allocated a lowercased extension `String`.
+
+**Applied:** one `std::fs::metadata` in `update`; derive dir-ness, `FileFp`, and labels via
+`file_meta_from`; pass `fp` into `queue_image_load` (no second probe). `media_kind` uses
+`eq_ignore_ascii_case` against static lists (no alloc).
+
+##### P2 — every appearance tweak reloads scheme + regenerates full CSS (**B5**, **B12**, **B14**) — **fixed**
+
+Was: each stepper `theme.reload()` → re-read `scheme.json` + full CSS inject.
+
+**Applied:**
+
+- `ThemeManager` caches last `Theme` after `apply()` (startup + scheme monitor)
+- `reload()` is **UI-only** (`apply_ui_only`): uses cached colours + current `UiThemeConfig`
+- `reload()` debounced 60 ms; cancelled / gen-bumped when full `apply()` runs so stale
+  debounce callbacks do not fight scheme reloads
+
+Still regenerates ~19 KB CSS on inject (necessary for GTK) but skips scheme disk I/O on
+appearance steppers.
+
+##### P2 — settings builds all pages eagerly at app start (**B5**, **B10**) — **deferred (E20)**
+
+Still builds all eight pages in `SettingsPanel::new`. Lazy stack children is a larger
+refactor; skip until startup profiles show settings as a meaningful slice.
+
+##### P2 — Open With enumerates apps on the GTK main thread (**B12**) — **partial fix**
+
+Still runs GIO `recommended` / `all` / `default` on the main thread (cold path).
+
+**Applied:** single `content_type_for_path` shared by subtitle + `apps_for_content_type`
+(was probing content type twice). Full MIME→apps reuse via apps provider deferred (**E20**).
+
+##### P3 — `normalize_hex` both branches identical (**E3**) — **fixed**
+
+Collapsed to `format!("#{v}")` after trim.
+
+##### P3 — preview texture cache uses std `HashMap` + linear LRU vec (**B4**, **B6**)
+
+Cap 24 — std hasher is fine (**E20**). `touch_cache` / eviction scan `Vec` of 24 `PathBuf`s
+linearly — trivial. Same pattern as icon cache; no change required unless cache grows a lot.
+
+##### P3 — `resolve_icon_name` in preview hits `IconTheme::has_icon` (**B12**)
+
+Same class of cost as Part 2 row icons, only for icon-mode preview (audio / non-PDF docs).
+Infrequent vs list binds. Optional: share Part 2’s resolve cache.
+
+##### P3 — `Display::default().expect("display")` at theme init (**E18**)
+
+Startup-only; GTK without a display is fatal anyway. Acceptable.
+
+##### Info — CSS is one giant compile-time template (**B5**, **E20**)
+
+`css::render` interpolates theme tokens into a fixed ~19 KB stylesheet. No per-frame work.
+Alternative (load static CSS + GTK CSS variables) would be a design change, not a quick win.
+Leave as-is.
+
+##### Info — `pixbuf.pixels()` copy uses `unsafe` (**E16**)
+
+Documented need: GObject pixel view must be copied before send across threads. Scoped and
+justified; keep.
 
 #### What already looks good
 
-- 
+| Area | Why |
+|------|-----|
+| Preview debounce + gen | Latest selection wins; arrow spam does not stack decodes |
+| Single-flight worker | At most one decode thread; queue via `inflight` |
+| Texture LRU + `FileFp` | mtime/size invalidate; no stale pixels after overwrite |
+| FreeDesktop thumb first | Avoid re-decode when thumbnails already exist |
+| Video/PDF off-main | `ffmpeg` / `pdftoppm` only on worker thread |
+| Theme file monitor | Debounced 80 ms; **no** busy poll (battery-aware comment) |
+| Open With layer-shell | In-window popover avoids broken external portals |
+| Settings open-with picker | Uses engine app list, not full GIO rescan for defaults UI |
+| Soft-fail external tools | Missing ffmpeg/pdftoppm → “Could not load preview”, no panic |
+
+#### Effective Rust map (Part 3)
+
+| Item | Notes |
+|------|-------|
+| **E8** | Preview paths clone `PathBuf` for workers/closures — necessary for `'static` threads |
+| **E16** | One justified `unsafe` pixel copy in `pixbuf_to_pixels` |
+| **E17** | No shared locks in this part; `Rc`/`RefCell` GTK main-thread model |
+| **E18** | No production `.unwrap()` on fallible I/O; `expect("display")` only at theme boot |
+| **E20** | Do not over-optimize settings page build or CSS template without profiles |
+| **E27** | `open_with` has `//!`; preview/settings/theme thinner module docs |
 
 #### Suggested measurements
 
-- Theme rebuild / CSS inject frequency (once per change vs every frame).
+- Arrow through 50 large images with preview open: main-thread time in `update` vs worker
+- Hold opacity −/+ in Settings: time in `Theme::load` + `load_from_string` per click
+- Open With on a MIME type with many handlers: time to `popover.popup()`
+- Cold start: time spent in `SettingsPanel::new` vs rest of window setup
+
+#### Optional fixes — applied 2026-07-23
+
+| # | Fix | Status |
+|---|-----|--------|
+| 1 | Single `metadata` in preview `update` / `queue_image_load` | ✅ |
+| 2 | `ThemeManager` cached `Theme` + UI-only CSS path | ✅ |
+| 3 | Collapse `normalize_hex` | ✅ |
+| 4 | Debounce appearance `theme.reload` (60 ms) | ✅ |
+| 5a | Open With: one content-type probe | ✅ |
+| 5b | Lazy settings pages / Open With apps-provider reuse | ⬜ deferred (**E20**) |
+
+#### Part checklist (B/E coverage)
+
+| Check | Result |
+|-------|--------|
+| B5 Heap | CSS still regen on inject; `media_kind` no longer allocs; settings still eager |
+| B12 I/O | One metadata per selection; scheme disk only on apply/monitor; Open With GIO once CT |
+| B13 Concurrency | Preview single-flight good; no lock contention here |
+| B14 Caching | Texture LRU + cached theme colours for UI reloads |
+| E16 unsafe | Justified pixel copy |
+| E18 panic | Clean except display expect |
+| E20 over-opt | Lazy settings / MIME app cache left until measured |
 - Preview content load: size limits, cancellation when selection changes quickly.
 - Settings open cost (one-shot is fine if bounded).
 
