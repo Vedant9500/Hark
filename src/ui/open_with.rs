@@ -6,8 +6,8 @@
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation, Popover, PositionType,
-    ScrolledWindow, Widget,
+    Align, Box as GtkBox, GestureClick, Image, Label, ListBox, ListBoxRow, Orientation, Popover,
+    PositionType, ScrolledWindow, Widget,
 };
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -86,109 +86,19 @@ pub fn show_open_with_picker(
 
     let apps_rc = Rc::new(std::cell::RefCell::new(Vec::<gio::AppInfo>::new()));
 
-    if apps.is_empty() {
-        let row = ListBoxRow::new();
-        row.add_css_class("blink-action-panel-row");
-        row.set_sensitive(false);
-        let line = GtkBox::new(Orientation::Horizontal, 10);
-        line.set_margin_top(8);
-        line.set_margin_bottom(8);
-        line.set_margin_start(8);
-        line.set_margin_end(8);
-        let label = Label::new(Some("No compatible apps found"));
-        label.add_css_class("blink-action-panel-label");
-        line.append(&label);
-        row.set_child(Some(&line));
-        list.append(&row);
-    } else {
-        for app in &apps {
-            let row = ListBoxRow::new();
-            row.add_css_class("blink-action-panel-row");
-            row.set_activatable(true);
-
-            let line = GtkBox::new(Orientation::Horizontal, 10);
-            line.set_margin_top(6);
-            line.set_margin_bottom(6);
-            line.set_margin_start(8);
-            line.set_margin_end(8);
-
-            let icon = if let Some(gicon) = app.icon() {
-                Image::from_gicon(&gicon)
-            } else {
-                Image::from_icon_name("application-x-executable")
-            };
-            icon.set_pixel_size(22);
-            line.append(&icon);
-
-            let texts = GtkBox::new(Orientation::Vertical, 0);
-            texts.set_hexpand(true);
-            texts.set_halign(Align::Start);
-
-            let name = Label::new(Some(&app.name()));
-            name.add_css_class("blink-action-panel-label");
-            name.set_halign(Align::Start);
-            name.set_xalign(0.0);
-            texts.append(&name);
-
-            if let Some(id) = app.id() {
-                let id_l = Label::new(Some(id.as_str()));
-                id_l.add_css_class("blink-action-panel-shortcut");
-                id_l.set_halign(Align::Start);
-                id_l.set_xalign(0.0);
-                id_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                id_l.set_max_width_chars(32);
-                texts.append(&id_l);
-            }
-
-            line.append(&texts);
-            row.set_child(Some(&line));
-            list.append(&row);
-        }
-        *apps_rc.borrow_mut() = apps;
-        if let Some(row) = list.row_at_index(0) {
-            list.select_row(Some(&row));
-        }
-    }
-
-    // Always offer xdg-open / system default as last resort.
-    {
-        let row = ListBoxRow::new();
-        row.add_css_class("blink-action-panel-row");
-        row.set_activatable(true);
-        row.set_widget_name("__system_default__");
-
-        let line = GtkBox::new(Orientation::Horizontal, 10);
-        line.set_margin_top(6);
-        line.set_margin_bottom(6);
-        line.set_margin_start(8);
-        line.set_margin_end(8);
-
-        let icon = Image::from_icon_name("emblem-system-symbolic");
-        icon.set_pixel_size(22);
-        line.append(&icon);
-
-        let name = Label::new(Some("System default (xdg-open)"));
-        name.add_css_class("blink-action-panel-label");
-        name.set_halign(Align::Start);
-        name.set_hexpand(true);
-        line.append(&name);
-        row.set_child(Some(&line));
-        list.append(&row);
-    }
-
-    scroll.set_child(Some(&list));
-    outer.append(&header);
-    outer.append(&sub);
-    outer.append(&scroll);
-    popover.set_child(Some(&outer));
-
-    {
+    let firing = Rc::new(Cell::new(false));
+    let activate_row = {
         let apps_rc = apps_rc.clone();
         let path = path.clone();
         let window = window.clone();
         let popover_c = popover.clone();
         let ignore = ignore_focus_loss.clone();
-        list.connect_row_activated(move |_, row| {
+        let firing = firing.clone();
+        Rc::new(move |row: &ListBoxRow| {
+            if firing.get() {
+                return;
+            }
+            firing.set(true);
             let name = row.widget_name();
             if name.as_str() == "__system_default__" {
                 let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
@@ -209,10 +119,162 @@ pub fn show_open_with_picker(
                         window.set_visible(false);
                     }
                     Err(err) => {
+                        firing.set(false);
                         eprintln!("blink: open with launch failed: {}", err.message());
                     }
                 }
+            } else {
+                firing.set(false);
             }
+        })
+    };
+
+    if apps.is_empty() {
+        let row = ListBoxRow::new();
+        row.add_css_class("blink-action-panel-row");
+        row.set_sensitive(false);
+        let line = GtkBox::new(Orientation::Horizontal, 10);
+        line.set_margin_top(8);
+        line.set_margin_bottom(8);
+        line.set_margin_start(8);
+        line.set_margin_end(8);
+        line.set_can_target(false);
+        let label = Label::new(Some("No compatible apps found"));
+        label.add_css_class("blink-action-panel-label");
+        label.set_can_target(false);
+        line.append(&label);
+        row.set_child(Some(&line));
+        list.append(&row);
+    } else {
+        for app in &apps {
+            let row = ListBoxRow::new();
+            row.add_css_class("blink-action-panel-row");
+            row.set_activatable(true);
+
+            let line = GtkBox::new(Orientation::Horizontal, 10);
+            line.set_margin_top(6);
+            line.set_margin_bottom(6);
+            line.set_margin_start(8);
+            line.set_margin_end(8);
+            line.set_can_target(false);
+
+            let icon = if let Some(gicon) = app.icon() {
+                Image::from_gicon(&gicon)
+            } else {
+                Image::from_icon_name("application-x-executable")
+            };
+            icon.set_pixel_size(22);
+            icon.set_can_target(false);
+            line.append(&icon);
+
+            let texts = GtkBox::new(Orientation::Vertical, 0);
+            texts.set_hexpand(true);
+            texts.set_halign(Align::Start);
+            texts.set_can_target(false);
+
+            let name = Label::new(Some(&app.name()));
+            name.add_css_class("blink-action-panel-label");
+            name.set_halign(Align::Start);
+            name.set_xalign(0.0);
+            name.set_can_target(false);
+            texts.append(&name);
+
+            if let Some(id) = app.id() {
+                let id_l = Label::new(Some(id.as_str()));
+                id_l.add_css_class("blink-action-panel-shortcut");
+                id_l.set_halign(Align::Start);
+                id_l.set_xalign(0.0);
+                id_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                id_l.set_max_width_chars(32);
+                id_l.set_can_target(false);
+                texts.append(&id_l);
+            }
+
+            line.append(&texts);
+            row.set_child(Some(&line));
+
+            {
+                let activate_row = activate_row.clone();
+                let click = GestureClick::new();
+                click.set_button(1);
+                click.connect_released(move |gesture, n_press, _x, _y| {
+                    if n_press != 1 || gesture.current_button() != 1 {
+                        return;
+                    }
+                    if let Some(widget) = gesture.widget() {
+                        if let Ok(r) = widget.downcast::<ListBoxRow>() {
+                            activate_row(&r);
+                        }
+                    }
+                });
+                row.add_controller(click);
+            }
+
+            list.append(&row);
+        }
+        *apps_rc.borrow_mut() = apps;
+        if let Some(row) = list.row_at_index(0) {
+            list.select_row(Some(&row));
+        }
+    }
+
+    // Always offer xdg-open / system default as last resort.
+    {
+        let row = ListBoxRow::new();
+        row.add_css_class("blink-action-panel-row");
+        row.set_activatable(true);
+        row.set_widget_name("__system_default__");
+
+        let line = GtkBox::new(Orientation::Horizontal, 10);
+        line.set_margin_top(6);
+        line.set_margin_bottom(6);
+        line.set_margin_start(8);
+        line.set_margin_end(8);
+        line.set_can_target(false);
+
+        let icon = Image::from_icon_name("emblem-system-symbolic");
+        icon.set_pixel_size(22);
+        icon.set_can_target(false);
+        line.append(&icon);
+
+        let name = Label::new(Some("System default (xdg-open)"));
+        name.add_css_class("blink-action-panel-label");
+        name.set_halign(Align::Start);
+        name.set_hexpand(true);
+        name.set_can_target(false);
+        line.append(&name);
+        row.set_child(Some(&line));
+
+        {
+            let activate_row = activate_row.clone();
+            let click = GestureClick::new();
+            click.set_button(1);
+            click.connect_released(move |gesture, n_press, _x, _y| {
+                if n_press != 1 || gesture.current_button() != 1 {
+                    return;
+                }
+                if let Some(widget) = gesture.widget() {
+                    if let Ok(r) = widget.downcast::<ListBoxRow>() {
+                        activate_row(&r);
+                    }
+                }
+            });
+            row.add_controller(click);
+        }
+
+        list.append(&row);
+    }
+
+    scroll.set_child(Some(&list));
+    outer.append(&header);
+    outer.append(&sub);
+    outer.append(&scroll);
+    popover.set_child(Some(&outer));
+
+    {
+        let activate_row = activate_row.clone();
+        list.connect_row_activated(move |_, row| {
+            activate_row(row);
         });
     }
 

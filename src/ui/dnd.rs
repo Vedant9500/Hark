@@ -187,13 +187,20 @@ fn end_session(session: &DragSession) {
     // Keep ignore_focus_loss a beat longer so any already-queued hide timer
     // still sees the guard, and so focus settling after drop does not
     // instantly kill the window / cancel a late data transfer.
+    //
+    // Dolphin/Nautilus "Copy here / Move here" often finish the file transfer
+    // *after* drag-end; hiding the layer-shell surface too early cancels the
+    // Wayland data source and the drop silently does nothing.
     let ignore = session.ignore_focus_loss.clone();
     ignore.set(true);
-    set_layer_keyboard_exclusive(session);
+    // Stay OnDemand until the transfer window closes — Exclusive + hide races
+    // with portal/file-manager drop completion under Hyprland.
+    set_layer_keyboard_ondemand(session);
 
     let session = session.clone();
-    glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
+    glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
         ignore.set(false);
+        set_layer_keyboard_exclusive(&session);
         // gio::Application::default is the running app (not gtk::Application::default,
         // which would construct a brand-new empty Application).
         let Some(app) = gio::Application::default() else {
@@ -212,7 +219,6 @@ fn end_session(session: &DragSession) {
                 w.set_visible(false);
             }
         }
-        let _ = session;
     });
 }
 

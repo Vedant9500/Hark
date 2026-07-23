@@ -3,8 +3,7 @@
 use crate::providers::ActionSpec;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Label, ListBox, ListBoxRow, Orientation, Popover, PositionType,
-    Widget,
+    Align, Box as GtkBox, Button, Label, Orientation, Popover, PositionType, Widget,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -13,11 +12,17 @@ type ActivateCb = Rc<RefCell<Option<Rc<dyn Fn(ActionSpec)>>>>;
 
 pub(crate) struct ActionPanel {
     popover: Popover,
-    list: ListBox,
+    /// Vertical stack of action buttons (not ListBox — row-activate is flaky
+    /// inside Popover under layer-shell; buttons always get real clicks).
+    list: GtkBox,
     items: Rc<RefCell<Vec<ActionSpec>>>,
     selected: Rc<Cell<usize>>,
     open: Rc<Cell<bool>>,
+    /// Prevents double-fire if a handler is invoked twice.
+    firing: Rc<Cell<bool>>,
     on_activate: ActivateCb,
+    /// Button widgets for selection highlight / keyboard nav.
+    buttons: Rc<RefCell<Vec<Button>>>,
 }
 
 impl ActionPanel {
@@ -41,11 +46,10 @@ impl ActionPanel {
         header.set_halign(Align::Start);
         header.set_margin_start(6);
         header.set_margin_bottom(2);
+        header.set_can_target(false);
 
-        let list = ListBox::new();
+        let list = GtkBox::new(Orientation::Vertical, 2);
         list.add_css_class("blink-action-panel-list");
-        list.set_selection_mode(gtk::SelectionMode::Single);
-        list.set_activate_on_single_click(true);
 
         outer.append(&header);
         outer.append(&list);
@@ -54,39 +58,16 @@ impl ActionPanel {
         let items = Rc::new(RefCell::new(Vec::new()));
         let selected = Rc::new(Cell::new(0));
         let open = Rc::new(Cell::new(false));
+        let firing = Rc::new(Cell::new(false));
         let on_activate: ActivateCb = Rc::new(RefCell::new(None));
+        let buttons = Rc::new(RefCell::new(Vec::new()));
 
         {
             let open = open.clone();
+            let firing = firing.clone();
             popover.connect_closed(move |_| {
                 open.set(false);
-            });
-        }
-
-        {
-            let selected = selected.clone();
-            list.connect_row_selected(move |_, row| {
-                if let Some(row) = row {
-                    selected.set(row.index() as usize);
-                }
-            });
-        }
-
-        {
-            let items = items.clone();
-            let popover = popover.clone();
-            let open = open.clone();
-            let on_activate = on_activate.clone();
-            list.connect_row_activated(move |_, row| {
-                let idx = row.index() as usize;
-                let spec = items.borrow().get(idx).cloned();
-                open.set(false);
-                popover.popdown();
-                if let Some(spec) = spec {
-                    if let Some(cb) = on_activate.borrow().clone() {
-                        cb(spec);
-                    }
-                }
+                firing.set(false);
             });
         }
 
@@ -96,7 +77,9 @@ impl ActionPanel {
             items,
             selected,
             open,
+            firing,
             on_activate,
+            buttons,
         })
     }
 
@@ -125,25 +108,31 @@ impl ActionPanel {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
+        self.buttons.borrow_mut().clear();
 
-        for spec in &specs {
-            let row = ListBoxRow::new();
-            row.add_css_class("blink-action-panel-row");
+        for (idx, spec) in specs.iter().enumerate() {
+            let btn = Button::new();
+            btn.add_css_class("blink-action-panel-row");
+            btn.add_css_class("flat");
+            btn.set_halign(Align::Fill);
+            btn.set_hexpand(true);
+            btn.set_focus_on_click(false);
             if spec.destructive {
-                row.add_css_class("destructive");
+                btn.add_css_class("destructive");
             }
-            row.set_activatable(true);
 
             let line = GtkBox::new(Orientation::Horizontal, 12);
-            line.set_margin_top(6);
-            line.set_margin_bottom(6);
-            line.set_margin_start(8);
-            line.set_margin_end(8);
+            line.set_margin_top(4);
+            line.set_margin_bottom(4);
+            line.set_margin_start(4);
+            line.set_margin_end(4);
+            line.set_can_target(false);
 
             let label = Label::new(Some(&spec.label));
             label.add_css_class("blink-action-panel-label");
             label.set_halign(Align::Start);
             label.set_hexpand(true);
+            label.set_can_target(false);
             if spec.destructive {
                 label.add_css_class("destructive");
             }
@@ -153,23 +142,42 @@ impl ActionPanel {
                 let hint = Label::new(Some(keys));
                 hint.add_css_class("blink-action-panel-shortcut");
                 hint.set_halign(Align::End);
+                hint.set_can_target(false);
                 line.append(&hint);
             }
 
-            row.set_child(Some(&line));
-            self.list.append(&row);
+            btn.set_child(Some(&line));
+
+            {
+                let items = self.items.clone();
+                let popover = self.popover.clone();
+                let open = self.open.clone();
+                let firing = self.firing.clone();
+                let on_activate = self.on_activate.clone();
+                let selected = self.selected.clone();
+                let buttons = self.buttons.clone();
+                btn.connect_clicked(move |_| {
+                    selected.set(idx);
+                    paint_selection(&buttons, idx);
+                    fire_activate(idx, &items, &open, &firing, &popover, &on_activate);
+                });
+            }
+
+            self.list.append(&btn);
+            self.buttons.borrow_mut().push(btn);
         }
 
         *self.items.borrow_mut() = specs;
         self.selected.set(0);
-        if let Some(row) = self.list.row_at_index(0) {
-            self.list.select_row(Some(&row));
-        }
+        self.firing.set(false);
+        paint_selection(&self.buttons, 0);
 
         self.open.set(true);
         self.popover.popup();
-        // Keep focus on list for ↑/↓/Enter inside the panel.
-        self.list.grab_focus();
+        // Focus first button so Enter works without re-selecting.
+        if let Some(btn) = self.buttons.borrow().first() {
+            btn.grab_focus();
+        }
         true
     }
 
@@ -187,8 +195,9 @@ impl ActionPanel {
             cur - 1
         };
         self.selected.set(next);
-        if let Some(row) = self.list.row_at_index(next as i32) {
-            self.list.select_row(Some(&row));
+        paint_selection(&self.buttons, next);
+        if let Some(btn) = self.buttons.borrow().get(next) {
+            btn.grab_focus();
         }
     }
 
@@ -200,4 +209,41 @@ impl ActionPanel {
         }
         spec
     }
+}
+
+fn paint_selection(buttons: &Rc<RefCell<Vec<Button>>>, selected: usize) {
+    for (i, btn) in buttons.borrow().iter().enumerate() {
+        if i == selected {
+            btn.add_css_class("selected");
+        } else {
+            btn.remove_css_class("selected");
+        }
+    }
+}
+
+fn fire_activate(
+    idx: usize,
+    items: &Rc<RefCell<Vec<ActionSpec>>>,
+    open: &Rc<Cell<bool>>,
+    firing: &Rc<Cell<bool>>,
+    popover: &Popover,
+    on_activate: &ActivateCb,
+) {
+    if firing.get() {
+        return;
+    }
+    let Some(spec) = items.borrow().get(idx).cloned() else {
+        return;
+    };
+    let Some(cb) = on_activate.borrow().clone() else {
+        eprintln!("blink: action panel activate with no callback");
+        return;
+    };
+    firing.set(true);
+    open.set(false);
+    // Close the popover *after* running the action. Deferring via idle let
+    // layer-shell focus-loss hide the window and swallow the click path
+    // (keyboard shortcuts still worked because they never used this path).
+    cb(spec);
+    popover.popdown();
 }

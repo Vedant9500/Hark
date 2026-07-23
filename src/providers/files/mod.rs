@@ -456,8 +456,15 @@ pub fn reveal_in_file_manager(path: &Path) {
     } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
         parent.to_path_buf()
     } else {
+        eprintln!("blink: reveal: path missing: {}", path.display());
         return;
     };
+
+    // FreeDesktop FileManager1 — works even when Dolphin is already open as a
+    // daemon, and is what most desktops implement for "show in folder".
+    if reveal_via_file_manager1(&path) {
+        return;
+    }
 
     // KDE Dolphin (common on this host)
     if which_bin("dolphin").is_some() {
@@ -484,6 +491,38 @@ pub fn reveal_in_file_manager(path: &Path) {
         path.parent().unwrap_or(path.as_path())
     };
     spawn_detached("xdg-open", &[&target.to_string_lossy()]);
+}
+
+/// `org.freedesktop.FileManager1.ShowItems` — select file(s) in the default manager.
+fn reveal_via_file_manager1(path: &Path) -> bool {
+    let file = gio::File::for_path(path);
+    let uri = file.uri();
+    let bus = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("blink: reveal: session bus: {}", err.message());
+            return false;
+        }
+    };
+    // ShowItems(as uris, s startup_id)
+    let result = bus.call_sync(
+        Some("org.freedesktop.FileManager1"),
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1",
+        "ShowItems",
+        Some(&(vec![uri.to_string()], "").to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        3000,
+        gio::Cancellable::NONE,
+    );
+    match result {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("blink: reveal: FileManager1.ShowItems: {}", err.message());
+            false
+        }
+    }
 }
 
 /// Move `path` to the FreeDesktop trash. Returns `Ok(())` on success.

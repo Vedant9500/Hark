@@ -562,21 +562,30 @@ popover.blink-action-panel .blink-action-panel-header {{
   border: none;
 }}
 
-.blink-action-panel-list > row {{
+/* ListBox rows (legacy) + Button rows (current panel). */
+.blink-action-panel-list > row,
+button.blink-action-panel-row {{
   background-color: transparent;
+  background-image: none;
   border-radius: 8px;
   margin: 1px 0;
-  padding: 0;
+  padding: 2px 4px;
   border: none;
   outline: none;
+  box-shadow: none;
+  min-height: 0;
 }}
 
-.blink-action-panel-list > row:hover {{
+.blink-action-panel-list > row:hover,
+button.blink-action-panel-row:hover {{
   background-color: {hover_bg};
 }}
 
 .blink-action-panel-list > row:selected,
-.blink-action-panel-list > row:selected:hover {{
+.blink-action-panel-list > row:selected:hover,
+button.blink-action-panel-row.selected,
+button.blink-action-panel-row.selected:hover,
+button.blink-action-panel-row:focus {{
   background-color: {selected_bg};
   border: 1px solid {border};
 }}
@@ -591,7 +600,9 @@ popover.blink-action-panel .blink-action-panel-header {{
   color: #f7768e;
 }}
 
-.blink-action-panel-row.destructive:selected .blink-action-panel-label {{
+.blink-action-panel-row.destructive:selected .blink-action-panel-label,
+button.blink-action-panel-row.destructive.selected .blink-action-panel-label,
+button.blink-action-panel-row.destructive:focus .blink-action-panel-label {{
   color: #f7768e;
 }}
 

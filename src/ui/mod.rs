@@ -505,9 +505,8 @@ impl Launcher {
                     }
                 };
                 let specs = engine.secondary_actions(&item);
-                if !action_panel.open_for(specs) {
-                    return;
-                }
+                // Wire the callback *before* opening so a fast click never
+                // races an empty on_activate.
                 let engine = engine.clone();
                 let window = window.clone();
                 let search = search.clone();
@@ -527,30 +526,40 @@ impl Launcher {
                 let ignore_focus_loss = ignore_focus_loss.clone();
                 let actions_chip = actions_chip.clone();
                 let item = item.clone();
-                action_panel.set_on_activate(Rc::new(move |spec| {
-                    run_secondary_action(
-                        &engine,
-                        spec,
-                        &item,
-                        &window,
-                        &search,
-                        &session_queries,
-                        &open_settings,
-                        &results,
-                        &selected,
-                        &list,
-                        &row_pool,
-                        &empty,
-                        &footer_action,
-                        &preview,
-                        &drag_session,
-                        &suppress_select,
-                        &ui_icon_size,
-                        &ui_symbolic,
-                        &ignore_focus_loss,
-                        &actions_chip,
-                    );
-                }));
+                // Popover click can briefly mark the layer window inactive;
+                // keep hide suppressed while the panel is open / action runs.
+                ignore_focus_loss.set(true);
+                {
+                    let ignore_focus_loss = ignore_focus_loss.clone();
+                    action_panel.set_on_activate(Rc::new(move |spec| {
+                        ignore_focus_loss.set(true);
+                        run_secondary_action(
+                            &engine,
+                            spec,
+                            &item,
+                            &window,
+                            &search,
+                            &session_queries,
+                            &open_settings,
+                            &results,
+                            &selected,
+                            &list,
+                            &row_pool,
+                            &empty,
+                            &footer_action,
+                            &preview,
+                            &drag_session,
+                            &suppress_select,
+                            &ui_icon_size,
+                            &ui_symbolic,
+                            &ignore_focus_loss,
+                            &actions_chip,
+                        );
+                    }));
+                }
+                if !action_panel.open_for(specs) {
+                    ignore_focus_loss.set(false);
+                }
             })
         };
 
