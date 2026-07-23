@@ -11,12 +11,12 @@ except where the Performance Book’s **build configuration** chapter applies (`
 | Part | Name | Approx. LOC | Status |
 |------|------|-------------|--------|
 | 1 | Core & App Shell | ~3,500 | ✅ complete |
-| 2 | UI Shell | ~3,780 | ⬜ pending |
+| 2 | UI Shell | ~3,780 | ✅ complete |
 | 3 | UI Features & Theme | ~4,750 | ⬜ pending |
 | 4 | Providers (Apps, Calc, FX, HTTP, Translate) | ~5,030 | ⬜ pending |
 | 5 | Files Provider | ~4,620 | ✅ complete |
 
-**Overall status:** 2 / 5 complete
+**Overall status:** 3 / 5 complete
 
 **References:**
 
@@ -308,49 +308,186 @@ Watch for per-keystroke work, full list rebuilds, icon/thumbnail I/O on the GTK 
 
 | File | LOC | Status |
 |------|-----|--------|
-| `src/ui/mod.rs` | ~2197 | ⬜ |
-| `src/ui/rows.rs` | ~496 | ⬜ |
-| `src/ui/dnd.rs` | ~368 | ⬜ |
-| `src/ui/action_panel.rs` | ~247 | ⬜ |
-| `src/ui/thumbnails.rs` | ~225 | ⬜ |
-| `src/ui/style.css` | 166 | ⬜ (CSS; book applies only where it affects paint cost) |
-| `src/ui/footer.rs` | 80 | ⬜ |
+| `src/ui/mod.rs` | ~2197 | ✅ |
+| `src/ui/rows.rs` | ~496 | ✅ |
+| `src/ui/dnd.rs` | ~368 | ✅ |
+| `src/ui/action_panel.rs` | ~247 | ✅ |
+| `src/ui/thumbnails.rs` | ~225 | ✅ |
+| `src/ui/style.css` | 166 | ✅ (CSS; paint cost only) |
+| `src/ui/footer.rs` | 80 | ✅ |
 
-**Part status:** ⬜ pending  
-**Reviewed:** —  
-**Against:** https://nnethercote.github.io/perf-book/
+**Part status:** ✅ complete  
+**Reviewed:** 2026-07-23  
+**Against:**
+
+- [The Rust Performance Book](https://nnethercote.github.io/perf-book/)
+- [Effective Rust](https://www.effective-rust.com/)
 
 ### Reviewer notes
 
-_(fill during review)_
-
 #### Verdict
 
-_(one paragraph)_
+**Strong interactive architecture; remaining cost is mostly engine/providers, not widget churn.**
+The shell already applies the right Performance Book / Effective Rust lessons for a GTK launcher:
+keystroke debounce, row **pool** rebind (no per-search widget trees), generation tokens to drop
+stale async deep/translate, single-flight worker queues, DnD guard against mid-drag rebind, and
+cached UI knobs (`ui_icon_size` / symbolic / compact) so search does not clone full config.
+
+No Part-2 **P1** that is clearly user-visible after Parts 1 and 5. Optional P2/P3: icon theme
+`has_icon` on first bind of a name, main-thread FreeDesktop thumb I/O on drag begin, heavy
+`Rc` clone fan-out in `refresh_results` / closures (idiomatic GTK, not free), and action-panel
+rebuild of all buttons on each open.
+
+Preview/settings/theme are **Part 3** — not fully scored here even where `mod.rs` calls them.
 
 #### Findings
 
-##### P1 —
+##### P1 — none confined to UI Shell
 
-##### P2 —
+Keystroke path: debounce → `engine.search` → `ResultRowPool::apply` (≤25 binds) → optional
+async deep/translate. Widget work is bounded; search cost is still dominated by providers
+(Files/apps). Do not rewrite the shell without `blink --bench` + typing latency numbers (**E20**).
 
-##### P3 / Info —
+##### P2 — icon resolve can hit `IconTheme::has_icon` on cache miss (**B5**, **B12**)
+
+`rows.rs` `resolve_row_icon` / `resolve_row_icon_uncached`:
+
+- Thread-local cache (cap 512, then clear) — good (**B14**)
+- On miss: up to two `theme.has_icon` calls (symbolic candidate + base) on the **GTK main thread**
+- Cache key rebuilds with `format!` on insert and again when re-inserting after clear
+
+First time a given icon name appears in a session can stall a frame slightly (theme lookup).
+Steady typing after warm cache is fine.
+
+**Fix ideas:** pre-warm common icons at startup; LRU instead of full clear at 512; store
+`&'static str` / interned names where possible; avoid double `format!` when re-inserting after clear.
+
+##### P2 — drag thumbnail path does sync FS on main thread (**B12**)
+
+`dnd.rs` `drag_thumbnail_icon` → `freedesktop_thumbnail`:
+
+- `canonicalize`, up to 3 `is_file` probes under `~/.cache/thumbnails/…`
+- Only for image extensions; comment notes thumbs are small and already on disk
+- Drag begin is infrequent vs keystrokes — acceptable, but network home / cold cache can hitch
+
+**Fix ideas:** memoize last path→thumb; skip canonicalize when path is already absolute and known;
+load texture async only if first hit is slow (probably overkill — **E20**).
+
+##### P2 — `refresh_results` clones full result vec before deep gate (**B5**)
+
+```rust
+let current = results.borrow().clone();
+if !engine.should_deep_search(&q, &current) { return; }
+```
+
+`should_deep_search` only needs scores/kinds/ids. Cloning ≤25 `SearchResult`s is small but
+unnecessary if the API accepted a slice of the borrowed vec (`results.borrow()` +
+`should_deep_search(&q, &results.borrow())` with restructure, or a lighter view type).
+
+Also: many `Rc`/`Arc`/widget clones when scheduling translate + deep futures — normal for
+glib closures; not free, but not the bottleneck (**E8**).
+
+##### P2 — action panel rebuilds entire button list every open (**B5**)
+
+`ActionPanel::open_for` removes all children and builds new `Button` trees per open. Specs are
+few (usually &lt; 10). Fine for now; a tiny pool would only matter if profiling shows open lag.
+
+##### P3 — icon cache clear thrash (**B14**)
+
+At 513 entries the whole map is cleared. Bursty unique icons (many different file types) can
+oscillate. Prefer random eviction / simple LRU ring of 512.
+
+##### P3 — custom MD5 in `thumbnails.rs` (**E20**, deps)
+
+Hand-rolled MD5 for FreeDesktop names — correct and dependency-free. Not a hot keystroke path.
+Leave unless you already pull a hash crate for something else.
+
+##### P3 — CSS (`style.css`)
+
+Not Rust. Fixed-width shell, no per-frame style injection in this part (theme inject is Part 3).
+No performance action.
+
+##### P3 / Effective Rust
+
+| Topic | Assessment |
+|-------|------------|
+| **E1** `DragSession`, `ActionPanel`, pool modes | Clear domain split |
+| **E8** `Rc`/`Cell`/`RefCell` for GTK single-thread | Correct model; large clone fan-out is the tax |
+| **E16** | No `unsafe` in Part 2 sources reviewed |
+| **E17** | Deep/translate workers + gen tokens + single-flight queues — good shared-state discipline |
+| **E18** | Few unwraps in shell; worker queues still `lock().unwrap()` (same poison note as Part 1) |
+| **E20** | Debounce 40ms / translate 180ms, compact idle skip search, drag rebind guard — purposeful |
+| **E27** | `rows`, `dnd`, `action_panel`, `thumbnails` have `//!`; `footer` thinner |
+| **E30** | Tab-complete unit tests in `mod.rs`; row pool behavior is integration-hard without GTK |
+
+##### Info — architecture already aligned with the books
+
+| Pattern | Where | Book lens |
+|---------|--------|-----------|
+| Search debounce 40ms; translate 180ms | `mod.rs` | **B5**, typing CPU |
+| Compact idle: skip `engine.search` when body hidden | `refresh_results` | **E20**, **B14** |
+| `ResultRowPool` rebind; remove unused rows (height) | `rows.rs` | **B5**, GTK layout |
+| Icon resolve cache (TLS HashMap) | `rows.rs` | **B14** |
+| UI knobs in `Cell` (no config clone per search) | `Launcher` | **B5**, **E8** |
+| `deep_gen` invalidates stale async applies | `mod.rs` | **B13**, races |
+| Single-flight deep + translate workers | `schedule_*_job` | **B13**, **E17** |
+| Skip row rebind while DnD active | `refresh_results` | correctness + perf |
+| Network translate never on main | comment + worker | **B12** |
+| FreeDesktop thumb read for drag (no full decode) | `dnd.rs` | **B12** |
+
+#### Checklist snapshot (Part 2)
+
+| Lens | Result |
+|------|--------|
+| B5 Allocations | Pool good; result clone before deep gate; Rc fan-out |
+| B12 I/O | Icon theme + drag thumb on main (bounded) |
+| B13 / E17 | Workers + gen + single-flight solid |
+| B14 Caching | Icon cache; debounce; compact idle |
+| E16 unsafe | Pass |
+| E18 panics | Worker mutex unwrap only |
+| E20 over-opt | Shell is restrained; don't micro-opt without typing traces |
 
 #### What already looks good
 
-- 
+- Explicit comments on why ListBox rows are **removed** not hidden (height)
+- Conversion rows swap child instead of Stack double-height
+- Path drag binding reused on pooled rows (`PathDragBinding`)
+- Action panel uses Buttons (not flaky ListBox-in-Popover under layer-shell)
+- Footer is trivial; no per-keystroke work beyond label text
+- Layer-shell keyboard mode toggles for DnD carefully documented
 
 #### Suggested measurements
 
-- Time from keystroke → results applied (debounce + engine + row rebuild).
-- Thumbnail / icon load: main-thread vs worker; cache hit rate.
-- Large result sets: row widget reuse vs recreate.
+```bash
+cargo build --release --features "layer-shell,bench"
+# Typing: samply/perf on blink daemon while hammering the search entry
+# Compare: cold icon set vs warm; drag-start of image file vs folder
+```
 
-#### Fixes applied
+| Experiment | Success signal |
+|------------|----------------|
+| Keystroke → list update | p95 under debounce + search budget |
+| First appearance of rare mime icons | No multi-frame hitch after optional prewarm |
+| Drag image with/without FD thumb | Drag begin &lt; few ms |
 
-- [ ] …
+#### Priority order for fixes (optional)
+
+1. **Avoid full `results` clone** for `should_deep_search` (borrow / thinner check)  
+2. **Icon cache:** LRU or no double-format on reinsert; optional prewarm  
+3. **Drag thumb path memo** if drag begin shows up in profiles  
+4. Action-panel button pool — only if open feels slow  
+5. Do **not** remove debounce or pool “for cleanliness”
+
+#### Fixes applied (2026-07-23)
+
+- [x] **Deep gate** — `should_deep_search` uses `results.borrow().as_slice()` (no full vec clone)
+- [x] **Icon cache** — FIFO eviction at 512 (no full clear thrash); single insert path (no double `format!`)
+- [x] **Drag thumbnail memo** — last path → texture in TLS so repeated drag-begin skips FD probes
+- [x] Tests: **74 passed**, 2 ignored
 
 ---
+
+
 
 ## Part 3 — UI Features & Theme
 

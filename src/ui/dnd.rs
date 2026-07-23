@@ -312,12 +312,30 @@ fn set_drag_icon(source: &DragSource, path: &Path) {
 /// Sync and main-thread, but thumbs are tiny PNGs already decoded by the
 /// desktop — no full-image decode and no coupling to the preview LRU (row
 /// drags often happen without a preview texture).
+///
+/// Memoizes the last path → texture so repeated drag-begin on the same row
+/// skips canonicalize + multi-slot `is_file` probes.
 fn drag_thumbnail_icon(path: &Path) -> Option<gdk::Texture> {
     if path.is_dir() || !is_image_path(path) {
         return None;
     }
-    let thumb = freedesktop_thumbnail(path)?;
-    gdk::Texture::from_filename(&thumb).ok()
+
+    thread_local! {
+        static MEMO: RefCell<Option<(PathBuf, Option<gdk::Texture>)>> =
+            RefCell::new(None);
+    }
+
+    MEMO.with(|slot| {
+        if let Some((prev, tex)) = slot.borrow().as_ref() {
+            if prev.as_path() == path {
+                return tex.clone();
+            }
+        }
+        let tex = freedesktop_thumbnail(path)
+            .and_then(|thumb| gdk::Texture::from_filename(&thumb).ok());
+        *slot.borrow_mut() = Some((path.to_path_buf(), tex.clone()));
+        tex
+    })
 }
 
 fn is_image_path(path: &Path) -> bool {

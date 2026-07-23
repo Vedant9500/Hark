@@ -1795,8 +1795,8 @@ fn refresh_results(
         });
     }
 
-    let current = results.borrow().clone();
-    if !engine.should_deep_search(&q, &current) {
+    // Borrow only — no full SearchResult vec clone for the deep gate.
+    if !engine.should_deep_search(&q, results.borrow().as_slice()) {
         return;
     }
 

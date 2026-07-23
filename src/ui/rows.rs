@@ -13,14 +13,57 @@ use crate::providers::{ResultKind, SearchResult};
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// Matches engine result cap — pool never needs more than this.
 pub(crate) const ROW_POOL_CAP: usize = 25;
+/// Soft cap for icon-name → resolved theme name (FIFO eviction, not full clear).
+const ICON_CACHE_CAP: usize = 512;
+
+struct IconResolveCache {
+    map: HashMap<String, String>,
+    /// Insertion order of keys for FIFO eviction (avoids thrashing a full wipe).
+    order: VecDeque<String>,
+}
+
+impl IconResolveCache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::with_capacity(64),
+            order: VecDeque::with_capacity(64),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.map.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, value: String) {
+        if self.map.contains_key(&key) {
+            // Refresh value; keep existing order slot.
+            self.map.insert(key, value);
+            return;
+        }
+        while self.map.len() >= ICON_CACHE_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, value);
+    }
+}
 
 thread_local! {
-    static ICON_RESOLVE_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static ICON_RESOLVE_CACHE: RefCell<IconResolveCache> = RefCell::new(IconResolveCache::new());
 }
 
 pub(crate) fn clear_icon_resolve_cache() {
@@ -432,22 +475,10 @@ fn resolve_row_icon(requested: &str, kind: ResultKind, symbolic_icons: bool) -> 
     );
     ICON_RESOLVE_CACHE.with(|cache| {
         if let Some(hit) = cache.borrow().get(&key) {
-            return hit.clone();
+            return hit;
         }
         let resolved = resolve_row_icon_uncached(requested, kind, symbolic_icons);
         cache.borrow_mut().insert(key, resolved.clone());
-        if cache.borrow().len() > 512 {
-            cache.borrow_mut().clear();
-            cache.borrow_mut().insert(
-                format!(
-                    "{}\0{}\0{}",
-                    symbolic_icons as u8,
-                    requested,
-                    kind_key(kind)
-                ),
-                resolved.clone(),
-            );
-        }
         resolved
     })
 }
