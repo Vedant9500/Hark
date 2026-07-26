@@ -52,7 +52,7 @@ impl FileProvider {
     pub fn index_progress(&self) -> IndexProgress {
         let running = self.state.indexing.load(Ordering::Relaxed);
         let progress = self.state.progress.load(Ordering::Relaxed);
-        let stored = self.state.index.read().unwrap().len();
+        let stored = self.state.index.read().unwrap_or_else(|p| p.into_inner()).len();
         IndexProgress {
             count: if running { progress } else { stored },
             running,
@@ -87,7 +87,7 @@ impl FileProvider {
     }
 
     fn refresh_hot(&self) {
-        let index = self.state.index.read().unwrap();
+        let index = self.state.index.read().unwrap_or_else(|p| p.into_inner());
         self.hot.rebuild(&index);
     }
 
@@ -138,12 +138,12 @@ impl FileProvider {
 
         // Cheap Arc config + mounts snapshot; index lock only for scan/plan.
         let cfg = self.state.config.snapshot();
-        let mounts = self.state.mounts.read().unwrap().clone();
+        let mounts = self.state.mounts.read().unwrap_or_else(|p| p.into_inner()).clone();
         let excludes = ExcludeSet::from_list(&cfg.index.exclude);
 
         // Phase 1: index-only search under a short read lock (no WalkDir).
         let (mut results, deep_jobs) = {
-            let index = self.state.index.read().unwrap();
+            let index = self.state.index.read().unwrap_or_else(|p| p.into_inner());
             self.hot.ensure_fresh(&index);
             let hot_indices = self.hot.snapshot_indices();
             let results = search::search_index(
@@ -223,7 +223,7 @@ impl FileProvider {
         if memo_key.is_empty() {
             return false;
         }
-        if let Some((k, v)) = self.scoped_memo.lock().unwrap().as_ref() {
+        if let Some((k, v)) = self.scoped_memo.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             if *k == memo_key {
                 return *v;
             }
@@ -238,10 +238,10 @@ impl FileProvider {
                 .or_else(|| raw.strip_prefix("folder "))
                 .unwrap_or(raw)
                 .trim();
-            let index = self.state.index.read().unwrap();
+            let index = self.state.index.read().unwrap_or_else(|p| p.into_inner());
             search::parse_scoped_for_query(q, &index).is_some()
         };
-        *self.scoped_memo.lock().unwrap() = Some((memo_key, v));
+        *self.scoped_memo.lock().unwrap_or_else(|p| p.into_inner()) = Some((memo_key, v));
         v
     }
 }

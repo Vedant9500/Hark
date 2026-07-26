@@ -465,11 +465,164 @@ impl TranslateConfig {
             self.target_lang = default_translate_target();
         }
         self.endpoint = self.endpoint.trim().trim_end_matches('/').to_string();
+        // Drop SSRF-prone / non-HTTP endpoints rather than POSTing secrets to them.
+        if !self.endpoint.is_empty() && validate_translate_endpoint(&self.endpoint).is_err() {
+            self.endpoint.clear();
+        }
         if let Some(k) = self.api_key.take() {
             let t = k.trim().to_string();
             self.api_key = if t.is_empty() { None } else { Some(t) };
         }
     }
+}
+
+/// Validate a LibreTranslate-compatible base URL.
+///
+/// Empty is allowed (means free backends). Otherwise require `http`/`https`, a host,
+/// no embedded credentials, and block cloud-metadata / link-local targets.
+pub fn validate_translate_endpoint(endpoint: &str) -> Result<(), String> {
+    let ep = endpoint.trim().trim_end_matches('/');
+    if ep.is_empty() {
+        return Ok(());
+    }
+
+    // Case-insensitive scheme; host checks use a lowercased view only.
+    let lower = ep.to_ascii_lowercase();
+    let authority_and_path = if let Some(rest) = lower.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("http://") {
+        rest
+    } else {
+        return Err("endpoint must start with http:// or https://".into());
+    };
+    // both http and https allowed (local LibreTranslate is often plain http)
+
+    // Reject anything that is not a normal hierarchical URL authority.
+    if authority_and_path.is_empty() || authority_and_path.starts_with('/') {
+        return Err("endpoint missing host".into());
+    }
+    // user:pass@host is a common SSRF / secret-smuggling footgun.
+    if authority_and_path.contains('@') {
+        return Err("endpoint must not include credentials".into());
+    }
+
+    let authority = authority_and_path
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    if authority.is_empty() {
+        return Err("endpoint missing host".into());
+    }
+
+    let host = parse_url_host(authority)?;
+    if host.is_empty() {
+        return Err("endpoint missing host".into());
+    }
+    if is_blocked_translate_host(&host) {
+        return Err("endpoint host is not allowed".into());
+    }
+    Ok(())
+}
+
+fn parse_url_host(authority: &str) -> Result<String, String> {
+    // IPv6: [2001:db8::1]:5000 or [2001:db8::1]
+    if let Some(rest) = authority.strip_prefix('[') {
+        let end = rest
+            .find(']')
+            .ok_or_else(|| "endpoint has invalid IPv6 host".to_string())?;
+        return Ok(rest[..end].to_ascii_lowercase());
+    }
+    // host:port or bare host
+    let host = authority.split(':').next().unwrap_or(authority);
+    Ok(host.to_ascii_lowercase())
+}
+
+fn is_blocked_translate_host(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    // Cloud metadata hostnames.
+    if matches!(
+        h.as_str(),
+        "metadata"
+            | "metadata.google.internal"
+            | "metadata.goog"
+            | "kubernetes.default"
+            | "kubernetes.default.svc"
+    ) || h.ends_with(".metadata.google.internal")
+    {
+        return true;
+    }
+
+    // IPv4 literal checks (including decimal forms of metadata / link-local).
+    if let Some(ip) = parse_ipv4_literal(&h) {
+        return is_blocked_ipv4(ip);
+    }
+
+    // IPv6: block link-local (fe80::/10), unique-local optional — block metadata-ish.
+    if h.contains(':') {
+        return is_blocked_ipv6(&h);
+    }
+
+    false
+}
+
+fn parse_ipv4_literal(host: &str) -> Option<[u8; 4]> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut out = [0u8; 4];
+    for (i, p) in parts.iter().enumerate() {
+        // Only dotted-decimal; reject empty / leading-plus / hex.
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let n: u32 = p.parse().ok()?;
+        if n > 255 {
+            return None;
+        }
+        out[i] = n as u8;
+    }
+    Some(out)
+}
+
+fn is_blocked_ipv4(ip: [u8; 4]) -> bool {
+    let [a, b, c, d] = ip;
+    // 0.0.0.0/8
+    if a == 0 {
+        return true;
+    }
+    // 169.254.0.0/16 link-local (includes 169.254.169.254 metadata)
+    if a == 169 && b == 254 {
+        return true;
+    }
+    // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved
+    if a >= 224 {
+        return true;
+    }
+    // Explicit broadcast
+    if a == 255 && b == 255 && c == 255 && d == 255 {
+        return true;
+    }
+    false
+}
+
+fn is_blocked_ipv6(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    // Link-local fe80::/10
+    if h.starts_with("fe8")
+        || h.starts_with("fe9")
+        || h.starts_with("fea")
+        || h.starts_with("feb")
+    {
+        return true;
+    }
+    // IPv4-mapped metadata ::ffff:169.254.x.x
+    if let Some(v4) = h.strip_prefix("::ffff:") {
+        if let Some(ip) = parse_ipv4_literal(v4) {
+            return is_blocked_ipv4(ip);
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -977,6 +1130,34 @@ mod config_store_tests {
         assert!(set.matches(Path::new("/home/a/.Git")));
         assert!(set.matches(Path::new("/tmp/foo/bar/baz")));
         assert!(!set.matches(Path::new("/home/a/src/main.rs")));
+    }
+
+    #[test]
+    fn translate_endpoint_rejects_ssrf_targets() {
+        assert!(validate_translate_endpoint("").is_ok());
+        assert!(validate_translate_endpoint("https://translate.example.com").is_ok());
+        assert!(validate_translate_endpoint("http://127.0.0.1:5000").is_ok());
+        assert!(validate_translate_endpoint("http://localhost:5000/").is_ok());
+        assert!(validate_translate_endpoint("http://192.168.1.10:5000").is_ok());
+
+        assert!(validate_translate_endpoint("file:///etc/passwd").is_err());
+        assert!(validate_translate_endpoint("https://user:pass@evil.test").is_err());
+        assert!(validate_translate_endpoint("http://169.254.169.254/latest").is_err());
+        assert!(validate_translate_endpoint("http://metadata.google.internal").is_err());
+        assert!(validate_translate_endpoint("not-a-url").is_err());
+        assert!(validate_translate_endpoint("https://").is_err());
+    }
+
+    #[test]
+    fn translate_sanitize_clears_blocked_endpoint() {
+        let mut cfg = TranslateConfig::default();
+        cfg.endpoint = "http://169.254.169.254/".into();
+        cfg.sanitize();
+        assert!(cfg.endpoint.is_empty());
+
+        cfg.endpoint = "https://lt.example.com/path/".into();
+        cfg.sanitize();
+        assert_eq!(cfg.endpoint, "https://lt.example.com/path");
     }
 
     #[cfg(unix)]

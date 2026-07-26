@@ -58,17 +58,17 @@ impl HotPaths {
             .usage
             .top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
         let set = build_hot_set(index, &wanted, HOT_CAP);
-        *self.set.write().unwrap() = set;
+        *self.set.write().unwrap_or_else(|p| p.into_inner()) = set;
         self.dirty.store(false, Ordering::Relaxed);
     }
 
     pub fn snapshot_indices(&self) -> Vec<usize> {
-        self.set.read().unwrap().indices.clone()
+        self.set.read().unwrap_or_else(|p| p.into_inner()).indices.clone()
     }
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.set.read().unwrap().indices.len()
+        self.set.read().unwrap_or_else(|p| p.into_inner()).indices.len()
     }
 }
 

@@ -41,7 +41,7 @@ impl AppProvider {
 
     #[cfg(feature = "bench")]
     pub fn len(&self) -> usize {
-        self.apps.read().unwrap().len()
+        self.apps.read().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     pub fn reload(&self) {
@@ -72,19 +72,19 @@ impl AppProvider {
         }
 
         apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
-        *self.apps.write().unwrap() = apps;
+        *self.apps.write().unwrap_or_else(|p| p.into_inner()) = apps;
     }
 
     pub fn resolve_id(&self, id: &str) -> Option<SearchResult> {
         let key = id.strip_prefix("app:").unwrap_or(id);
-        let apps = self.apps.read().unwrap();
+        let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         apps.iter()
             .find(|a| a.id == key)
             .map(|a| to_result(a, 1000))
     }
 
     pub fn all_results(&self, limit: usize) -> Vec<SearchResult> {
-        let apps = self.apps.read().unwrap();
+        let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         apps.iter()
             .take(limit)
             .map(|a| to_result(a, 1000))
@@ -94,7 +94,7 @@ impl AppProvider {
     /// GUI apps suitable for the Settings "Default apps" picker.
     /// Filters out terminal-only entries; keeps NoDisplay=false apps already loaded.
     pub fn list_for_picker(&self) -> Vec<AppPickEntry> {
-        let apps = self.apps.read().unwrap();
+        let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         apps.iter()
             .filter(|a| !a.terminal && !a.exec.is_empty())
             .map(|a| AppPickEntry {
@@ -109,7 +109,7 @@ impl AppProvider {
     /// Resolve a stored desktop id to a friendly name (uses loaded app list first).
     pub fn display_name_for_desktop_id(&self, desktop_id: &str) -> Option<String> {
         let key = normalize_desktop_id(desktop_id);
-        let apps = self.apps.read().unwrap();
+        let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         for a in apps.iter() {
             let id = desktop_file_id(&a.desktop_path, &a.id);
             if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
@@ -144,7 +144,7 @@ fn normalize_desktop_id(id: &str) -> String {
 
 impl AppProvider {
     pub fn search(&self, query: &str) -> Vec<SearchResult> {
-        let apps = self.apps.read().unwrap();
+        let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         let q = query.trim();
         if q.is_empty() {
             return apps.iter().take(12).map(|a| to_result(a, 1000)).collect();
@@ -495,7 +495,7 @@ mod tests {
 
         let provider = AppProvider::new_empty();
         {
-            let mut apps = provider.apps.write().unwrap();
+            let mut apps = provider.apps.write().unwrap_or_else(|p| p.into_inner());
             apps.push(app);
         }
         let hits = provider.search("subli");

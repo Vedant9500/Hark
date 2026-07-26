@@ -51,7 +51,7 @@ impl LiveCache {
         if key.is_empty() {
             return false;
         }
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         let Some(entry) = map.get_mut(&key) else {
             return false;
@@ -70,7 +70,7 @@ impl LiveCache {
         if key.is_empty() {
             return None;
         }
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         let Some(entry) = map.get_mut(&key) else {
             return None;
@@ -102,7 +102,7 @@ impl LiveCache {
         // Single move into shared storage; return path clones from Arc.
         let hits: Arc<[SearchResult]> = Arc::from(hits);
         let out = hits.to_vec();
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         map.insert(
             key,
             Entry {
@@ -128,12 +128,12 @@ impl LiveCache {
 
     /// Drop all cached deep-search hits (e.g. after trash / external delete).
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 }
 

@@ -739,6 +739,8 @@ fn libretranslate(
     target: &str,
     cfg: &TranslateConfig,
 ) -> Result<(String, String), String> {
+    crate::config::validate_translate_endpoint(&cfg.endpoint)
+        .map_err(|e| format!("LibreTranslate endpoint: {e}"))?;
     let url = format!("{}/translate", cfg.endpoint.trim_end_matches('/'));
     // LibreTranslate: ISO 639-1 primary codes; "auto" when supported
     let src = api_source_lang(source, true, LangStyle::Primary);

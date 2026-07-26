@@ -54,7 +54,7 @@ impl FxStore {
 
         // One read lock: compute conversion + staleness, then refresh after drop.
         let (converted, stale) = {
-            let g = self.shared.cache.read().unwrap();
+            let g = self.shared.cache.read().unwrap_or_else(|p| p.into_inner());
             match g.as_ref() {
                 None => (None, true),
                 Some(cache) => {
@@ -108,7 +108,7 @@ impl FxStore {
         thread::spawn(move || {
             if let Some(c) = fetch_rates() {
                 save_disk(&c);
-                *shared.cache.write().unwrap() = Some(c);
+                *shared.cache.write().unwrap_or_else(|p| p.into_inner()) = Some(c);
             }
             shared.inflight.store(false, Ordering::Release);
         });
@@ -256,7 +256,7 @@ mod tests {
         // If disk cache exists from the machine, convert must return Some quickly.
         // This does not assert network; only that convert does not require success.
         let store = FxStore::new();
-        if store.shared.cache.read().unwrap().is_some() {
+        if store.shared.cache.read().unwrap_or_else(|p| p.into_inner()).is_some() {
             let r = store.convert(100.0, "USD", "EUR");
             assert!(r.is_some(), "stale disk cache should still convert");
         }

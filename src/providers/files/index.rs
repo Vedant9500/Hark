@@ -5,7 +5,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -57,6 +57,8 @@ pub(crate) struct IndexState {
     pub config: Arc<ConfigStore>,
     pub mounts: RwLock<Vec<MountInfo>>,
     fingerprint: RwLock<String>,
+    /// Ensures only one filesystem walk/cache write runs at a time.
+    build_lock: Mutex<()>,
 }
 
 impl IndexState {
@@ -69,6 +71,7 @@ impl IndexState {
             config,
             mounts: RwLock::new(discover_mounts()),
             fingerprint: RwLock::new(String::new()),
+            build_lock: Mutex::new(()),
         }
     }
 
@@ -83,33 +86,33 @@ impl IndexState {
         // Only rediscover mounts when TTL expires or that fingerprint mismatches
         // (settings change or mounts list actually drifted after a real refresh).
         {
-            let n = self.index.read().unwrap().len();
+            let n = self.index.read().unwrap_or_else(|p| p.into_inner()).len();
             if n > 0 && !cache_ttl_stale() {
-                let mem_fp = self.fingerprint.read().unwrap().clone();
+                let mem_fp = self.fingerprint.read().unwrap_or_else(|p| p.into_inner()).clone();
                 let fp_cached_mounts = self.compute_fingerprint();
                 if !mem_fp.is_empty() && mem_fp == fp_cached_mounts {
                     return; // no I/O beyond meta TTL file already checked
                 }
                 // Config roots/depth/excludes changed, or mount set in RAM is stale.
-                *self.mounts.write().unwrap() = discover_mounts();
+                *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
                 let fp = self.compute_fingerprint();
                 if !mem_fp.is_empty() && mem_fp == fp {
                     return;
                 }
-                self.run_build(fp);
+                self.run_build(fp, false);
                 return;
             }
         }
 
-        *self.mounts.write().unwrap() = discover_mounts();
+        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
         let fp = self.compute_fingerprint();
 
         if let Some((items, cached_fp)) = load_cache() {
             let n = items.len();
-            *self.index.write().unwrap() = items;
+            *self.index.write().unwrap_or_else(|p| p.into_inner()) = items;
             self.progress.store(n, Ordering::Relaxed);
             self.capped.store(n >= MAX_INDEX, Ordering::Relaxed);
-            *self.fingerprint.write().unwrap() = cached_fp.clone();
+            *self.fingerprint.write().unwrap_or_else(|p| p.into_inner()) = cached_fp.clone();
 
             let ttl_ok = !cache_ttl_stale();
             let fp_ok = cached_fp == fp;
@@ -118,17 +121,31 @@ impl IndexState {
             }
         }
 
-        self.run_build(fp);
+        self.run_build(fp, false);
     }
 
     pub fn force_rebuild(&self) {
         clear_cache();
-        *self.mounts.write().unwrap() = discover_mounts();
+        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
         let fp = self.compute_fingerprint();
-        self.run_build(fp);
+        self.run_build(fp, true);
     }
 
-    fn run_build(&self, fingerprint: String) {
+    fn run_build(&self, fingerprint: String, force: bool) {
+        // Serialize walks + cache writes; recover if a previous holder panicked.
+        let _guard = self.build_lock.lock().unwrap_or_else(|p| p.into_inner());
+
+        // A concurrent ensure_fresh may have finished the same fingerprint while we waited.
+        if !force {
+            let n = self.index.read().unwrap_or_else(|p| p.into_inner()).len();
+            let mem_fp = self.fingerprint.read().unwrap_or_else(|p| p.into_inner()).clone();
+            if n > 0 && !mem_fp.is_empty() && mem_fp == fingerprint && !cache_ttl_stale() {
+                // Ensure a panicked prior builder cannot leave the UI stuck on "indexing".
+                self.indexing.store(false, Ordering::Relaxed);
+                return;
+            }
+        }
+
         self.indexing.store(true, Ordering::Relaxed);
         self.progress.store(0, Ordering::Relaxed);
         self.capped.store(false, Ordering::Relaxed);
@@ -137,8 +154,8 @@ impl IndexState {
         let hit_cap = n >= MAX_INDEX;
         // Disk write before swap so a crash mid-write doesn't leave empty RAM index.
         save_cache(&items, &fingerprint);
-        *self.index.write().unwrap() = items;
-        *self.fingerprint.write().unwrap() = fingerprint;
+        *self.index.write().unwrap_or_else(|p| p.into_inner()) = items;
+        *self.fingerprint.write().unwrap_or_else(|p| p.into_inner()) = fingerprint;
         self.progress.store(n, Ordering::Relaxed);
         self.capped.store(hit_cap, Ordering::Relaxed);
         self.indexing.store(false, Ordering::Relaxed);
@@ -146,7 +163,7 @@ impl IndexState {
 
     fn compute_fingerprint(&self) -> String {
         let cfg = self.config.snapshot();
-        let mounts = self.mounts.read().unwrap();
+        let mounts = self.mounts.read().unwrap_or_else(|p| p.into_inner());
         let mut roots: Vec<String> = Vec::new();
         if cfg.index.include_home {
             if let Some(home) = dirs::home_dir() {
@@ -186,7 +203,7 @@ impl IndexState {
 
     fn build_index(&self) -> Vec<IndexedPath> {
         let cfg = self.config.snapshot();
-        let mounts = self.mounts.read().unwrap().clone();
+        let mounts = self.mounts.read().unwrap_or_else(|p| p.into_inner()).clone();
         let excludes = ExcludeSet::from_list(&cfg.index.exclude);
         let max_depth = cfg.index.max_depth.clamp(1, 6);
 
