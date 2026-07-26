@@ -333,15 +333,54 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     })
 }
 
-fn clean_exec(exec: &str) -> String {
-    let mut parts = Vec::new();
-    for part in exec.split_whitespace() {
-        if part.starts_with('%') {
-            continue;
+/// Split a desktop `Exec=` value into argv, respecting simple shell-style quotes.
+/// Never feed the result through a shell — tokens are passed as argv only.
+fn split_exec_args(exec: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut chars = exec.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\\' if in_double => {
+                if let Some(&next) = chars.peek() {
+                    if matches!(next, '"' | '\\' | '$' | '`') {
+                        cur.push(chars.next().unwrap());
+                    } else {
+                        cur.push('\\');
+                    }
+                } else {
+                    cur.push('\\');
+                }
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    args.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
         }
-        parts.push(part);
     }
-    parts.join(" ")
+    if !cur.is_empty() {
+        args.push(cur);
+    }
+    args
+}
+
+fn clean_exec(exec: &str) -> String {
+    split_exec_args(exec)
+        .into_iter()
+        .filter(|part| !part.starts_with('%'))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn which(bin: &str) -> Option<PathBuf> {
@@ -359,40 +398,69 @@ fn which(bin: &str) -> Option<PathBuf> {
     None
 }
 
-/// Resolve the primary binary from a desktop `Exec=` line (field codes stripped).
-pub fn resolve_exec_binary(exec: &str) -> Option<PathBuf> {
-    let cleaned = clean_exec(exec);
-    let first = cleaned.split_whitespace().next()?.trim_matches('"');
-    if first.is_empty() {
-        return None;
-    }
-    which(first)
+fn resolve_terminal() -> String {
+    std::env::var("TERMINAL")
+        .ok()
+        .filter(|t| which(t).is_some())
+        .or_else(|| which("alacritty").map(|_| "alacritty".into()))
+        .or_else(|| which("kitty").map(|_| "kitty".into()))
+        .or_else(|| which("foot").map(|_| "foot".into()))
+        .unwrap_or_else(|| "xterm".into())
 }
 
-pub fn launch_app(exec: &str, terminal: bool) {
-    let shell_cmd = if terminal {
-        let term = std::env::var("TERMINAL")
-            .ok()
-            .filter(|t| which(t).is_some())
-            .or_else(|| which("alacritty").map(|_| "alacritty".into()))
-            .or_else(|| which("kitty").map(|_| "kitty".into()))
-            .or_else(|| which("foot").map(|_| "foot".into()))
-            .unwrap_or_else(|| "xterm".into());
-        format!("{term} -e {exec}")
-    } else {
-        exec.to_string()
-    };
+/// Detach with argv only — never interpolate into `sh -c`.
+fn spawn_detached_argv(argv: &[String]) {
+    if argv.is_empty() {
+        return;
+    }
 
-    // Detach fully so the app survives after blink hides.
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(format!(
-            "setsid -f {shell_cmd} >/dev/null 2>&1 || nohup {shell_cmd} >/dev/null 2>&1 &"
-        ))
+    // Prefer `setsid -f program args...` so the child survives blink exit without a shell.
+    let mut cmd = Command::new("setsid");
+    cmd.arg("-f")
+        .args(argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if cmd.spawn().is_ok() {
+        return;
+    }
+
+    // Fallback: direct spawn (may die with the parent session on some setups).
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let _ = cmd.spawn();
+}
+
+/// Resolve the primary binary from a desktop `Exec=` line (field codes stripped).
+pub fn resolve_exec_binary(exec: &str) -> Option<PathBuf> {
+    let first = split_exec_args(exec)
+        .into_iter()
+        .find(|part| !part.starts_with('%') && !part.is_empty())?;
+    which(&first)
+}
+
+pub fn launch_app(exec: &str, terminal: bool) {
+    let mut argv: Vec<String> = split_exec_args(exec)
+        .into_iter()
+        .filter(|part| !part.starts_with('%'))
+        .collect();
+    if argv.is_empty() {
+        return;
+    }
+
+    if terminal {
+        let term = resolve_terminal();
+        let mut full = Vec::with_capacity(argv.len() + 2);
+        full.push(term);
+        full.push("-e".into());
+        full.append(&mut argv);
+        spawn_detached_argv(&full);
+    } else {
+        spawn_detached_argv(&argv);
+    }
 }
 
 #[cfg(test)]
@@ -438,5 +506,30 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_exec_args_handles_quotes_and_field_codes() {
+        assert_eq!(
+            split_exec_args(r#"/usr/bin/foo --opt="bar baz" %F"#),
+            vec![
+                "/usr/bin/foo".to_string(),
+                "--opt=bar baz".to_string(),
+                "%F".to_string()
+            ]
+        );
+        assert_eq!(
+            clean_exec(r#"/usr/bin/foo --opt="bar baz" %U"#),
+            "/usr/bin/foo --opt=bar baz"
+        );
+        // Metacharacters must remain a single argv token, not shell syntax.
+        assert_eq!(
+            split_exec_args(r#"evil;rm -rf /"#),
+            vec!["evil;rm".to_string(), "-rf".to_string(), "/".to_string()]
+        );
+        assert_eq!(
+            split_exec_args(r#"/bin/echo '$(reboot)'"#),
+            vec!["/bin/echo".to_string(), "$(reboot)".to_string()]
+        );
     }
 }

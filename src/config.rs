@@ -621,7 +621,19 @@ impl ConfigStore {
         if let Ok(data) = serde_json::to_string_pretty(snap.as_ref()) {
             let tmp = self.path.with_extension("json.tmp");
             if fs::write(&tmp, data).is_ok() {
-                let _ = fs::rename(tmp, &self.path);
+                // Restrict mode so translate api_key (and other secrets) are not group/world readable.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+                }
+                if fs::rename(&tmp, &self.path).is_ok() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600));
+                    }
+                }
             }
         }
     }
@@ -965,5 +977,38 @@ mod config_store_tests {
         assert!(set.matches(Path::new("/home/a/.Git")));
         assert!(set.matches(Path::new("/tmp/foo/bar/baz")));
         assert!(!set.matches(Path::new("/home/a/src/main.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "blink-config-perm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.json");
+        let mut cfg = BlinkConfig::default();
+        cfg.version = CONFIG_VERSION;
+        // Start world-readable so we can prove save tightens mode.
+        fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let store = ConfigStore {
+            inner: RwLock::new(Arc::new(cfg)),
+            path: path.clone(),
+        };
+        store.save();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config.json must be owner-read/write only");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

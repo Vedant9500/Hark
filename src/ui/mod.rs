@@ -2144,8 +2144,14 @@ fn center_on_active_monitor(window: &ApplicationWindow) {
     {
         use gtk4_layer_shell::{Edge, LayerShell};
         if gtk4_layer_shell::is_supported() {
-            if let Some((_x, _y, _w, h)) = hypr_focused_monitor() {
-                let top = (h / 5).max(80);
+            // Prefer the monitor under the *pointer*, not the focused window's
+            // monitor. Keyboard-only focus can lag the cursor on multi-monitor
+            // setups (window on laptop, pointer on external).
+            if let Some(info) = hypr_pointer_monitor() {
+                if let Some(gdk_mon) = gdk_monitor_for_hypr(&info) {
+                    window.set_monitor(Some(&gdk_mon));
+                }
+                let top = (info.geom.height / 5).max(80);
                 window.set_anchor(Edge::Top, true);
                 window.set_anchor(Edge::Left, false);
                 window.set_anchor(Edge::Right, false);
@@ -2159,39 +2165,167 @@ fn center_on_active_monitor(window: &ApplicationWindow) {
 }
 
 #[cfg(feature = "layer-shell")]
-fn hypr_focused_monitor() -> Option<(i32, i32, i32, i32)> {
-    // hyprctl is a process spawn — cache a few seconds across rapid toggles.
-    const TTL: Duration = Duration::from_secs(2);
-    static CACHE: OnceLock<Mutex<Option<(Instant, (i32, i32, i32, i32))>>> = OnceLock::new();
+#[derive(Clone, Copy, Debug)]
+struct HyprMonitorGeom {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+#[cfg(feature = "layer-shell")]
+#[derive(Clone, Debug)]
+struct HyprMonitorInfo {
+    name: String,
+    geom: HyprMonitorGeom,
+}
+
+/// Monitor that contains the pointer (fallback: Hyprland focused / first).
+#[cfg(feature = "layer-shell")]
+fn hypr_pointer_monitor() -> Option<HyprMonitorInfo> {
+    // Short TTL only — pointer can move to another output between toggles.
+    // Still avoid double hyprctl spawns if show() is re-entered quickly.
+    const TTL: Duration = Duration::from_millis(200);
+    static CACHE: OnceLock<Mutex<Option<(Instant, HyprMonitorInfo)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     {
         let g = cache.lock().unwrap();
-        if let Some((at, geom)) = *g {
+        if let Some((at, info)) = g.as_ref() {
             if at.elapsed() < TTL {
-                return Some(geom);
+                return Some(info.clone());
             }
         }
     }
 
-    let out = std::process::Command::new("hyprctl")
+    let mon_out = std::process::Command::new("hyprctl")
         .args(["monitors", "-j"])
+        .output()
+        .ok()?;
+    if !mon_out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&mon_out.stdout).ok()?;
+    let arr = v.as_array()?;
+
+    let parse = |m: &serde_json::Value| -> Option<HyprMonitorInfo> {
+        Some(HyprMonitorInfo {
+            name: m.get("name")?.as_str()?.to_string(),
+            geom: HyprMonitorGeom {
+                x: m.get("x")?.as_i64()? as i32,
+                y: m.get("y")?.as_i64()? as i32,
+                width: m.get("width")?.as_i64()? as i32,
+                height: m.get("height")?.as_i64()? as i32,
+            },
+        })
+    };
+
+    let focused_or_first = || {
+        arr.iter()
+            .find(|m| m.get("focused").and_then(|f| f.as_bool()) == Some(true))
+            .and_then(parse)
+            .or_else(|| arr.first().and_then(parse))
+    };
+
+    let mon = if let Some((cx, cy)) = hypr_cursor_pos() {
+        arr.iter()
+            .find_map(|m| {
+                let info = parse(m)?;
+                let g = &info.geom;
+                let inside =
+                    cx >= g.x && cy >= g.y && cx < g.x + g.width && cy < g.y + g.height;
+                inside.then_some(info)
+            })
+            .or_else(focused_or_first)
+    } else {
+        focused_or_first()
+    }?;
+
+    *cache.lock().unwrap() = Some((Instant::now(), mon.clone()));
+    Some(mon)
+}
+
+#[cfg(feature = "layer-shell")]
+fn hypr_cursor_pos() -> Option<(i32, i32)> {
+    let out = std::process::Command::new("hyprctl")
+        .args(["cursorpos", "-j"])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            if let (Some(x), Some(y)) = (
+                v.get("x").and_then(|n| n.as_i64()),
+                v.get("y").and_then(|n| n.as_i64()),
+            ) {
+                return Some((x as i32, y as i32));
+            }
+        }
+    }
+    // Plain "x, y" fallback
+    let out = std::process::Command::new("hyprctl")
+        .args(["cursorpos"])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let arr = v.as_array()?;
-    let mon = arr
-        .iter()
-        .find(|m| m.get("focused").and_then(|f| f.as_bool()) == Some(true))
-        .or_else(|| arr.first())?;
-    let geom = (
-        mon.get("x")?.as_i64()? as i32,
-        mon.get("y")?.as_i64()? as i32,
-        mon.get("width")?.as_i64()? as i32,
-        mon.get("height")?.as_i64()? as i32,
-    );
-    *cache.lock().unwrap() = Some((Instant::now(), geom));
-    Some(geom)
+    let s = String::from_utf8_lossy(&out.stdout);
+    let mut parts = s.split([',', ' ']).filter(|p| !p.is_empty());
+    let x: i32 = parts.next()?.trim().parse().ok()?;
+    let y: i32 = parts.next()?.trim().parse().ok()?;
+    Some((x, y))
+}
+
+/// Map a Hyprland output to a GDK monitor so layer-shell can pin the surface.
+#[cfg(feature = "layer-shell")]
+fn gdk_monitor_for_hypr(info: &HyprMonitorInfo) -> Option<gtk::gdk::Monitor> {
+    let display = gtk::gdk::Display::default()?;
+    let monitors = display.monitors();
+    let n = monitors.n_items();
+    let g = &info.geom;
+
+    let mon_at = |i: u32| -> Option<gtk::gdk::Monitor> {
+        monitors
+            .item(i)?
+            .downcast::<gtk::gdk::Monitor>()
+            .ok()
+    };
+
+    // 1) Connector name match (e.g. "HDMI-A-1", "eDP-2")
+    for i in 0..n {
+        if let Some(mon) = mon_at(i) {
+            if mon.connector().is_some_and(|c| c.as_str() == info.name) {
+                return Some(mon);
+            }
+        }
+    }
+
+    // 2) Geometry match (layout coordinates)
+    for i in 0..n {
+        if let Some(mon) = mon_at(i) {
+            let rect = mon.geometry();
+            if rect.x() == g.x
+                && rect.y() == g.y
+                && rect.width() == g.width
+                && rect.height() == g.height
+            {
+                return Some(mon);
+            }
+        }
+    }
+
+    // 3) Point containment of monitor origin (scale-factor edge cases)
+    for i in 0..n {
+        if let Some(mon) = mon_at(i) {
+            let rect = mon.geometry();
+            if g.x >= rect.x()
+                && g.y >= rect.y()
+                && g.x < rect.x() + rect.width()
+                && g.y < rect.y() + rect.height()
+            {
+                return Some(mon);
+            }
+        }
+    }
+
+    None
 }

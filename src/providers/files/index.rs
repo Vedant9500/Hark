@@ -412,12 +412,20 @@ pub(crate) fn should_skip_entry(path: &Path, excludes: &ExcludeSet) -> bool {
             || name == ".env.local"
             || name == "credentials.json"
             || name == "secrets.json"
+            // Private key material — never surface in launcher results.
+            || name == "id_rsa"
+            || name == "id_dsa"
+            || name == "id_ecdsa"
+            || name == "id_ed25519"
+            || name.ends_with(".pem")
+            || name == "private-keys-v1.d"
         {
             return true;
         }
+        // Never index crypto material dirs. Allowlist only user-facing config trees.
         if name.starts_with('.')
             && path.is_dir()
-            && !matches!(name, ".config" | ".local" | ".ssh" | ".gnupg")
+            && !matches!(name, ".config" | ".local")
         {
             return true;
         }
@@ -434,6 +442,8 @@ fn should_always_skip(path: &Path) -> bool {
             ".git"
                 | ".svn"
                 | ".hg"
+                | ".ssh"
+                | ".gnupg"
                 | "node_modules"
                 | "target"
                 | "dist"
@@ -589,4 +599,29 @@ fn clear_cache() {
 #[cfg(feature = "bench")]
 pub fn cache_bytes_on_disk() -> Option<u64> {
     fs::metadata(cache_path()).ok().map(|m| m.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ExcludeSet;
+    use std::path::Path;
+
+    #[test]
+    fn skips_ssh_gnupg_and_key_material() {
+        let excludes = ExcludeSet::from_list(&[]);
+        assert!(should_skip_entry(Path::new("/home/u/.ssh"), &excludes));
+        assert!(should_skip_entry(Path::new("/home/u/.gnupg"), &excludes));
+        assert!(should_skip_entry(Path::new("/home/u/.ssh/id_ed25519"), &excludes));
+        assert!(should_skip_entry(Path::new("/tmp/id_rsa"), &excludes));
+        assert!(should_skip_entry(Path::new("/tmp/cert.pem"), &excludes));
+        assert!(should_skip_entry(
+            Path::new("/home/u/.gnupg/private-keys-v1.d"),
+            &excludes
+        ));
+        // Still allow normal config trees and ordinary files.
+        assert!(!should_skip_entry(Path::new("/home/u/.config"), &excludes));
+        assert!(!should_skip_entry(Path::new("/home/u/.local"), &excludes));
+        assert!(!should_skip_entry(Path::new("/home/u/notes.txt"), &excludes));
+    }
 }
