@@ -15,6 +15,30 @@ use index::IndexState;
 pub use index::MAX_INDEX;
 use live_cache::LiveCache;
 pub use search::{is_path_glob_query, is_scoped_file_query, DeepMode};
+
+/// If `q` starts with `f`/`file`/`folder` + whitespace (ASCII case-insensitive),
+/// return the remainder (may be empty). Shared by the engine (force-files gate)
+/// and the live-cache key normalizer so `File foo` and `file foo` map to the
+/// same cache key.
+pub fn strip_force_files_prefix(q: &str) -> Option<&str> {
+    let bytes = q.as_bytes();
+    // Match longest prefix first.
+    for pref in ["folder", "file", "f"] {
+        let pb = pref.as_bytes();
+        if bytes.len() >= pb.len() && bytes[..pb.len()].eq_ignore_ascii_case(pb) {
+            let rest = &q[pb.len()..];
+            if rest.is_empty() {
+                return Some(rest);
+            }
+            // Require whitespace after the keyword so `firefox` is not force-files.
+            let b0 = rest.as_bytes()[0];
+            if b0 == b' ' || b0 == b'\t' {
+                return Some(rest.trim_start());
+            }
+        }
+    }
+    None
+}
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -595,24 +619,84 @@ pub fn open_terminal_at(path: &Path) {
         .or_else(|| which_bin("wezterm").map(|_| "wezterm".into()))
         .unwrap_or_else(|| "xterm".into());
 
-    let shell_cmd = match term.as_str() {
-        "alacritty" => format!("alacritty --working-directory {}", shell_quote(&dir)),
-        "kitty" => format!("kitty --directory {}", shell_quote(&dir)),
-        "foot" => format!("foot --working-directory={}", shell_quote(&dir)),
-        "ghostty" => format!("ghostty --working-directory={}", shell_quote(&dir)),
-        "wezterm" => format!("wezterm start --cwd {}", shell_quote(&dir)),
-        _ => format!("xterm -e sh -c 'cd {} && exec $SHELL'", shell_quote(&dir)),
-    };
+    // Resolve binary path; match on basename so `/usr/bin/kitty` still works.
+    let term_path = which_bin(&term).unwrap_or_else(|| PathBuf::from(&term));
+    let term_name = terminal_basename(&term_path, &term);
+    let dir_arg = dir.to_string_lossy().into_owned();
 
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(format!(
-            "setsid -f {shell_cmd} >/dev/null 2>&1 || nohup {shell_cmd} >/dev/null 2>&1 &"
-        ))
+    match term_name.as_str() {
+        "alacritty" => spawn_detached_in_dir(
+            &term_path,
+            &["--working-directory".into(), dir_arg],
+            &dir,
+        ),
+        "kitty" => spawn_detached_in_dir(&term_path, &["--directory".into(), dir_arg], &dir),
+        "foot" => spawn_detached_in_dir(
+            &term_path,
+            &[format!("--working-directory={dir_arg}")],
+            &dir,
+        ),
+        "ghostty" => spawn_detached_in_dir(
+            &term_path,
+            &[format!("--working-directory={dir_arg}")],
+            &dir,
+        ),
+        "wezterm" => spawn_detached_in_dir(
+            &term_path,
+            &["start".into(), "--cwd".into(), dir_arg],
+            &dir,
+        ),
+        "xterm" | "uxterm" => {
+            // xterm has no cwd flag; use argv-form -e so the path is never shell-interpolated.
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            spawn_detached_in_dir(
+                &term_path,
+                &[
+                    "-e".into(),
+                    "sh".into(),
+                    "-c".into(),
+                    r#"cd "$1" && exec "$2""#.into(),
+                    "sh".into(),
+                    dir_arg,
+                    shell,
+                ],
+                &dir,
+            )
+        }
+        // Unknown / custom TERMINAL: honor the binary and set process cwd.
+        _ => spawn_detached_in_dir(&term_path, &[], &dir),
+    }
+}
+
+/// Detach `bin args...` with an optional working directory. Argv only — no `sh -c`.
+fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) {
+    let mut cmd = Command::new("setsid");
+    cmd.arg("-f")
+        .arg(bin)
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if cmd.spawn().is_ok() {
+        return;
+    }
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .current_dir(dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let _ = cmd.spawn();
+}
+
+/// Basename used to pick terminal CLI flags (`/usr/bin/kitty` → `kitty`).
+fn terminal_basename(term_path: &Path, fallback: &str) -> String {
+    term_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(fallback)
+        .to_ascii_lowercase()
 }
 
 fn which_bin(bin: &str) -> Option<PathBuf> {
@@ -633,4 +717,28 @@ fn which_bin(bin: &str) -> Option<PathBuf> {
 fn shell_quote(path: &Path) -> String {
     let s = path.to_string_lossy();
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+#[cfg(test)]
+mod open_terminal_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn terminal_basename_strips_path() {
+        assert_eq!(
+            terminal_basename(Path::new("/usr/bin/alacritty"), "unused"),
+            "alacritty"
+        );
+        assert_eq!(
+            terminal_basename(Path::new("/usr/local/bin/kitty"), "unused"),
+            "kitty"
+        );
+        assert_eq!(terminal_basename(Path::new("foot"), "foot"), "foot");
+        // Custom binary names fall through to cwd-based launch (not xterm).
+        assert_eq!(
+            terminal_basename(Path::new("/opt/myterm/bin/myterm"), "myterm"),
+            "myterm"
+        );
+    }
 }

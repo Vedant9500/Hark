@@ -62,8 +62,8 @@ impl FxStore {
                     let stale = age > TTL_SECS;
                     let converted =
                         rate_vs_base(cache, &from).and_then(|from_rate| {
-                            rate_vs_base(cache, &to).map(|to_rate| {
-                                let out = (amount / from_rate) * to_rate;
+                            rate_vs_base(cache, &to).and_then(|to_rate| {
+                                let out = convert_amount(amount, from_rate, to_rate)?;
                                 let meta = if stale {
                                     format!("ECB {} · stale cache", cache.date)
                                 } else if age > 300 {
@@ -71,7 +71,7 @@ impl FxStore {
                                 } else {
                                     format!("ECB {}", cache.date)
                                 };
-                                (out, meta)
+                                Some((out, meta))
                             })
                         });
                     (converted, stale)
@@ -120,6 +120,19 @@ fn rate_vs_base(cache: &RatesCache, code: &str) -> Option<f64> {
         return Some(1.0);
     }
     cache.rates.get(code).copied()
+}
+
+/// Apply ECB cross rate; reject zero / non-finite inputs so UI never shows inf/NaN.
+fn convert_amount(amount: f64, from_rate: f64, to_rate: f64) -> Option<f64> {
+    if !amount.is_finite() || !from_rate.is_finite() || !to_rate.is_finite() || from_rate == 0.0 {
+        return None;
+    }
+    let out = (amount / from_rate) * to_rate;
+    if out.is_finite() {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Normalize currency token (code or symbol) → ISO code
@@ -260,5 +273,16 @@ mod tests {
             let r = store.convert(100.0, "USD", "EUR");
             assert!(r.is_some(), "stale disk cache should still convert");
         }
+    }
+
+    #[test]
+    fn convert_amount_rejects_zero_and_non_finite_rates() {
+        assert_eq!(convert_amount(100.0, 1.0, 0.9), Some(90.0));
+        assert!(convert_amount(100.0, 0.0, 0.9).is_none());
+        assert!(convert_amount(100.0, f64::NAN, 0.9).is_none());
+        assert!(convert_amount(100.0, 1.0, f64::INFINITY).is_none());
+        assert!(convert_amount(f64::NAN, 1.0, 0.9).is_none());
+        // Extreme values that overflow to inf.
+        assert!(convert_amount(f64::MAX, 1e-300, f64::MAX).is_none());
     }
 }

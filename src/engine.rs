@@ -818,7 +818,7 @@ fn is_force_files_query(q: &str, files: &FileProvider) -> bool {
         return true;
     }
     // Prefix modes: `f foo`, `File foo`, `FOLDER bar` (ASCII-insensitive).
-    if let Some(rest) = strip_force_files_prefix(t) {
+    if let Some(rest) = crate::providers::files::strip_force_files_prefix(t) {
         // Bare `f` / `file` / `folder` still count as force (browse mode).
         let _ = rest;
         return true;
@@ -828,28 +828,6 @@ fn is_force_files_query(q: &str, files: &FileProvider) -> bool {
     }
     // `name in scope` (incl. bare folder scopes known to the index).
     files.is_scoped_query(t)
-}
-
-/// If `q` starts with `f`/`file`/`folder` + whitespace (ASCII case-insensitive),
-/// return the remainder (may be empty).
-fn strip_force_files_prefix(q: &str) -> Option<&str> {
-    let bytes = q.as_bytes();
-    // Match longest prefix first.
-    for pref in ["folder", "file", "f"] {
-        let pb = pref.as_bytes();
-        if bytes.len() >= pb.len() && bytes[..pb.len()].eq_ignore_ascii_case(pb) {
-            let rest = &q[pb.len()..];
-            if rest.is_empty() {
-                return Some(rest);
-            }
-            // Require whitespace after the keyword so `firefox` is not force-files.
-            let b0 = rest.as_bytes()[0];
-            if b0 == b' ' || b0 == b'\t' {
-                return Some(rest.trim_start());
-            }
-        }
-    }
-    None
 }
 
 fn kind_rank(k: ResultKind) -> u8 {
@@ -900,7 +878,7 @@ fn copy_to_clipboard(text: &str) {
 
 #[cfg(test)]
 mod force_files_tests {
-    use super::strip_force_files_prefix;
+    use crate::providers::files::strip_force_files_prefix;
 
     #[test]
     fn prefix_case_insensitive() {

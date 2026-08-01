@@ -807,4 +807,56 @@ This audit executed **17 distinct passes** (15 required + 2 adversarial/supply-c
 
 ---
 
+## Remediation Status Tracker
+
+Track progress against audit findings. Update the **Status** column as work lands.
+
+**Legend:** `Done` · `Open` · `Accepted` (won't fix / intentional) · `Partial`
+
+| ID | Area | Severity | Status | Notes |
+|----|------|----------|--------|-------|
+| C1 | Shell injection in `launch_app` | Critical | Done | Argv + `setsid -f`; no `sh -c` for Exec |
+| C2 | `.ssh` / `.gnupg` / key files indexed | Critical | Done | Removed allowlist; hard-skip key names |
+| C3 | Config API key file mode | High | Done | `config.json` saved as `0600` |
+| C4 | Concurrent `run_build` race | High | Done | `build_lock` + single-flight skip |
+| C5 | Translate endpoint SSRF | Med–High | Done | Scheme/host validation; metadata blocked |
+| C6 | Poisoned lock `unwrap` + abort | Medium | Done | Poison recovery on provider hot paths |
+| C7 | Custom `TERMINAL` path ignored | Medium | Done | Basename match + argv spawn; unknown terms use cwd |
+| C8 | FX zero/NaN rate division | Low–Med | Done | `convert_amount` rejects zero/NaN/inf |
+| C9 | Math `% 0` implicit NaN | Low | Done | `%` rejects zero divisor like `/` |
+| C10 | Datetime `f64 as i64` overflow | Low | Open | Clamp relative duration range |
+| C11 | IPC same-user only | Low | Accepted | Expected for launcher; socket `0600` |
+| P1 | `search.rs` size / allocs | Perf | Done | One id HashSet hoisted across deep jobs/merges; merge rank precomputes lowercase key |
+| P2 | Live-cache prefix case | Perf | Done | Shared `strip_force_files_prefix`; case-insensitive cache keys |
+| P3 | Live-cache LRU O(n) | Perf | Open | Fine at current cap; revisit if raised |
+| P4 | Periodic 45m refresh wake | Perf | Open | Acceptable; document battery note |
+| P5 | Translate orphan workers | Perf | Open | Semaphore or cancel flag |
+| P6 | Preview unsafe pixbuf copy | Perf | Accepted | Required by gtk-rs; document invariant |
+| P7 | Index 100k cap + deep roots | Perf | Open | Surface warning when capped early |
+| A1 | Mega-modules | Arch | Open | Split search / ui / settings |
+| A2 | Binary-only crate | Arch | Open | Extract `lib.rs` |
+| A3 | Broken docs links | Docs | Open | FEATURES.md / todo / placeholders |
+| A4 | README missing features | Docs | Open | Translate, Ctrl+K, FX, settings |
+| A5 | Style tracker in tree | Docs | Open | Archive or delete tracker file |
+| A6 | Install script confusion | Docs | Open | Document canonical install path |
+| A7 | ExcludeSet substring patterns | Arch | Open | Component-boundary or glob match |
+| CI | No PR test/fmt/clippy gate | Process | Open | Add `.github/workflows/ci.yml` |
+| E1 | Config parse failure silent | Correctness | Open | Backup invalid JSON + notify |
+| E2 | Silent launch/IO `let _ =` | Correctness | Open | Surface critical spawn failures |
+| T1 | Engine integration tests | Tests | Open | Ranking matrix across providers |
+| T2 | Network mock FX/translate | Tests | Open | HTTP parse paths beyond MyMemory |
+
+### Summary
+
+| Status | Count |
+|--------|------:|
+| Done | 11 |
+| Open | 17 |
+| Accepted | 2 |
+| **Total tracked** | **30** |
+
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed).*
+
+---
+
 *End of audit report.*

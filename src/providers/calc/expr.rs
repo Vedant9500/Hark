@@ -144,7 +144,12 @@ fn parse_mul(tokens: &[Tok], i: &mut usize) -> Option<f64> {
                 }
                 left / right
             }
-            '%' => left % right,
+            '%' => {
+                if right == 0.0 {
+                    return None;
+                }
+                left % right
+            }
             _ => unreachable!(),
         };
     }
@@ -363,6 +368,8 @@ mod tests {
         assert!(eval_str("").is_none());
         assert!(eval_str("2+").is_none());
         assert!(eval_str("1/0").is_none());
+        assert!(eval_str("5%0").is_none());
+        assert!(eval_str("5 % 0").is_none());
         assert!(eval_str("nope").is_none());
     }
 

@@ -122,8 +122,10 @@ pub(crate) fn run_deep_jobs(
     excludes: &ExcludeSet,
     results: &mut Vec<SearchResult>,
 ) {
+    // One id set for the whole batch, reused across every job + merge instead of
+    // rebuilding from `results` per job (which is O(jobs²) on result count).
+    let mut existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
     for job in jobs {
-        let existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
         let live = live_deep_under_roots(
             &job.roots,
             &job.segments,
@@ -132,7 +134,7 @@ pub(crate) fn run_deep_jobs(
             path_style,
             mounts,
             excludes,
-            existing,
+            &mut existing,
             job.deep,
         );
         merge_live(results, live);
@@ -1158,15 +1160,9 @@ fn maybe_deep_for_name(
             path_style,
             mounts,
             excludes,
-            existing.clone(),
+            &mut existing,
             deep,
         );
-        // Named-root walk looks for the *name* deeper (e.g. nested `glassbox`);
-        // usually the index already has the folder. Still useful for files named
-        // the same as a parent folder.
-        for r in &live {
-            existing.insert(r.id.clone());
-        }
         merge_live(results, live);
         if index_is_strong(results) {
             return;
@@ -1203,7 +1199,7 @@ fn maybe_deep_for_name(
         path_style,
         mounts,
         excludes,
-        existing,
+        &mut existing,
         deep,
     );
     merge_live(results, live);
@@ -1238,7 +1234,7 @@ fn maybe_deep_for_glob(
         }
     }
 
-    let existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
+    let mut existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
     let live = live_deep_search(
         index,
         &gq.segments,
@@ -1247,7 +1243,7 @@ fn maybe_deep_for_glob(
         path_style,
         mounts,
         excludes,
-        existing,
+        &mut existing,
         deep,
         deep_roots,
     );
@@ -1269,7 +1265,7 @@ fn maybe_deep_for_scoped(
     if index_is_strong(results) {
         return;
     }
-    let existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
+    let mut existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
     let pinned = pinned_deep_roots(deep_roots);
 
     // Absolute / `~/` scope → walk that root directly (best case).
@@ -1291,7 +1287,7 @@ fn maybe_deep_for_scoped(
             path_style,
             mounts,
             excludes,
-            existing,
+            &mut existing,
             deep,
         );
         merge_live(results, live);
@@ -1316,7 +1312,7 @@ fn maybe_deep_for_scoped(
         path_style,
         mounts,
         excludes,
-        existing,
+        &mut existing,
         deep,
     );
     merge_live(results, live);
@@ -1350,7 +1346,7 @@ fn maybe_deep_absolute_glob(
         return;
     }
     let pat_l = pat.to_lowercase();
-    let existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
+    let mut existing: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
     let live = live_deep_under_roots(
         &[dir],
         &[],
@@ -1363,7 +1359,7 @@ fn maybe_deep_absolute_glob(
         path_style,
         mounts,
         excludes,
-        existing,
+        &mut existing,
         deep,
     );
     merge_live(results, live);
@@ -1410,21 +1406,22 @@ fn is_broad_extension_glob(pat: &str) -> bool {
     false
 }
 
+/// Merge live walk hits into `results`. No dedup needed: the walks skip every id
+/// already present in the shared `existing` set (seeded with `results` ids), so
+/// every `live` hit is guaranteed absent from `results`.
 fn merge_live(results: &mut Vec<SearchResult>, live: Vec<SearchResult>) {
     if live.is_empty() {
         return;
     }
-    let mut seen: HashSet<String> = results.iter().map(|r| r.id.clone()).collect();
-    for r in live {
-        if seen.insert(r.id.clone()) {
-            results.push(r);
-        }
-    }
-    results.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-    });
+    results.extend(live);
+    // Rank once with a precomputed lowercase title key instead of lowercasing
+    // per comparison (O(n log n) allocs on the ranking path).
+    let mut keyed: Vec<(i64, String, SearchResult)> = results
+        .drain(..)
+        .map(|r| (r.score, r.title.to_lowercase(), r))
+        .collect();
+    keyed.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    results.extend(keyed.into_iter().map(|(_, _, r)| r));
     results.truncate(FILE_RESULT_LIMIT);
 }
 
@@ -1552,7 +1549,7 @@ fn live_deep_search(
     path_style: &PathStyle,
     mounts: &[MountInfo],
     excludes: &ExcludeSet,
-    existing: HashSet<String>,
+    existing: &mut HashSet<String>,
     deep: DeepMode,
     deep_roots: &[String],
 ) -> Vec<SearchResult> {
@@ -1593,7 +1590,7 @@ fn live_deep_under_roots(
     path_style: &PathStyle,
     mounts: &[MountInfo],
     excludes: &ExcludeSet,
-    mut existing: HashSet<String>,
+    existing: &mut HashSet<String>,
     deep: DeepMode,
 ) -> Vec<SearchResult> {
     if roots.is_empty() || deep == DeepMode::Skip {
@@ -2854,6 +2851,53 @@ mod tests {
         assert!(
             scoped.iter().all(|r| !r.id.contains("node_modules")),
             "scoped deep must skip junk"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shared_existing_set_skips_duplicate_walks() {
+        let base = std::env::temp_dir().join(format!("blink-deep-seen-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("proj").join("src")).unwrap();
+        fs::write(base.join("proj").join("src").join("optimization.md"), "hi").unwrap();
+
+        let style = PathStyle::Label;
+        let mounts: Vec<MountInfo> = vec![];
+        let excludes = ExcludeSet::from_list(&[]);
+        let mut existing: HashSet<String> = HashSet::new();
+
+        let first = live_deep_under_roots(
+            &[base.join("proj")],
+            &[],
+            Some("optimization.md"),
+            false,
+            &style,
+            &mounts,
+            &excludes,
+            &mut existing,
+            DeepMode::Sync,
+        );
+        assert_eq!(first.len(), 1);
+
+        // Same root + pattern walked again: the shared `existing` set (the walk
+        // inserts every hit id into it) makes the second walk skip the file, so
+        // `merge_live` can append without dedup.
+        let second = live_deep_under_roots(
+            &[base.join("proj")],
+            &[],
+            Some("optimization.md"),
+            false,
+            &style,
+            &mounts,
+            &excludes,
+            &mut existing,
+            DeepMode::Sync,
+        );
+        assert!(
+            second.is_empty(),
+            "persistent existing set must skip already-found hits"
         );
 
         let _ = fs::remove_dir_all(&base);

@@ -32,17 +32,14 @@ impl LiveCache {
         }
     }
 
-    /// Normalize query for cache key (trim + lowercase; strip `f `/`file `/`folder `).
+    /// Normalize query for cache key (trim + lowercase; strip `f `/`file `/`folder `
+    /// case-insensitively, matching the engine's force-files gate).
     pub fn key_for(query: &str) -> String {
         let raw = query.trim();
-        let q = raw
-            .strip_prefix("f ")
-            .or_else(|| raw.strip_prefix("file "))
-            .or_else(|| raw.strip_prefix("folder "))
+        crate::providers::files::strip_force_files_prefix(raw)
             .unwrap_or(raw)
             .trim()
-            .to_lowercase();
-        q
+            .to_lowercase()
     }
 
     /// True when a non-expired entry exists (no hit vector clone).
@@ -173,6 +170,18 @@ mod tests {
         let a = c.get("foo.bar").unwrap();
         let b = c.get("foo.bar").unwrap();
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn prefix_normalization_is_case_insensitive() {
+        // Engine treats `f`/`file`/`folder` prefixes ASCII case-insensitively;
+        // cache keys must too, else `File foo` vs `file foo` duplicate deep walks.
+        let c = LiveCache::new();
+        let _ = c.put("File foo.bar", vec![hit("a")]);
+        assert_eq!(c.get("file foo.bar").unwrap().len(), 1);
+        assert_eq!(c.get("FOLDER foo.bar").unwrap().len(), 1);
+        assert_eq!(c.get("Folder\tfoo.bar").unwrap().len(), 1);
+        assert!(c.get("firefox").is_none());
     }
 
     #[test]

@@ -14,6 +14,14 @@ pub fn socket_path() -> PathBuf {
 /// Fast path for hotkey: tell the daemon to toggle. Returns true if delivered.
 pub fn request_toggle() -> bool {
     let path = socket_path();
+    // No daemon socket at all → nothing to toggle. Skipping the retry loop
+    // saves ~100ms of cold-start time (5 × 20ms sleeps) when the connect
+    // failure is instant ENOENT. The retries below only matter for the
+    // stale-socket race (daemon died, fresh daemon rebinding), which still
+    // runs because `exists()` is true for a leftover socket file.
+    if !path.exists() {
+        return false;
+    }
     for _ in 0..5 {
         match UnixStream::connect(&path) {
             Ok(mut stream) => {
