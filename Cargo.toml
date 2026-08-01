@@ -11,6 +11,14 @@ homepage = "https://github.com/YOUR_GITHUB_USER/blink"
 keywords = ["launcher", "wayland", "hyprland", "gtk4", "raycast"]
 categories = ["gui"]
 
+[lib]
+name = "blink"
+path = "src/lib.rs"
+
+[[bin]]
+name = "blink"
+path = "src/main.rs"
+
 [features]
 default = []
 layer-shell = ["dep:gtk4-layer-shell"]

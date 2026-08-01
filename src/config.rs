@@ -668,11 +668,37 @@ pub struct ConfigStore {
 impl ConfigStore {
     pub fn load() -> Self {
         let path = config_path();
+        // True when a corrupt config was replaced — forces a fresh save below.
+        let mut recovered = false;
         let mut cfg = if path.exists() {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            match fs::read_to_string(&path) {
+                Ok(contents) => match serde_json::from_str::<BlinkConfig>(&contents) {
+                    Ok(cfg) => cfg,
+                    Err(err) => {
+                        recovered = true;
+                        match backup_invalid_config(&path) {
+                            Some(backup) => eprintln!(
+                                "blink: invalid config {} ({err}); using defaults (backup: {})",
+                                path.display(),
+                                backup.display()
+                            ),
+                            None => eprintln!(
+                                "blink: invalid config {} ({err}); using defaults (backup failed)",
+                                path.display()
+                            ),
+                        }
+                        BlinkConfig::default()
+                    }
+                },
+                Err(err) => {
+                    // Read failure (permissions etc.) — do not clobber the file.
+                    eprintln!(
+                        "blink: could not read config {} ({err}); using defaults",
+                        path.display()
+                    );
+                    BlinkConfig::default()
+                }
+            }
         } else {
             BlinkConfig::default()
         };
@@ -726,7 +752,7 @@ impl ConfigStore {
             inner: RwLock::new(Arc::new(cfg)),
             path,
         };
-        if changed || !store.path.exists() {
+        if changed || recovered || !store.path.exists() {
             store.save();
         }
         store
@@ -796,6 +822,13 @@ pub fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
         .join("blink/config.json")
+}
+
+/// Copy a corrupt config aside (`config.json.invalid`) so the user can recover
+/// settings, returning the backup path on success.
+fn backup_invalid_config(path: &Path) -> Option<PathBuf> {
+    let backup = path.with_extension("json.invalid");
+    fs::copy(path, &backup).ok().map(|_| backup)
 }
 
 pub fn discover_mounts() -> Vec<MountInfo> {
@@ -1094,6 +1127,31 @@ mod config_store_tests {
             "real update must rewrite config"
         );
         assert_eq!(store.snapshot().index.max_depth, 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_config_is_backed_up_before_use() {
+        let dir = std::env::temp_dir().join(format!(
+            "blink-config-backup-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.json");
+        fs::write(&path, "{ not valid json").unwrap();
+
+        let backup = backup_invalid_config(&path).expect("backup should be written");
+        assert_eq!(backup, dir.join("config.json.invalid"));
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            "{ not valid json",
+            "original corrupt bytes preserved for recovery"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

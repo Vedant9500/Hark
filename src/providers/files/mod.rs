@@ -386,17 +386,24 @@ pub fn icon_for_path(path: &Path, is_dir: bool) -> &'static str {
 
 /// Open `path`, honoring Blink per-category overrides when provided.
 /// Pass `None` / empty overrides to fall back to `xdg-open`.
-pub fn open_path_with(path: &Path, open_with: Option<&crate::config::OpenWithConfig>) {
+pub fn open_path_with(
+    path: &Path,
+    open_with: Option<&crate::config::OpenWithConfig>,
+) -> Result<(), String> {
     if let Some(cfg) = open_with {
         if let Some(cat) = crate::config::FileOpenCategory::from_path(path) {
             if let Some(desktop_id) = cfg.get(cat) {
                 if launch_with_desktop_id(desktop_id, path) {
-                    return;
+                    return Ok(());
                 }
             }
         }
     }
-    let _ = Command::new("xdg-open").arg(path).spawn();
+    Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not open {} with xdg-open: {err}", path.display()))
 }
 
 /// Launch a `.desktop` app with `path` as a file argument.
@@ -593,12 +600,12 @@ fn spawn_detached(bin: &str, args: &[&str]) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if sh.spawn().is_err() {
-        let _ = cmd.spawn();
+    if sh.spawn().is_err() && cmd.spawn().is_err() {
+        eprintln!("blink: could not spawn {bin}");
     }
 }
 
-pub fn open_terminal_at(path: &Path) {
+pub fn open_terminal_at(path: &Path) -> Result<(), String> {
     let dir = if path.is_dir() {
         path.to_path_buf()
     } else {
@@ -607,7 +614,7 @@ pub fn open_terminal_at(path: &Path) {
             .unwrap_or_else(|| PathBuf::from("/"))
     };
     if !dir.is_dir() {
-        return;
+        return Err(format!("terminal: {} is not a directory", dir.display()));
     }
 
     let term = std::env::var("TERMINAL")
@@ -670,7 +677,7 @@ pub fn open_terminal_at(path: &Path) {
 }
 
 /// Detach `bin args...` with an optional working directory. Argv only — no `sh -c`.
-fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) {
+fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) -> Result<(), String> {
     let mut cmd = Command::new("setsid");
     cmd.arg("-f")
         .arg(bin)
@@ -680,7 +687,7 @@ fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     if cmd.spawn().is_ok() {
-        return;
+        return Ok(());
     }
     let mut cmd = Command::new(bin);
     cmd.args(args)
@@ -688,7 +695,9 @@ fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let _ = cmd.spawn();
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not launch {}: {err}", bin.display()))
 }
 
 /// Basename used to pick terminal CLI flags (`/usr/bin/kitty` → `kitty`).

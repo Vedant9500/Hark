@@ -835,15 +835,15 @@ Track progress against audit findings. Update the **Status** column as work land
 | P6 | Preview unsafe pixbuf copy | Perf | Accepted | Required by gtk-rs; document invariant |
 | P7 | Index 100k cap + deep roots | Perf | Done | Surface warning when capped early |
 | A1 | Mega-modules | Arch | Done | Split search into glob / plan / deep / rank |
-| A2 | Binary-only crate | Arch | Open | Extract `lib.rs` |
+| A2 | Binary-only crate | Arch | Done | `src/lib.rs` lib target; `cargo test --lib` passes (102) |
 | A3 | Broken docs links | Docs | Open | FEATURES.md / todo / placeholders |
 | A4 | README missing features | Docs | Open | Translate, Ctrl+K, FX, settings |
 | A5 | Style tracker in tree | Docs | Open | Archive or delete tracker file |
 | A6 | Install script confusion | Docs | Open | Document canonical install path |
 | A7 | ExcludeSet substring patterns | Arch | Open | Component-boundary or glob match |
 | CI | No PR test/fmt/clippy gate | Process | Open | Add `.github/workflows/ci.yml` |
-| E1 | Config parse failure silent | Correctness | Open | Backup invalid JSON + notify |
-| E2 | Silent launch/IO `let _ =` | Correctness | Open | Surface critical spawn failures |
+| E1 | Config parse failure silent | Correctness | Done | Corrupt JSON backed up to `config.json.invalid` + stderr warning; fresh config saved |
+| E2 | Silent launch/IO `let _ =` | Correctness | Done | Launch/open/terminal/copy spawn failures surfaced via `eprintln!` + `Failed` |
 | T1 | Engine integration tests | Tests | Open | Ranking matrix across providers |
 | T2 | Network mock FX/translate | Tests | Open | HTTP parse paths beyond MyMemory |
 
@@ -851,12 +851,12 @@ Track progress against audit findings. Update the **Status** column as work land
 
 | Status | Count |
 |--------|------:|
-| Done | 17 |
-| Open | 11 |
+| Done | 20 |
+| Open | 8 |
 | Accepted | 2 |
 | **Total tracked** | **30** |
 
-*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01.*
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01.*
 
 ---
 

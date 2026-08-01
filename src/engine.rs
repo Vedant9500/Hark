@@ -371,24 +371,40 @@ impl Engine {
     pub fn execute(&self, action: &Action) -> ExecuteOutcome {
         match action {
             Action::LaunchApp { exec, terminal, .. } => {
-                crate::providers::apps::launch_app(exec, *terminal);
-                ExecuteOutcome::Launched
+                match crate::providers::apps::launch_app(exec, *terminal) {
+                    Ok(()) => ExecuteOutcome::Launched,
+                    Err(err) => {
+                        eprintln!("blink: launch failed: {err}");
+                        ExecuteOutcome::Failed
+                    }
+                }
             }
             Action::OpenPath(path) => {
                 // Promote project roots off the UI thread (marker walks are FS-heavy).
                 self.schedule_auto_promote_deep_root(path);
                 let cfg = self.config.snapshot();
-                crate::providers::files::open_path_with(path, Some(&cfg.open_with));
-                ExecuteOutcome::Launched
+                match crate::providers::files::open_path_with(path, Some(&cfg.open_with)) {
+                    Ok(()) => ExecuteOutcome::Launched,
+                    Err(err) => {
+                        eprintln!("blink: open failed: {err}");
+                        ExecuteOutcome::Failed
+                    }
+                }
             }
-            Action::OpenTerminal(path) => {
-                crate::providers::files::open_terminal_at(path);
-                ExecuteOutcome::Launched
-            }
-            Action::Copy(text) => {
-                copy_to_clipboard(text);
-                ExecuteOutcome::Launched
-            }
+            Action::OpenTerminal(path) => match crate::providers::files::open_terminal_at(path) {
+                Ok(()) => ExecuteOutcome::Launched,
+                Err(err) => {
+                    eprintln!("blink: open terminal failed: {err}");
+                    ExecuteOutcome::Failed
+                }
+            },
+            Action::Copy(text) => match copy_to_clipboard(text) {
+                Ok(()) => ExecuteOutcome::Launched,
+                Err(err) => {
+                    eprintln!("blink: copy failed: {err}");
+                    ExecuteOutcome::Failed
+                }
+            },
             Action::SetQuery(q) => ExecuteOutcome::SetQuery(q.clone()),
             Action::OpenSettings => ExecuteOutcome::OpenSettings,
             Action::RevealPath(path) => {
@@ -902,28 +918,23 @@ fn format_int(n: usize) -> String {
     out.chars().rev().collect()
 }
 
-fn copy_to_clipboard(text: &str) {
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    if let Ok(mut child) = Command::new("wl-copy").stdin(Stdio::piped()).spawn() {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
+    for (prog, extra) in [
+        ("wl-copy", &[][..]),
+        ("xclip", &["-selection", "clipboard"][..]),
+    ] {
+        if let Ok(mut child) = Command::new(prog).args(extra).stdin(Stdio::piped()).spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return Ok(());
         }
-        let _ = child.wait();
-        return;
     }
-
-    if let Ok(mut child) = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
-    }
+    Err("no clipboard tool available (wl-copy / xclip not found)".into())
 }
 
 #[cfg(test)]

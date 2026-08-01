@@ -409,9 +409,9 @@ fn resolve_terminal() -> String {
 }
 
 /// Detach with argv only — never interpolate into `sh -c`.
-fn spawn_detached_argv(argv: &[String]) {
+fn spawn_detached_argv(argv: &[String]) -> Result<(), String> {
     if argv.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Prefer `setsid -f program args...` so the child survives blink exit without a shell.
@@ -422,7 +422,7 @@ fn spawn_detached_argv(argv: &[String]) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     if cmd.spawn().is_ok() {
-        return;
+        return Ok(());
     }
 
     // Fallback: direct spawn (may die with the parent session on some setups).
@@ -431,7 +431,9 @@ fn spawn_detached_argv(argv: &[String]) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let _ = cmd.spawn();
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not launch {}: {err}", argv[0]))
 }
 
 /// Resolve the primary binary from a desktop `Exec=` line (field codes stripped).
@@ -442,13 +444,13 @@ pub fn resolve_exec_binary(exec: &str) -> Option<PathBuf> {
     which(&first)
 }
 
-pub fn launch_app(exec: &str, terminal: bool) {
+pub fn launch_app(exec: &str, terminal: bool) -> Result<(), String> {
     let mut argv: Vec<String> = split_exec_args(exec)
         .into_iter()
         .filter(|part| !part.starts_with('%'))
         .collect();
     if argv.is_empty() {
-        return;
+        return Ok(());
     }
 
     if terminal {
@@ -457,9 +459,9 @@ pub fn launch_app(exec: &str, terminal: bool) {
         full.push(term);
         full.push("-e".into());
         full.append(&mut argv);
-        spawn_detached_argv(&full);
+        spawn_detached_argv(&full)
     } else {
-        spawn_detached_argv(&argv);
+        spawn_detached_argv(&argv)
     }
 }
 

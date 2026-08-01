@@ -1,16 +1,6 @@
-mod config;
-mod engine;
-mod ipc;
-mod providers;
-mod theme;
-mod typos;
-mod ui;
-mod usage;
-
-#[cfg(feature = "bench")]
-mod bench;
-
-use engine::Engine;
+use blink::engine::Engine;
+use blink::ipc;
+use blink::ui;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::Application;
@@ -37,7 +27,7 @@ fn main() {
     if bench {
         #[cfg(feature = "bench")]
         {
-            bench::run_bench();
+            blink::bench::run_bench();
             return;
         }
         #[cfg(not(feature = "bench"))]
