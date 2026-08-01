@@ -7,9 +7,15 @@ use crate::providers::{Action, ResultKind, SearchResult};
 use crate::typos::TypoStore;
 use crate::usage::UsageStore;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+struct PeriodicRefresh {
+    /// Sending stops the thread (wakes its 45m wait immediately).
+    stop: std::sync::mpsc::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
 
 pub struct Engine {
     apps: Arc<AppProvider>,
@@ -19,12 +25,14 @@ pub struct Engine {
     usage: Arc<UsageStore>,
     typos: Arc<TypoStore>,
     config: Arc<ConfigStore>,
+    /// Periodic refresh thread + stop signal (daemon only; None in headless).
+    periodic: Mutex<Option<PeriodicRefresh>>,
 }
 
 impl Engine {
     /// Full daemon engine: warm apps/index on a bg thread + 45m periodic refresh.
     pub fn new() -> Self {
-        let engine = Self::new_headless();
+        let mut engine = Self::new_headless();
         engine.spawn_warm();
         engine.spawn_periodic_refresh();
         engine
@@ -53,6 +61,7 @@ impl Engine {
             usage,
             typos,
             config,
+            periodic: Mutex::new(None),
         }
     }
 
@@ -67,14 +76,41 @@ impl Engine {
     }
 
     /// Long-lived 45m apps reload + files `ensure_fresh` (daemon only).
-    pub fn spawn_periodic_refresh(&self) {
+    ///
+    /// Battery note: the thread sleeps in a channel `recv_timeout`, so it only
+    /// wakes the process once per 45 min. `rebuild_index` delegates to
+    /// `ensure_fresh`, which short-circuits when the on-disk fingerprint is
+    /// unchanged, so a quiet daemon costs little beyond that single wake.
+    /// The thread is stoppable via [`Engine::shutdown_periodic_refresh`] (also
+    /// called on `Drop`) so in-process `Engine::new()` tests never leak it.
+    pub fn spawn_periodic_refresh(&mut self) {
         let files_periodic = self.files.clone();
         let apps_periodic = self.apps.clone();
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(45 * 60));
-            apps_periodic.reload();
-            files_periodic.rebuild_index();
+        let (stop, rx) = std::sync::mpsc::channel::<()>();
+        let thread = thread::spawn(move || loop {
+            match rx.recv_timeout(Duration::from_secs(45 * 60)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    apps_periodic.reload();
+                    files_periodic.rebuild_index();
+                }
+            }
         });
+        *self.periodic.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(PeriodicRefresh { stop, thread });
+    }
+
+    /// Stop the periodic refresh thread and join it (wakes its 45m wait).
+    pub fn shutdown_periodic_refresh(&self) {
+        if let Some(p) = self
+            .periodic
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = p.stop.send(());
+            let _ = p.thread.join();
+        }
     }
 
     pub fn config(&self) -> Arc<ConfigStore> {
@@ -141,11 +177,19 @@ impl Engine {
         if p.running {
             format!("Indexing… {} files", format_int(p.count))
         } else if p.capped {
-            format!(
-                "Index: {} items · cap reached (max {})",
-                format_int(p.count),
-                format_int(p.max)
-            )
+            if p.capped_by_deep {
+                format!(
+                    "Index: {} items · cap hit by deep roots (max {}; pin fewer deep folders)",
+                    format_int(p.count),
+                    format_int(p.max)
+                )
+            } else {
+                format!(
+                    "Index: {} items · cap reached (max {})",
+                    format_int(p.count),
+                    format_int(p.max)
+                )
+            }
         } else {
             format!("Index: {} items · done", format_int(p.count))
         }
@@ -620,6 +664,12 @@ impl Engine {
     #[cfg(feature = "bench")]
     pub fn search_calc_only(&self, query: &str) -> Vec<SearchResult> {
         self.calc.search(query)
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.shutdown_periodic_refresh();
     }
 }
 

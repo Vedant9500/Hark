@@ -59,6 +59,8 @@ pub struct IndexProgress {
     pub count: usize,
     pub running: bool,
     pub capped: bool,
+    /// Cap was hit while walking pinned deep roots (warn in UI).
+    pub capped_by_deep: bool,
     pub max: usize,
 }
 
@@ -81,6 +83,7 @@ impl FileProvider {
             count: if running { progress } else { stored },
             running,
             capped: self.state.capped.load(Ordering::Relaxed),
+            capped_by_deep: self.state.capped_by_deep.load(Ordering::Relaxed),
             max: MAX_INDEX,
         }
     }
@@ -178,8 +181,6 @@ impl FileProvider {
                 &excludes,
                 &self.matcher,
                 allow_fuzzy,
-                DeepMode::Skip,
-                &cfg.index.deep_roots,
                 &hot_indices,
             );
             let jobs = if deep != DeepMode::Skip {

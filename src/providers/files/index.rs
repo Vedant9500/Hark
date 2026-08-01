@@ -46,6 +46,10 @@ struct CacheFile {
     version: u32,
     #[serde(default)]
     fingerprint: String,
+    /// Whether the cap was reached while walking pinned deep roots (serde
+    /// default keeps older caches readable).
+    #[serde(default)]
+    capped_by_deep: bool,
     items: Vec<CacheEntry>,
 }
 
@@ -54,6 +58,8 @@ pub(crate) struct IndexState {
     pub indexing: AtomicBool,
     pub progress: AtomicUsize,
     pub capped: AtomicBool,
+    /// Cap was hit during the pinned deep-roots phase → surfaced as a warning.
+    pub capped_by_deep: AtomicBool,
     pub config: Arc<ConfigStore>,
     pub mounts: RwLock<Vec<MountInfo>>,
     fingerprint: RwLock<String>,
@@ -68,6 +74,7 @@ impl IndexState {
             indexing: AtomicBool::new(false),
             progress: AtomicUsize::new(0),
             capped: AtomicBool::new(false),
+            capped_by_deep: AtomicBool::new(false),
             config,
             mounts: RwLock::new(discover_mounts()),
             fingerprint: RwLock::new(String::new()),
@@ -107,11 +114,15 @@ impl IndexState {
         *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
         let fp = self.compute_fingerprint();
 
-        if let Some((items, cached_fp)) = load_cache() {
+        if let Some((items, cached_fp, cached_by_deep)) = load_cache() {
             let n = items.len();
             *self.index.write().unwrap_or_else(|p| p.into_inner()) = items;
             self.progress.store(n, Ordering::Relaxed);
             self.capped.store(n >= MAX_INDEX, Ordering::Relaxed);
+            self.capped_by_deep.store(
+                n >= MAX_INDEX && cached_by_deep,
+                Ordering::Relaxed,
+            );
             *self.fingerprint.write().unwrap_or_else(|p| p.into_inner()) = cached_fp.clone();
 
             let ttl_ok = !cache_ttl_stale();
@@ -149,11 +160,13 @@ impl IndexState {
         self.indexing.store(true, Ordering::Relaxed);
         self.progress.store(0, Ordering::Relaxed);
         self.capped.store(false, Ordering::Relaxed);
+        self.capped_by_deep.store(false, Ordering::Relaxed);
         let items = self.build_index();
         let n = items.len();
         let hit_cap = n >= MAX_INDEX;
+        let capped_by_deep = self.capped_by_deep.load(Ordering::Relaxed);
         // Disk write before swap so a crash mid-write doesn't leave empty RAM index.
-        save_cache(&items, &fingerprint);
+        save_cache(&items, &fingerprint, capped_by_deep);
         *self.index.write().unwrap_or_else(|p| p.into_inner()) = items;
         *self.fingerprint.write().unwrap_or_else(|p| p.into_inner()) = fingerprint;
         self.progress.store(n, Ordering::Relaxed);
@@ -287,6 +300,9 @@ impl IndexState {
         if items.len() < MAX_INDEX {
             for root in &deep_roots {
                 if walk_root(root, 6, &mut items, &mut seen) {
+                    // Cap hit while walking a pinned deep root — flag it so the
+                    // UI can warn that deep roots crowded out regular results.
+                    self.capped_by_deep.store(true, Ordering::Relaxed);
                     break;
                 }
             }
@@ -562,7 +578,7 @@ fn cache_ttl_stale() -> bool {
     ver != CACHE_VERSION || now_secs().saturating_sub(ts) > INDEX_TTL_SECS
 }
 
-fn load_cache() -> Option<(Vec<IndexedPath>, String)> {
+fn load_cache() -> Option<(Vec<IndexedPath>, String, bool)> {
     let data = fs::read(cache_path()).ok()?;
     let cf: CacheFile = serde_json::from_slice(&data).ok()?;
     if cf.version != CACHE_VERSION {
@@ -574,10 +590,10 @@ fn load_cache() -> Option<(Vec<IndexedPath>, String)> {
             items.push(item);
         }
     }
-    Some((items, cf.fingerprint))
+    Some((items, cf.fingerprint, cf.capped_by_deep))
 }
 
-fn save_cache(items: &[IndexedPath], fingerprint: &str) {
+fn save_cache(items: &[IndexedPath], fingerprint: &str, capped_by_deep: bool) {
     let path = cache_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -585,6 +601,7 @@ fn save_cache(items: &[IndexedPath], fingerprint: &str) {
     let cf = CacheFile {
         version: CACHE_VERSION,
         fingerprint: fingerprint.to_string(),
+        capped_by_deep,
         items: items
             .iter()
             .map(|i| CacheEntry {

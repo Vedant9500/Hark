@@ -5,10 +5,18 @@ use std::thread;
 use std::time::Duration;
 
 pub fn socket_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    dir.join("blink.sock")
+    if let Some(dir) = dirs::runtime_dir() {
+        return dir.join("blink.sock");
+    }
+    // No XDG_RUNTIME_DIR (rare on non-Wayland sessions): fail closed into a
+    // user-private cache dir instead of the shared temp dir, so other local
+    // users cannot occupy or race the socket path. `spawn_listener` creates
+    // this directory with mode 0700.
+    dirs::cache_dir()
+        .or_else(dirs::home_dir)
+        .map(|d| d.join("blink"))
+        .unwrap_or_else(|| std::env::temp_dir().join("blink"))
+        .join("blink.sock")
 }
 
 /// Fast path for hotkey: tell the daemon to toggle. Returns true if delivered.
@@ -57,6 +65,18 @@ pub fn request_toggle() -> bool {
 /// (caller should bounce work onto the GTK main loop via a channel).
 pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
     let path = socket_path();
+
+    // Ensure the socket directory exists and is user-private. XDG_RUNTIME_DIR
+    // is already 0700 by spec; the cache-dir fallback needs to be created and
+    // locked down here.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
 
     let listener = match bind_socket(&path) {
         Some(l) => l,

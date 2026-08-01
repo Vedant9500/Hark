@@ -510,9 +510,10 @@ Large homes with deep pins can hit the cap silently (`capped` flag). UI surfaces
 
 ### A1. Mega-modules hurt maintainability
 
+`src/providers/files/search/` split into `mod.rs` (hub) + `glob.rs` / `plan.rs` / `deep.rs` / `rank.rs`. Largest remaining modules:
+
 | File | LOC | Note |
 |------|----:|------|
-| `src/providers/files/search.rs` | 3116 | Largest; search + parse + deep + tests |
 | `src/ui/mod.rs` | 2331 | Window, keys, debounce, deep/translate glue |
 | `src/ui/settings.rs` | 2216 | Entire settings surface |
 | `src/providers/translate.rs` | 1315 | Provider + HTTP backends + cache + tests |
@@ -824,16 +825,16 @@ Track progress against audit findings. Update the **Status** column as work land
 | C7 | Custom `TERMINAL` path ignored | Medium | Done | Basename match + argv spawn; unknown terms use cwd |
 | C8 | FX zero/NaN rate division | Low–Med | Done | `convert_amount` rejects zero/NaN/inf |
 | C9 | Math `% 0` implicit NaN | Low | Done | `%` rejects zero divisor like `/` |
-| C10 | Datetime `f64 as i64` overflow | Low | Open | Clamp relative duration range |
-| C11 | IPC same-user only | Low | Accepted | Expected for launcher; socket `0600` |
+| C10 | Datetime `f64 as i64` overflow | Low | Done | Relative deltas clamped to ±100 y; test added |
+| C11 | IPC same-user only | Low | Done | No shared `/tmp` fallback; user-private cache dir `0700` |
 | P1 | `search.rs` size / allocs | Perf | Done | One id HashSet hoisted across deep jobs/merges; merge rank precomputes lowercase key |
 | P2 | Live-cache prefix case | Perf | Done | Shared `strip_force_files_prefix`; case-insensitive cache keys |
-| P3 | Live-cache LRU O(n) | Perf | Open | Fine at current cap; revisit if raised |
-| P4 | Periodic 45m refresh wake | Perf | Open | Acceptable; document battery note |
+| P3 | Live-cache LRU O(n) | Perf | Done | Recency `BTreeMap`; O(log n) evict; LRU + reinsert tests |
+| P4 | Periodic 45m refresh wake | Perf | Done | `recv_timeout` wake; fingerprint short-circuit documented; stop signal + `Drop` join |
 | P5 | Translate orphan workers | Perf | Open | Semaphore or cancel flag |
 | P6 | Preview unsafe pixbuf copy | Perf | Accepted | Required by gtk-rs; document invariant |
-| P7 | Index 100k cap + deep roots | Perf | Open | Surface warning when capped early |
-| A1 | Mega-modules | Arch | Open | Split search / ui / settings |
+| P7 | Index 100k cap + deep roots | Perf | Done | Surface warning when capped early |
+| A1 | Mega-modules | Arch | Done | Split search into glob / plan / deep / rank |
 | A2 | Binary-only crate | Arch | Open | Extract `lib.rs` |
 | A3 | Broken docs links | Docs | Open | FEATURES.md / todo / placeholders |
 | A4 | README missing features | Docs | Open | Translate, Ctrl+K, FX, settings |
@@ -850,12 +851,12 @@ Track progress against audit findings. Update the **Status** column as work land
 
 | Status | Count |
 |--------|------:|
-| Done | 11 |
-| Open | 17 |
+| Done | 17 |
+| Open | 11 |
 | Accepted | 2 |
 | **Total tracked** | **30** |
 
-*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed).*
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01.*
 
 ---
 

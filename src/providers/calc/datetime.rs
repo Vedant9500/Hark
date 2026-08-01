@@ -75,7 +75,11 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         let n: f64 = c.get(1)?.as_str().parse().ok()?;
         let unit = c.get(2)?.as_str();
         let dir = c.get(3).map(|m| m.as_str()).unwrap_or("from now");
-        let secs = relative_secs(n, unit)?;
+        // chrono Duration is i64 milliseconds; a saturating `f64 as i64` cast
+        // on huge inputs (e.g. 1e20 years) silently yields wrong dates.
+        // Clamp to ±100 years so the cast is exact and always finite.
+        const MAX_RELATIVE_SECS: f64 = 100.0 * 31_556_952.0;
+        let secs = relative_secs(n, unit)?.clamp(-MAX_RELATIVE_SECS, MAX_RELATIVE_SECS);
         let delta = if dir == "ago" {
             Duration::milliseconds((-secs * 1000.0) as i64)
         } else {
@@ -174,4 +178,25 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
 
     let _ = now.hour(); // keep Timelike import used
     None
+}
+
+#[cfg(test)]
+mod datetime_tests {
+    use super::*;
+
+    #[test]
+    fn huge_relative_input_is_clamped() {
+        let now = Local::now().date_naive();
+        // 1e20 years would silently saturate the i64-millisecond cast; the
+        // result must be clamped to ~100 years and stay a valid date.
+        for q in [
+            "100000000000000000000 years",
+            "-100000000000000000000 years ago",
+        ] {
+            let r = try_datetime(q).expect("clamped result");
+            let d = NaiveDate::parse_from_str(&r.title[..10], "%Y-%m-%d").unwrap();
+            let years = (d - now).num_days() as f64 / 365.25;
+            assert!(years.abs() <= 110.0, "{q} → {years:.0} years off");
+        }
+    }
 }
