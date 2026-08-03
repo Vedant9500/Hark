@@ -13,9 +13,13 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 | **Bases** | `0xFF`, `0b1010` |
 | **Timezones** | `15:00 here to tokyo`, `15:00 in london to here`, `now in new york` |
 | **Time range** | `7:26 - 9:32`, `7:26am to 9:32pm`, `22:00 - 6:30` (overnight) |
+| **Currency / FX** | Live rates (Frankfurter/ECB, cached) — `100 usd to eur`, `$100 in inr` |
+| **Battery / power** | `battery`, `power`, `charging`, `on ac` — live sysfs status |
+| **Online translate** | `tr Hola`, `tr en es Hello`, `译 你好`, or auto-paste foreign script |
 | **Typo learning** | Learns from launches + rewrites (`wats` → WhatsApp); manage in Settings → Typo aliases |
+| **Settings / theme** | `Ctrl+,` — appearance (themes, icons) + tools/overrides |
 
-**Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close
+**Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close · `Ctrl+K` secondary actions (clipboard, reveal, copy path, Open With…, preview) · `Ctrl+,` Settings
 
 ## Install (share with friends)
 
