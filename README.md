@@ -32,10 +32,10 @@ Linux doesn’t have one universal “APK / MSI”. Blink ships the closest equi
 ### One-line (after you publish a GitHub Release)
 
 ```bash
-curl -fsSL https://github.com/YOUR_GITHUB_USER/blink/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/deshmukhvedant95/blink/releases/latest/download/install.sh | bash
 
 # optional: also enable login autostart of the daemon
-curl -fsSL https://github.com/YOUR_GITHUB_USER/blink/releases/latest/download/install.sh | bash -s -- --autostart
+curl -fsSL https://github.com/deshmukhvedant95/blink/releases/latest/download/install.sh | bash -s -- --autostart
 ```
 
 ### Portable binary package (no GitHub needed)

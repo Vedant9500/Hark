@@ -40,7 +40,7 @@ if [[ -z "$GITHUB_REPO" ]]; then
   fi
 fi
 if [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" == *"github.com"* ]]; then
-  GITHUB_REPO="YOUR_GITHUB_USER/blink"
+  GITHUB_REPO="deshmukhvedant95/blink"
 fi
 
 echo "==> Packaging Blink v${VERSION} (${ARCH}-${OS})"
