@@ -1015,13 +1015,13 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
 }
 
 /// Pre-parsed exclude list for hot walk paths (index + live deep).
-/// Simple names → `HashSet` lookup; path substrings stay as linear patterns.
+/// Simple names → `HashSet` lookup; slash patterns → component-boundary match.
 #[derive(Debug, Clone)]
 pub struct ExcludeSet {
     /// Lowercased component names (e.g. `node_modules`, `.git`).
     names: std::collections::HashSet<String>,
-    /// Substring patterns containing `/`.
-    patterns: Vec<String>,
+    /// Path patterns containing `/`, split into component sequences (e.g. `.pi/agent/sessions`).
+    patterns: Vec<Vec<String>>,
 }
 
 impl ExcludeSet {
@@ -1030,7 +1030,12 @@ impl ExcludeSet {
         let mut patterns = Vec::new();
         for ex in excludes {
             if ex.contains('/') {
-                patterns.push(ex.clone());
+                patterns.push(
+                    ex.split('/')
+                        .map(|c| c.to_ascii_lowercase())
+                        .filter(|c| !c.is_empty())
+                        .collect::<Vec<String>>(),
+                );
             } else {
                 names.insert(ex.to_ascii_lowercase());
             }
@@ -1055,9 +1060,14 @@ impl ExcludeSet {
             }
         }
         if !self.patterns.is_empty() {
-            let s = path.to_string_lossy();
-            if self.patterns.iter().any(|p| s.contains(p.as_str())) {
-                return true;
+            let comps: Vec<String> = path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+                .collect();
+            for pattern in &self.patterns {
+                if comps.windows(pattern.len()).any(|w| w == pattern.as_slice()) {
+                    return true;
+                }
             }
         }
         false
@@ -1188,6 +1198,25 @@ mod config_store_tests {
         assert!(set.matches(Path::new("/home/a/.Git")));
         assert!(set.matches(Path::new("/tmp/foo/bar/baz")));
         assert!(!set.matches(Path::new("/home/a/src/main.rs")));
+        // Substring over-match regression (A7): `foo/bar` must NOT match a path
+        // that merely *contains* that string mid-component.
+        assert!(!set.matches(Path::new("/home/a/foobar/baz")));
+        assert!(!set.matches(Path::new("/home/a/xfoo/barx/y")));
+    }
+
+    #[test]
+    fn exclude_set_component_boundary_case_insensitive() {
+        let set = ExcludeSet::from_list(&[".pi/agent/sessions".into(), "Sub/Dir".into()]);
+        // Exact component sequence matches, any depth, any case.
+        assert!(set.matches(Path::new("/home/u/.pi/agent/sessions")));
+        assert!(set.matches(Path::new("/home/u/sub/dir")));
+        assert!(set.matches(Path::new("/home/u/x/.PI/AGENT/sessions/y")));
+        // Substring inside a single component must not match.
+        assert!(!set.matches(Path::new("/home/u/x.pi/agent/sessions_bak")));
+        assert!(!set.matches(Path::new("/home/u/sub/directory")));
+        assert!(!set.matches(Path::new("/home/u/subdir/x")));
+        // Leading empty components (absolute paths) are handled.
+        assert!(!set.matches(Path::new("/pi/agent/sessions")));
     }
 
     #[test]
