@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -55,6 +57,26 @@ impl UsageStore {
         Self {
             inner: RwLock::new(data),
             path,
+            dirty: AtomicBool::new(false),
+            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+        }
+    }
+
+    /// Test-only: empty store backed by a unique temp-dir path so any `record`
+/// debounce-write lands in /tmp, never the working directory.
+    #[cfg(test)]
+    pub(crate) fn new_empty() -> Self {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "blink-usage-empty-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        Self {
+            inner: RwLock::new(UsageFile::default()),
+            path: dir.join("usage.json"),
             dirty: AtomicBool::new(false),
             last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
         }

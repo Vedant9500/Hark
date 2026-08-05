@@ -1,5 +1,5 @@
 mod hot;
-mod index;
+pub(crate) mod index;
 mod live_cache;
 mod search;
 
@@ -73,6 +73,25 @@ impl FileProvider {
             hot: HotPaths::new(usage),
             scoped_memo: Mutex::new(None),
         }
+    }
+
+    /// Test-only: seed the in-memory index directly from bare paths (no disk
+    /// walk, no cache write, no mount discovery). `dirs` marks directory names.
+    #[cfg(test)]
+    pub(crate) fn seed_index(&self, paths: &[(PathBuf, bool)]) {
+        let mut index = Vec::with_capacity(paths.len());
+        for (path, is_dir) in paths {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            index.push(index::make_indexed(path.clone(), name, *is_dir, 2));
+        }
+        index.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+        *self.state.index.write().unwrap_or_else(|p| p.into_inner()) = index;
+        // No mounted filesystems; no hot set — deterministic for ranking tests.
+        *self.state.mounts.write().unwrap_or_else(|p| p.into_inner()) = Vec::new();
     }
 
     pub fn index_progress(&self) -> IndexProgress {

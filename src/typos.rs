@@ -60,6 +60,17 @@ pub struct TypoStore {
 }
 
 impl TypoStore {
+    /// Test-only: empty in-memory store (no disk read/write).
+    #[cfg(test)]
+    pub(crate) fn new_empty() -> Self {
+        Self {
+            inner: RwLock::new(TypoFile::default()),
+            path: std::path::PathBuf::from("<test>"),
+            dirty: AtomicBool::new(false),
+            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+        }
+    }
+
     pub fn load() -> Self {
         let path = typo_path();
         let mut data = if path.exists() {

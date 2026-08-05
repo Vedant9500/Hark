@@ -666,6 +666,16 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
+    /// Test-only: build a store over an in-memory config backed by `path`
+    /// (writes stay in the temp dir; never touches the real config).
+    #[cfg(test)]
+    pub(crate) fn with_path(cfg: BlinkConfig, path: std::path::PathBuf) -> Self {
+        Self {
+            inner: RwLock::new(Arc::new(cfg)),
+            path,
+        }
+    }
+
     pub fn load() -> Self {
         let path = config_path();
         // True when a corrupt config was replaced — forces a fresh save below.

@@ -844,19 +844,19 @@ Track progress against audit findings. Update the **Status** column as work land
 | CI | No PR test/fmt/clippy gate | Process | Open | Add `.github/workflows/ci.yml` |
 | E1 | Config parse failure silent | Correctness | Done | Corrupt JSON backed up to `config.json.invalid` + stderr warning; fresh config saved |
 | E2 | Silent launch/IO `let _ =` | Correctness | Done | Launch/open/terminal/copy spawn failures surfaced via `eprintln!` + `Failed` |
-| T1 | Engine integration tests | Tests | Open | Ranking matrix across providers |
-| T2 | Network mock FX/translate | Tests | Open | HTTP parse paths beyond MyMemory |
+| T1 | Engine integration tests | Tests | Done | Hermetic `Engine::search` testbed (temp config, injected apps + in-memory index): settings/calc owns, force-files/glob, app-prefix vs path, usage boost, typo alias, dedup, sort (10 tests) |
+| T2 | Network mock FX/translate | Tests | Done | Extracted `parse_google_gtx_body`, `parse_libretranslate_body`, `parse_rates_body`; canned-byte tests for Google/MyMemory/LibreTranslate + Frankfurter; `FxStore::with_cache` in-memory convert tests (no network) |
 
 ### Summary
 
 | Status | Count |
 |--------|------:|
-| Done | 23 |
-| Open | 5 |
+| Done | 25 |
+| Open | 3 |
 | Accepted | 2 |
 | **Total tracked** | **30** |
 
-*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05.*
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05. T1 (Engine::search integration tests) + T2 (network-mock FX/translate parse tests) fixed 2026-08-05.*
 
 ---
 

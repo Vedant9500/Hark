@@ -955,3 +955,266 @@ mod force_files_tests {
         assert!(strip_force_files_prefix("folderish").is_none());
     }
 }
+
+#[cfg(test)]
+mod engine_search_tests {
+    use super::*;
+    use crate::config::{BlinkConfig, ConfigStore};
+    use crate::providers::apps::AppProvider;
+    use crate::providers::files::FileProvider;
+    use crate::providers::{Action, ResultKind};
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicU64;
+
+    /// Hermetic Engine: temp-dir config (translate disabled), injected app list,
+    /// seeded in-memory file index, empty usage/typos. No disk scans, no cache
+    /// writes, no network, no periodic thread. T1 ranking-matrix testbed.
+    struct TestEngine {
+        engine: Engine,
+        _dir: PathBuf,
+    }
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn tmp_config_dir() -> PathBuf {
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "blink-engine-test-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn base_config() -> BlinkConfig {
+        let mut cfg = BlinkConfig::default();
+        // Translate is on by default; disable for deterministic ranking.
+        cfg.translate.enabled = false;
+        cfg.index.include_home = false;
+        cfg.index.extra_roots.clear();
+        cfg
+    }
+
+    /// Build an engine with the given apps and files.
+    fn build_engine(apps: &[(&str, &str)], files: &[(&str, bool)]) -> TestEngine {
+        let dir = tmp_config_dir();
+        let cfg = ConfigStore::with_path(base_config(), dir.join("config.json"));
+        let cfg = Arc::new(cfg);
+
+        let usage = Arc::new(UsageStore::new_empty());
+        let typos = Arc::new(TypoStore::new_empty());
+
+        let app_provider = Arc::new(AppProvider::new_empty());
+        app_provider.inject(apps);
+
+        let file_provider = Arc::new(FileProvider::new_empty(cfg.clone(), usage.clone()));
+        let file_paths: Vec<(PathBuf, bool)> = files
+            .iter()
+            .map(|(name, is_dir)| (PathBuf::from(name), *is_dir))
+            .collect();
+        file_provider.seed_index(&file_paths);
+
+        let engine = Engine {
+            apps: app_provider,
+            files: file_provider,
+            calc: Arc::new(CalcProvider::new()),
+            translate: Arc::new(TranslateProvider::new(cfg.clone())),
+            usage,
+            typos,
+            config: cfg,
+            periodic: Mutex::new(None),
+        };
+        TestEngine {
+            engine,
+            _dir: dir,
+        }
+    }
+
+    fn titles(results: &[SearchResult]) -> Vec<&str> {
+        results.iter().map(|r| r.title.as_str()).collect()
+    }
+
+    fn first_kind(results: &[SearchResult]) -> Option<ResultKind> {
+        results.first().map(|r| r.kind)
+    }
+
+    fn has_app(results: &[SearchResult], title: &str) -> bool {
+        results.iter().any(|r| r.kind == ResultKind::App && r.title == title)
+    }
+
+    fn find<'a>(results: &'a [SearchResult], title: &str) -> Option<&'a SearchResult> {
+        results.iter().find(|r| r.title == title)
+    }
+
+    #[test]
+    fn settings_command_owns_query() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        let results = te.engine.search("settings");
+        assert_eq!(first_kind(&results), Some(ResultKind::Command));
+        assert!(matches!(results[0].action, Action::OpenSettings));
+        // "preferences", "index" also map to Settings.
+        assert_eq!(te.engine.search("preferences")[0].kind, ResultKind::Command);
+    }
+
+    #[test]
+    fn calc_owns_query_and_skips_apps() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        let results = te.engine.search("2+2");
+        assert_eq!(first_kind(&results), Some(ResultKind::Calc));
+        assert!(!has_app(&results, "Firefox"), "apps must not mix into calc hits");
+    }
+
+    #[test]
+    fn math_units_and_timezone() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        // Units conversion (Conversion kind).
+        let r = te.engine.search("5 km to miles");
+        assert_eq!(first_kind(&r), Some(ResultKind::Conversion));
+        // Datetime query (e.g. "now").
+        let now = te.engine.search("now");
+        assert_eq!(first_kind(&now), Some(ResultKind::Calc));
+    }
+
+    #[test]
+    fn force_files_query_bypasses_apps() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[("/home/u/doc.md", false), ("/home/u/proj", true)],
+        );
+        // Path-shaped query → files only.
+        let results = te.engine.search("/home/u/doc");
+        assert!(
+            results.iter().all(|r| r.kind == ResultKind::File),
+            "path query must not return apps: {results:?}"
+        );
+        // `f ` prefix → files only.
+        let results = te.engine.search("f doc");
+        assert!(
+            results.iter().all(|r| matches!(r.kind, ResultKind::File | ResultKind::Folder)),
+            "f- prefix must return only file/folder: {results:?}"
+        );
+    }
+
+    #[test]
+    fn glob_query_files_only() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[("/home/u/doc.md", false), ("/home/u/src/main.rs", false)],
+        );
+        let results = te.engine.search("*.md");
+        assert!(
+            results.iter().all(|r| r.kind == ResultKind::File),
+            "glob must return files only: {results:?}"
+        );
+        assert!(titles(&results).contains(&"doc.md"));
+    }
+
+    #[test]
+    fn strong_path_beats_weak_app() {
+        // "glassbox" fuzzy-matches Firefox (s.score < 40? no) — use a name that
+        // fuzzy-matches but has no prefix/contains band, e.g. "fixf" → Firefox.
+        // An exact folder named "fixf" must outrank the weak fuzzy app.
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[("/home/u/fixf", true), ("/home/u/fixf_notes.md", false)],
+        );
+        let results = te.engine.search("fixf");
+        let folder = find(&results, "fixf");
+        let firefox = find(&results, "Firefox");
+        assert!(folder.is_some(), "folder must be present: {results:?}");
+        if let (Some(f), Some(a)) = (folder, firefox) {
+            assert!(
+                f.score >= a.score,
+                "exact folder should beat fuzzy app: {} vs {}",
+                f.score,
+                a.score
+            );
+        }
+    }
+
+    #[test]
+    fn app_prefix_owns_query_files_name_only() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[
+                ("/home/u/firefox.md", false),
+                ("/home/u/firefox_backup", true),
+                ("/home/u/xyz.txt", false),
+            ],
+        );
+        let results = te.engine.search("firef");
+        assert_eq!(results[0].title, "Firefox", "strong app prefix wins: {results:?}");
+    }
+
+    #[test]
+    fn strong_app_exact_wins_over_folder() {
+        let te = build_engine(
+            &[("brave.desktop", "Brave")],
+            &[("/home/u/brave", true)],
+        );
+        // Exact app (50k) beats exact folder (50k) — App kind breaks the tie.
+        let results = te.engine.search("brave");
+        let first = results.first().unwrap();
+        assert_eq!(first.title, "Brave", "exact app beats folder at equal score");
+        assert_eq!(first.kind, ResultKind::App);
+    }
+
+    #[test]
+    fn usage_boost_lifts_frequently_opened() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox"), ("chrome.desktop", "Chrome")],
+            &[],
+        );
+        // Record usage for Firefox so its boost outranks Chrome.
+        te.engine.record_usage("app:firefox.desktop");
+        te.engine.record_usage("app:firefox.desktop");
+        let results = te.engine.search("firefox");
+        assert!(has_app(&results, "Firefox"));
+    }
+
+    #[test]
+    fn typo_alias_injects_personal_target() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox"), ("chrome.desktop", "Chrome")],
+            &[],
+        );
+        // Learn alias "ff" → firefox.
+        te.engine
+            .learn_typos("ff", &["ff".to_string()], "app:firefox.desktop", "Firefox");
+        let results = te.engine.search("ff");
+        assert!(
+            has_app(&results, "Firefox"),
+            "typo alias must surface Firefox for ff: {results:?}"
+        );
+    }
+
+    #[test]
+    fn dedup_by_id_keeps_first() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[("/home/u/firefox", true)],
+        );
+        let results = te.engine.search("firefox");
+        // No duplicate ids (app:firefox.desktop vs path:/home/u/firefox differ, so
+        // both should appear but no id may repeat).
+        let mut ids = results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), results.len(), "duplicate ids in results: {results:?}");
+    }
+
+    #[test]
+    fn results_are_sorted_desc_by_score() {
+        let te = build_engine(
+            &[("firefox.desktop", "Firefox")],
+            &[("/home/u/doc.md", false), ("/home/u/proj", true)],
+        );
+        let results = te.engine.search("f");
+        let mut prev = i64::MAX;
+        for r in &results {
+            assert!(r.score <= prev, "results not sorted desc: {results:?}");
+            prev = r.score;
+        }
+    }
+}

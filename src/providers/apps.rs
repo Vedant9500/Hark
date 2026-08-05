@@ -44,6 +44,30 @@ impl AppProvider {
         self.apps.read().unwrap_or_else(|p| p.into_inner()).len()
     }
 
+    /// Test-only: inject apps directly (no filesystem `.desktop` scan).
+    /// `id`, `name` are used as-is; a minimal search blob is derived from name + id.
+    #[cfg(test)]
+    pub(crate) fn inject(&self, apps: &[(&str, &str)]) {
+        let mut list = Vec::with_capacity(apps.len());
+        for (id, name) in apps {
+            let id_tokens = id.replace(['-', '_', '.'], " ").to_ascii_lowercase();
+            list.push(DesktopApp {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                name_lower: name.to_lowercase(),
+                search_blob: format!("{} {} {id_tokens}", name.to_lowercase(), id_tokens),
+                comment: String::new(),
+                exec: format!("{} %U", id.replace('-', "_")),
+                icon: String::new(),
+                terminal: false,
+                no_display: false,
+                desktop_path: PathBuf::new(),
+            });
+        }
+        list.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+        *self.apps.write().unwrap_or_else(|p| p.into_inner()) = list;
+    }
+
     pub fn reload(&self) {
         let mut apps = Vec::new();
         let mut seen = HashSet::new();

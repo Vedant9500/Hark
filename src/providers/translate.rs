@@ -757,7 +757,13 @@ fn libretranslate(
     let payload = body.to_string();
     let bytes = crate::providers::http::post_json(&url, &payload)
         .map_err(|e| format!("LibreTranslate {e}"))?;
+    let translated = parse_libretranslate_body(&bytes)?;
+    Ok((translated, "LibreTranslate".into()))
+}
 
+/// Parse LibreTranslate response. Live API returns `translatedText`
+/// (and legacy `translatedtext`); accept either, prefer camelCase.
+fn parse_libretranslate_body(bytes: &[u8]) -> Result<String, String> {
     #[derive(Deserialize)]
     struct LtResp {
         #[serde(default)]
@@ -766,7 +772,7 @@ fn libretranslate(
         translated_text: String,
     }
     let resp: LtResp =
-        serde_json::from_slice(&bytes).map_err(|_| "Bad LibreTranslate response".to_string())?;
+        serde_json::from_slice(bytes).map_err(|_| "Bad LibreTranslate response".to_string())?;
     let translated = if !resp.translated_text.is_empty() {
         resp.translated_text
     } else {
@@ -775,7 +781,7 @@ fn libretranslate(
     if translated.trim().is_empty() {
         return Err("Empty LibreTranslate response".into());
     }
-    Ok((translated, "LibreTranslate".into()))
+    Ok(translated)
 }
 
 fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
@@ -800,9 +806,15 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
             format!("Google translate {e}")
         }
     })?;
+    let translated = parse_google_gtx_body(&bytes)?;
+    Ok((translated, "Google".into()))
+}
+
+/// Parse Google gtx response: `[[["Hello world","你好世界",...],...],...]`.
+/// First element of each inner chunk is the translated segment; concatenate them.
+fn parse_google_gtx_body(bytes: &[u8]) -> Result<String, String> {
     let v: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| "Bad Google translate response".to_string())?;
-    // Response: [[["Hello world","你好世界",...],...],...]
+        serde_json::from_slice(bytes).map_err(|_| "Bad Google translate response".to_string())?;
     let mut translated = String::new();
     if let Some(arr) = v
         .as_array()
@@ -822,7 +834,7 @@ fn google_gtx(text: &str, source: &str, target: &str) -> Result<(String, String)
     if translated.trim().is_empty() {
         return Err("Empty Google translate response".into());
     }
-    Ok((translated, "Google".into()))
+    Ok(translated)
 }
 
 fn mymemory(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
@@ -1313,5 +1325,54 @@ mod tests {
     fn mymemory_rejects_invalid() {
         let body = br#"{"responseData":{"translatedText":"INVALID SOURCE LANGUAGE "}}"#;
         assert!(parse_mymemory_body(body).is_err());
+    }
+
+    #[test]
+    fn mymemory_rejects_rate_limit() {
+        let body = br#"{"responseData":{"translatedText":"QUERY LENGTH LIMIT EXCEEDED. MAX ALLOWED QUERY : 500 CHARS"}}"#;
+        assert!(parse_mymemory_body(body).is_err());
+    }
+
+    #[test]
+    fn google_gtx_concatenates_segments() {
+        // Real Google gtx shape: [[["Hello world","你好世界",null,null,10]],null,"en",...].
+        // Chinese "你好世界" is irrelevant to the assertion — only chunk[0] is read.
+        let body = b"[[[\"Hello world\",\"\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c\",null,null,10]],null,\"en\"]";
+        let out = parse_google_gtx_body(body).unwrap();
+        assert_eq!(out, "Hello world");
+    }
+
+    #[test]
+    fn google_gtx_joins_multiple_chunks() {
+        // Name entity split across chunks → segments concatenate in order.
+        let body = b"[[[\"Hello \",null,1],[\"world\",null,2]]]";
+        let out = parse_google_gtx_body(body).unwrap();
+        assert_eq!(out, "Hello world");
+    }
+
+    #[test]
+    fn google_gtx_empty_rejected() {
+        let body = b"[[[\" \"]]]";
+        assert!(parse_google_gtx_body(body).is_err());
+        assert!(parse_google_gtx_body(b"not json").is_err());
+    }
+
+    #[test]
+    fn libretranslate_parses_camel_case() {
+        let body = br#"{"translatedText":"Hola mundo","detectedLanguage":{"language":"es"}}"#;
+        assert_eq!(parse_libretranslate_body(body).unwrap(), "Hola mundo");
+    }
+
+    #[test]
+    fn libretranslate_accepts_legacy_snake_case() {
+        let body = br#"{"translatedtext":"Bonjour le monde"}"#;
+        assert_eq!(parse_libretranslate_body(body).unwrap(), "Bonjour le monde");
+    }
+
+    #[test]
+    fn libretranslate_empty_rejected() {
+        let body = br#"{"translatedText":"  "}"#;
+        assert!(parse_libretranslate_body(body).is_err());
+        assert!(parse_libretranslate_body(b"{}").is_err());
     }
 }

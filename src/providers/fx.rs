@@ -43,6 +43,25 @@ impl FxStore {
         }
     }
 
+    /// Test-only: inject an in-memory rate table without touching disk or network.
+    /// `last_attempt_secs` is pre-set so `convert` never schedules a bg fetch.
+    #[cfg(test)]
+    fn with_cache(base: &str, date: &str, rates: HashMap<String, f64>) -> Self {
+        let fetched_at = now_secs();
+        Self {
+            shared: Arc::new(FxShared {
+                cache: RwLock::new(Some(RatesCache {
+                    base: base.to_string(),
+                    date: date.to_string(),
+                    rates,
+                    fetched_at,
+                })),
+                inflight: AtomicBool::new(false),
+                last_attempt_secs: AtomicU64::new(fetched_at),
+            }),
+        }
+    }
+
     /// Convert using memory/disk rates only. Never blocks on network.
     /// Stale rates still convert; a background refresh is scheduled when needed.
     pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<(f64, String)> {
@@ -216,13 +235,22 @@ pub fn format_money(amount: f64, code: &str) -> String {
 fn fetch_rates() -> Option<RatesCache> {
     // Frankfurter: latest EUR-based rates (in-process HTTP — no curl spawn).
     let body = crate::providers::http::get_bytes("https://api.frankfurter.dev/v1/latest").ok()?;
+    parse_rates_body(&body)
+}
+
+/// Parse Frankfurter `latest` response into a [`RatesCache`].
+/// Returns None on malformed JSON / missing fields / non-finite rates.
+fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
     #[derive(Deserialize)]
     struct Api {
         base: String,
         date: String,
         rates: HashMap<String, f64>,
     }
-    let api: Api = serde_json::from_slice(&body).ok()?;
+    let api: Api = serde_json::from_slice(body).ok()?;
+    if !api.rates.values().all(|r| r.is_finite() && *r != 0.0) {
+        return None;
+    }
     Some(RatesCache {
         base: api.base,
         date: api.date,
@@ -273,6 +301,64 @@ mod tests {
             let r = store.convert(100.0, "USD", "EUR");
             assert!(r.is_some(), "stale disk cache should still convert");
         }
+    }
+
+    #[test]
+    fn convert_uses_injected_rates_without_network() {
+        // EUR base, USD 1.1 → 100 USD = 90.91 EUR; GBP 0.9 cross-rate.
+        let mut rates = HashMap::new();
+        rates.insert("USD".into(), 1.1);
+        rates.insert("GBP".into(), 0.9);
+        let store = FxStore::with_cache("EUR", "2026-08-05", rates);
+
+        let (out, meta) = store.convert(100.0, "USD", "EUR").unwrap();
+        assert!((out - 90.9090).abs() < 1e-3);
+        assert!(meta.contains("EUR") || meta.contains("ECB"), "meta: {meta}");
+
+        // Cross rate USD → GBP: (100 / 1.1) * 0.9 ≈ 81.818
+        let (out, _) = store.convert(100.0, "USD", "GBP").unwrap();
+        assert!((out - 81.8181).abs() < 1e-3);
+
+        // Same currency short-circuits.
+        let (out, _) = store.convert(100.0, "EUR", "EUR").unwrap();
+        assert_eq!(out, 100.0);
+    }
+
+    #[test]
+    fn convert_missing_currency_returns_none() {
+        let mut rates = HashMap::new();
+        rates.insert("USD".into(), 1.1);
+        let store = FxStore::with_cache("EUR", "2026-08-05", rates);
+        assert!(store.convert(1.0, "USD", "JPY").is_none());
+        assert!(store.convert(1.0, "JPY", "USD").is_none());
+    }
+
+    #[test]
+    fn convert_supports_lowercase_codes() {
+        let mut rates = HashMap::new();
+        rates.insert("USD".into(), 1.1);
+        let store = FxStore::with_cache("EUR", "2026-08-05", rates);
+        let (out, _) = store.convert(100.0, "usd", "eur").unwrap();
+        assert!((out - 90.9090).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parse_rates_body_ok() {
+        let body = br#"{"base":"EUR","date":"2026-08-05","rates":{"USD":1.1,"GBP":0.9}}"#;
+        let c = parse_rates_body(body).unwrap();
+        assert_eq!(c.base, "EUR");
+        assert_eq!(c.date, "2026-08-05");
+        assert_eq!(c.rates["USD"], 1.1);
+    }
+
+    #[test]
+    fn parse_rates_body_rejects_corrupt() {
+        // Malformed JSON.
+        assert!(parse_rates_body(b"not json").is_none());
+        // Missing base/date.
+        assert!(parse_rates_body(br#"{"rates":{"USD":1.1}}"#).is_none());
+        // Zero / non-finite rates would poison conversions — reject them.
+        assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":0.0}}"#).is_none());
     }
 
     #[test]
