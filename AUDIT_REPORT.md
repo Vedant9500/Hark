@@ -838,8 +838,8 @@ Track progress against audit findings. Update the **Status** column as work land
 | A2 | Binary-only crate | Arch | Done | `src/lib.rs` lib target; `cargo test --lib` passes (102) |
 | A3 | Broken docs links | Docs | Done | Restored `FEATURES.md` + `todo.md`; OPTIMIZATION §14 link resolves; `deshmukhvedant95` in Cargo/README/install/PKGBUILD; feature.txt folded into todo.md |
 | A4 | README missing features | Docs | Done | Added translate `/ FX / battery / action panel (`Ctrl+K`) / settings+theme rows; Keys line lists `Ctrl+K` + `Ctrl+,` |
-| A5 | Style tracker in tree | Docs | Open | Archive or delete tracker file |
-| A6 | Install script confusion | Docs | Open | Document canonical install path |
+| A5 | Style tracker in tree | Docs | Done | Archived to `docs/archive/STYLE_GUIDE_REVIEW_TRACKER.md` |
+| A6 | Install script confusion | Docs | Done | README routes each flow to its script: `scripts/install.sh` = from-source, `dist/install.sh` = one-line, `packaging/*` = packaging layer |
 | A7 | ExcludeSet substring patterns | Arch | Done | Component-boundary (case-insensitive, any depth) matching; over-match regression test |
 | CI | No PR test/fmt/clippy gate | Process | Open | Add `.github/workflows/ci.yml` |
 | E1 | Config parse failure silent | Correctness | Done | Corrupt JSON backed up to `config.json.invalid` + stderr warning; fresh config saved |
@@ -851,12 +851,12 @@ Track progress against audit findings. Update the **Status** column as work land
 
 | Status | Count |
 |--------|------:|
-| Done | 25 |
-| Open | 3 |
+| Done | 26 |
+| Open | 2 |
 | Accepted | 2 |
 | **Total tracked** | **30** |
 
-*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05. T1 (Engine::search integration tests) + T2 (network-mock FX/translate parse tests) fixed 2026-08-05.*
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05. T1 (Engine::search integration tests) + T2 (network-mock FX/translate parse tests) fixed 2026-08-05. A5 (style tracker archived to docs/archive) + A6 (install path documented) closed 2026-08-05.*
 
 ---
 
