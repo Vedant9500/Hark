@@ -97,7 +97,12 @@ impl FileProvider {
     pub fn index_progress(&self) -> IndexProgress {
         let running = self.state.indexing.load(Ordering::Relaxed);
         let progress = self.state.progress.load(Ordering::Relaxed);
-        let stored = self.state.index.read().unwrap_or_else(|p| p.into_inner()).len();
+        let stored = self
+            .state
+            .index
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
         IndexProgress {
             count: if running { progress } else { stored },
             running,
@@ -147,11 +152,7 @@ impl FileProvider {
             .unwrap_or("?")
             .to_string();
         let path_style = self.state.config.with(|c| c.index.path_style.clone());
-        let mounts = self
-            .state
-            .mounts
-            .read()
-            .unwrap_or_else(|p| p.into_inner());
+        let mounts = self.state.mounts.read().unwrap_or_else(|p| p.into_inner());
         Some(SearchResult {
             id: format!("path:{}", path.display()),
             title: name,
@@ -184,7 +185,12 @@ impl FileProvider {
 
         // Cheap Arc config + mounts snapshot; index lock only for scan/plan.
         let cfg = self.state.config.snapshot();
-        let mounts = self.state.mounts.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mounts = self
+            .state
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let excludes = ExcludeSet::from_list(&cfg.index.exclude);
 
         // Phase 1: index-only search under a short read lock (no WalkDir).
@@ -267,7 +273,12 @@ impl FileProvider {
         if memo_key.is_empty() {
             return false;
         }
-        if let Some((k, v)) = self.scoped_memo.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        if let Some((k, v)) = self
+            .scoped_memo
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
             if *k == memo_key {
                 return *v;
             }
@@ -296,8 +307,7 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
     }
     // Owned ids only: cannot store `&str` into base while also pushing (reallocation).
     // `contains` + conditional insert avoids cloning the id on duplicate hits.
-    let mut seen: std::collections::HashSet<String> =
-        base.iter().map(|r| r.id.clone()).collect();
+    let mut seen: std::collections::HashSet<String> = base.iter().map(|r| r.id.clone()).collect();
     for r in cached {
         if !seen.contains(&r.id) {
             seen.insert(r.id.clone());
@@ -652,11 +662,9 @@ pub fn open_terminal_at(path: &Path) -> Result<(), String> {
     let dir_arg = dir.to_string_lossy().into_owned();
 
     match term_name.as_str() {
-        "alacritty" => spawn_detached_in_dir(
-            &term_path,
-            &["--working-directory".into(), dir_arg],
-            &dir,
-        ),
+        "alacritty" => {
+            spawn_detached_in_dir(&term_path, &["--working-directory".into(), dir_arg], &dir)
+        }
         "kitty" => spawn_detached_in_dir(&term_path, &["--directory".into(), dir_arg], &dir),
         "foot" => spawn_detached_in_dir(
             &term_path,
@@ -668,11 +676,9 @@ pub fn open_terminal_at(path: &Path) -> Result<(), String> {
             &[format!("--working-directory={dir_arg}")],
             &dir,
         ),
-        "wezterm" => spawn_detached_in_dir(
-            &term_path,
-            &["start".into(), "--cwd".into(), dir_arg],
-            &dir,
-        ),
+        "wezterm" => {
+            spawn_detached_in_dir(&term_path, &["start".into(), "--cwd".into(), dir_arg], &dir)
+        }
         "xterm" | "uxterm" => {
             // xterm has no cwd flag; use argv-form -e so the path is never shell-interpolated.
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());

@@ -963,7 +963,9 @@ pub fn media_kind(path: &Path) -> MediaKind {
     }
     if ext_is(
         ext,
-        &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "aiff"],
+        &[
+            "mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "aiff",
+        ],
     ) {
         return MediaKind::Audio;
     }

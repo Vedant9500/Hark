@@ -8,7 +8,10 @@ use std::borrow::Cow;
 /// Rewrite `$100` / `100$` into `100 USD …` when a currency symbol is present.
 /// Fast path: no symbol → borrow the input (zero alloc on typical app/file queries).
 pub(crate) fn normalize_money_query(q: &str) -> Cow<'_, str> {
-    if !q.chars().any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽')) {
+    if !q
+        .chars()
+        .any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽'))
+    {
         return Cow::Borrowed(q);
     }
 

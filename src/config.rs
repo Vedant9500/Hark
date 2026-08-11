@@ -609,10 +609,7 @@ fn is_blocked_ipv4(ip: [u8; 4]) -> bool {
 fn is_blocked_ipv6(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
     // Link-local fe80::/10
-    if h.starts_with("fe8")
-        || h.starts_with("fe9")
-        || h.starts_with("fea")
-        || h.starts_with("feb")
+    if h.starts_with("fe8") || h.starts_with("fe9") || h.starts_with("fea") || h.starts_with("feb")
     {
         return true;
     }
@@ -1075,7 +1072,10 @@ impl ExcludeSet {
                 .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
                 .collect();
             for pattern in &self.patterns {
-                if comps.windows(pattern.len()).any(|w| w == pattern.as_slice()) {
+                if comps
+                    .windows(pattern.len())
+                    .any(|w| w == pattern.as_slice())
+                {
                     return true;
                 }
             }

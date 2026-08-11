@@ -1296,7 +1296,8 @@ mod tests {
 
     #[test]
     fn mymemory_parses_camel_case() {
-        let body = br#"{"responseData":{"translatedText":"Hello. ","match":0.99},"responseStatus":200}"#;
+        let body =
+            br#"{"responseData":{"translatedText":"Hello. ","match":0.99},"responseStatus":200}"#;
         assert_eq!(parse_mymemory_body(body).unwrap(), "Hello.");
     }
 

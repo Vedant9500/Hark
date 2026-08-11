@@ -331,8 +331,8 @@ fn drag_thumbnail_icon(path: &Path) -> Option<gdk::Texture> {
                 return tex.clone();
             }
         }
-        let tex = freedesktop_thumbnail(path)
-            .and_then(|thumb| gdk::Texture::from_filename(&thumb).ok());
+        let tex =
+            freedesktop_thumbnail(path).and_then(|thumb| gdk::Texture::from_filename(&thumb).ok());
         *slot.borrow_mut() = Some((path.to_path_buf(), tex.clone()));
         tex
     })

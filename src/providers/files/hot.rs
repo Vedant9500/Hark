@@ -63,12 +63,20 @@ impl HotPaths {
     }
 
     pub fn snapshot_indices(&self) -> Vec<usize> {
-        self.set.read().unwrap_or_else(|p| p.into_inner()).indices.clone()
+        self.set
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .indices
+            .clone()
     }
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.set.read().unwrap_or_else(|p| p.into_inner()).indices.len()
+        self.set
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .indices
+            .len()
     }
 }
 

@@ -2231,8 +2231,7 @@ fn hypr_pointer_monitor() -> Option<HyprMonitorInfo> {
             .find_map(|m| {
                 let info = parse(m)?;
                 let g = &info.geom;
-                let inside =
-                    cx >= g.x && cy >= g.y && cx < g.x + g.width && cy < g.y + g.height;
+                let inside = cx >= g.x && cy >= g.y && cx < g.x + g.width && cy < g.y + g.height;
                 inside.then_some(info)
             })
             .or_else(focused_or_first)
@@ -2284,10 +2283,7 @@ fn gdk_monitor_for_hypr(info: &HyprMonitorInfo) -> Option<gtk::gdk::Monitor> {
     let g = &info.geom;
 
     let mon_at = |i: u32| -> Option<gtk::gdk::Monitor> {
-        monitors
-            .item(i)?
-            .downcast::<gtk::gdk::Monitor>()
-            .ok()
+        monitors.item(i)?.downcast::<gtk::gdk::Monitor>().ok()
     };
 
     // 1) Connector name match (e.g. "HDMI-A-1", "eDP-2")

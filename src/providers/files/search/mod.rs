@@ -136,7 +136,6 @@ pub(crate) fn search_index(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::deep::{index_is_strong, live_deep_under_roots, looks_specific_for_deep};
     use super::glob::{
         expand_drive_path, find_path_segment, glob_match, is_broad_extension_glob,
@@ -144,6 +143,7 @@ mod tests {
     };
     use super::plan::parse_scope_hint_query;
     use super::rank::path_contains_slash_prefixed;
+    use super::*;
 
     #[test]
     fn path_contains_slash_prefixed_no_alloc_semantics() {

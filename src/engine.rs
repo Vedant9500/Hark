@@ -978,11 +978,8 @@ mod engine_search_tests {
 
     fn tmp_config_dir() -> PathBuf {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "blink-engine-test-{}-{}",
-            std::process::id(),
-            n
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("blink-engine-test-{}-{}", std::process::id(), n));
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
@@ -1025,10 +1022,7 @@ mod engine_search_tests {
             config: cfg,
             periodic: Mutex::new(None),
         };
-        TestEngine {
-            engine,
-            _dir: dir,
-        }
+        TestEngine { engine, _dir: dir }
     }
 
     fn titles(results: &[SearchResult]) -> Vec<&str> {
@@ -1040,7 +1034,9 @@ mod engine_search_tests {
     }
 
     fn has_app(results: &[SearchResult], title: &str) -> bool {
-        results.iter().any(|r| r.kind == ResultKind::App && r.title == title)
+        results
+            .iter()
+            .any(|r| r.kind == ResultKind::App && r.title == title)
     }
 
     fn find<'a>(results: &'a [SearchResult], title: &str) -> Option<&'a SearchResult> {
@@ -1062,7 +1058,10 @@ mod engine_search_tests {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
         let results = te.engine.search("2+2");
         assert_eq!(first_kind(&results), Some(ResultKind::Calc));
-        assert!(!has_app(&results, "Firefox"), "apps must not mix into calc hits");
+        assert!(
+            !has_app(&results, "Firefox"),
+            "apps must not mix into calc hits"
+        );
     }
 
     #[test]
@@ -1091,7 +1090,9 @@ mod engine_search_tests {
         // `f ` prefix → files only.
         let results = te.engine.search("f doc");
         assert!(
-            results.iter().all(|r| matches!(r.kind, ResultKind::File | ResultKind::Folder)),
+            results
+                .iter()
+                .all(|r| matches!(r.kind, ResultKind::File | ResultKind::Folder)),
             "f- prefix must return only file/folder: {results:?}"
         );
     }
@@ -1144,19 +1145,22 @@ mod engine_search_tests {
             ],
         );
         let results = te.engine.search("firef");
-        assert_eq!(results[0].title, "Firefox", "strong app prefix wins: {results:?}");
+        assert_eq!(
+            results[0].title, "Firefox",
+            "strong app prefix wins: {results:?}"
+        );
     }
 
     #[test]
     fn strong_app_exact_wins_over_folder() {
-        let te = build_engine(
-            &[("brave.desktop", "Brave")],
-            &[("/home/u/brave", true)],
-        );
+        let te = build_engine(&[("brave.desktop", "Brave")], &[("/home/u/brave", true)]);
         // Exact app (50k) beats exact folder (50k) — App kind breaks the tie.
         let results = te.engine.search("brave");
         let first = results.first().unwrap();
-        assert_eq!(first.title, "Brave", "exact app beats folder at equal score");
+        assert_eq!(
+            first.title, "Brave",
+            "exact app beats folder at equal score"
+        );
         assert_eq!(first.kind, ResultKind::App);
     }
 
@@ -1201,7 +1205,11 @@ mod engine_search_tests {
         let mut ids = results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), results.len(), "duplicate ids in results: {results:?}");
+        assert_eq!(
+            ids.len(),
+            results.len(),
+            "duplicate ids in results: {results:?}"
+        );
     }
 
     #[test]

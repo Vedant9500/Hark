@@ -95,7 +95,11 @@ impl IndexState {
         {
             let n = self.index.read().unwrap_or_else(|p| p.into_inner()).len();
             if n > 0 && !cache_ttl_stale() {
-                let mem_fp = self.fingerprint.read().unwrap_or_else(|p| p.into_inner()).clone();
+                let mem_fp = self
+                    .fingerprint
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 let fp_cached_mounts = self.compute_fingerprint();
                 if !mem_fp.is_empty() && mem_fp == fp_cached_mounts {
                     return; // no I/O beyond meta TTL file already checked
@@ -119,10 +123,8 @@ impl IndexState {
             *self.index.write().unwrap_or_else(|p| p.into_inner()) = items;
             self.progress.store(n, Ordering::Relaxed);
             self.capped.store(n >= MAX_INDEX, Ordering::Relaxed);
-            self.capped_by_deep.store(
-                n >= MAX_INDEX && cached_by_deep,
-                Ordering::Relaxed,
-            );
+            self.capped_by_deep
+                .store(n >= MAX_INDEX && cached_by_deep, Ordering::Relaxed);
             *self.fingerprint.write().unwrap_or_else(|p| p.into_inner()) = cached_fp.clone();
 
             let ttl_ok = !cache_ttl_stale();
@@ -149,7 +151,11 @@ impl IndexState {
         // A concurrent ensure_fresh may have finished the same fingerprint while we waited.
         if !force {
             let n = self.index.read().unwrap_or_else(|p| p.into_inner()).len();
-            let mem_fp = self.fingerprint.read().unwrap_or_else(|p| p.into_inner()).clone();
+            let mem_fp = self
+                .fingerprint
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             if n > 0 && !mem_fp.is_empty() && mem_fp == fingerprint && !cache_ttl_stale() {
                 // Ensure a panicked prior builder cannot leave the UI stuck on "indexing".
                 self.indexing.store(false, Ordering::Relaxed);
@@ -216,7 +222,11 @@ impl IndexState {
 
     fn build_index(&self) -> Vec<IndexedPath> {
         let cfg = self.config.snapshot();
-        let mounts = self.mounts.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mounts = self
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let excludes = ExcludeSet::from_list(&cfg.index.exclude);
         let max_depth = cfg.index.max_depth.clamp(1, 6);
 
@@ -456,10 +466,7 @@ pub(crate) fn should_skip_entry(path: &Path, excludes: &ExcludeSet) -> bool {
             return true;
         }
         // Never index crypto material dirs. Allowlist only user-facing config trees.
-        if name.starts_with('.')
-            && path.is_dir()
-            && !matches!(name, ".config" | ".local")
-        {
+        if name.starts_with('.') && path.is_dir() && !matches!(name, ".config" | ".local") {
             return true;
         }
     }
@@ -646,7 +653,10 @@ mod tests {
         let excludes = ExcludeSet::from_list(&[]);
         assert!(should_skip_entry(Path::new("/home/u/.ssh"), &excludes));
         assert!(should_skip_entry(Path::new("/home/u/.gnupg"), &excludes));
-        assert!(should_skip_entry(Path::new("/home/u/.ssh/id_ed25519"), &excludes));
+        assert!(should_skip_entry(
+            Path::new("/home/u/.ssh/id_ed25519"),
+            &excludes
+        ));
         assert!(should_skip_entry(Path::new("/tmp/id_rsa"), &excludes));
         assert!(should_skip_entry(Path::new("/tmp/cert.pem"), &excludes));
         assert!(should_skip_entry(
@@ -656,6 +666,9 @@ mod tests {
         // Still allow normal config trees and ordinary files.
         assert!(!should_skip_entry(Path::new("/home/u/.config"), &excludes));
         assert!(!should_skip_entry(Path::new("/home/u/.local"), &excludes));
-        assert!(!should_skip_entry(Path::new("/home/u/notes.txt"), &excludes));
+        assert!(!should_skip_entry(
+            Path::new("/home/u/notes.txt"),
+            &excludes
+        ));
     }
 }

@@ -79,20 +79,19 @@ impl FxStore {
                 Some(cache) => {
                     let age = now_secs().saturating_sub(cache.fetched_at);
                     let stale = age > TTL_SECS;
-                    let converted =
-                        rate_vs_base(cache, &from).and_then(|from_rate| {
-                            rate_vs_base(cache, &to).and_then(|to_rate| {
-                                let out = convert_amount(amount, from_rate, to_rate)?;
-                                let meta = if stale {
-                                    format!("ECB {} · stale cache", cache.date)
-                                } else if age > 300 {
-                                    format!("ECB {} · cached", cache.date)
-                                } else {
-                                    format!("ECB {}", cache.date)
-                                };
-                                Some((out, meta))
-                            })
-                        });
+                    let converted = rate_vs_base(cache, &from).and_then(|from_rate| {
+                        rate_vs_base(cache, &to).and_then(|to_rate| {
+                            let out = convert_amount(amount, from_rate, to_rate)?;
+                            let meta = if stale {
+                                format!("ECB {} · stale cache", cache.date)
+                            } else if age > 300 {
+                                format!("ECB {} · cached", cache.date)
+                            } else {
+                                format!("ECB {}", cache.date)
+                            };
+                            Some((out, meta))
+                        })
+                    });
                     (converted, stale)
                 }
             }
@@ -297,7 +296,13 @@ mod tests {
         // If disk cache exists from the machine, convert must return Some quickly.
         // This does not assert network; only that convert does not require success.
         let store = FxStore::new();
-        if store.shared.cache.read().unwrap_or_else(|p| p.into_inner()).is_some() {
+        if store
+            .shared
+            .cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
             let r = store.convert(100.0, "USD", "EUR");
             assert!(r.is_some(), "stale disk cache should still convert");
         }
