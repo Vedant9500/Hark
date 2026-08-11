@@ -11,26 +11,21 @@ permissions:
 jobs:
   lint-test:
     name: fmt + clippy + test
-    # ubuntu-22.04 ships GTK 4.6, but blink requires GTK >= 4.12 (v4_12 feature).
+    # No native Arch runner exists; run inside an archlinux container.
+    # Arch ships gtk4-layer-shell (blink's primary Hyprland/Wayland target),
+    # so the layer-shell feature builds and is gated here.
     runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config \
-            libgtk-4-dev libglib2.0-dev \
-            libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgraphene-1.0-dev libwayland-dev
-
-      - name: Try install gtk4-layer-shell
-        run: |
-          sudo apt-get install -y libgtk4-layer-shell-dev \
-            || sudo apt-get install -y gtk4-layer-shell \
-            || echo "layer-shell package not available on this runner"
+          pacman -Syu --noconfirm --needed \
+            base-devel pkgconf \
+            gtk4 glib2 pango gdk-pixbuf2 graphene wayland gtk4-layer-shell
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
