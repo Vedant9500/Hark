@@ -831,7 +831,7 @@ Track progress against audit findings. Update the **Status** column as work land
 | P2 | Live-cache prefix case | Perf | Done | Shared `strip_force_files_prefix`; case-insensitive cache keys |
 | P3 | Live-cache LRU O(n) | Perf | Done | Recency `BTreeMap`; O(log n) evict; LRU + reinsert tests |
 | P4 | Periodic 45m refresh wake | Perf | Done | `recv_timeout` wake; fingerprint short-circuit documented; stop signal + `Drop` join |
-| P5 | Translate orphan workers | Perf | Open | Semaphore or cancel flag |
+| P5 | Translate orphan workers | Perf | Done | Sequential fallback: MyMemory only tried after Google fails; no spawned orphans. UI layer already single-flights translate |
 | P6 | Preview unsafe pixbuf copy | Perf | Accepted | Required by gtk-rs; document invariant |
 | P7 | Index 100k cap + deep roots | Perf | Done | Surface warning when capped early |
 | A1 | Mega-modules | Arch | Done | Split search into glob / plan / deep / rank |
@@ -841,7 +841,7 @@ Track progress against audit findings. Update the **Status** column as work land
 | A5 | Style tracker in tree | Docs | Done | Archived to `docs/archive/STYLE_GUIDE_REVIEW_TRACKER.md` |
 | A6 | Install script confusion | Docs | Done | README routes each flow to its script: `scripts/install.sh` = from-source, `dist/install.sh` = one-line, `packaging/*` = packaging layer |
 | A7 | ExcludeSet substring patterns | Arch | Done | Component-boundary (case-insensitive, any depth) matching; over-match regression test |
-| CI | No PR test/fmt/clippy gate | Process | Open | Add `.github/workflows/ci.yml` |
+| CI | No PR test/fmt/clippy gate | Process | Done | Added `.github/workflows/ci.yml` (fmt --check, clippy -D warnings, cargo test, all with layer-shell on push/PR) |
 | E1 | Config parse failure silent | Correctness | Done | Corrupt JSON backed up to `config.json.invalid` + stderr warning; fresh config saved |
 | E2 | Silent launch/IO `let _ =` | Correctness | Done | Launch/open/terminal/copy spawn failures surfaced via `eprintln!` + `Failed` |
 | T1 | Engine integration tests | Tests | Done | Hermetic `Engine::search` testbed (temp config, injected apps + in-memory index): settings/calc owns, force-files/glob, app-prefix vs path, usage boost, typo alias, dedup, sort (10 tests) |
@@ -851,12 +851,12 @@ Track progress against audit findings. Update the **Status** column as work land
 
 | Status | Count |
 |--------|------:|
-| Done | 26 |
-| Open | 2 |
+| Done | 28 |
+| Open | 0 |
 | Accepted | 2 |
 | **Total tracked** | **30** |
 
-*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05. T1 (Engine::search integration tests) + T2 (network-mock FX/translate parse tests) fixed 2026-08-05. A5 (style tracker archived to docs/archive) + A6 (install path documented) closed 2026-08-05.*
+*Last updated: 2026-07-26 (C1–C9 fixed; P1–P2 fixed). C10–C11 fixed 2026-08-01. P3–P4 fixed 2026-08-01. P7 + A1 (search split) fixed 2026-08-01. A2 (lib target) fixed 2026-08-01. E1–E2 (config backup + launch/IO error surfacing) fixed 2026-08-01. A3 (docs links + GitHub placeholder) fixed 2026-08-03. A4 (README feature table) fixed 2026-08-03. A7 (ExcludeSet component-boundary matching) fixed 2026-08-05. T1 (Engine::search integration tests) + T2 (network-mock FX/translate parse tests) fixed 2026-08-05. A5 (style tracker archived to docs/archive) + A6 (install path documented) closed 2026-08-05. CI (PR fmt/clippy/test workflow) added 2026-08-11. P5 (translate orphan workers) fixed 2026-08-11 — sequential fallback.*
 
 ---
 

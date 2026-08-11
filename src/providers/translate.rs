@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const TRANSLATE_SCORE: i64 = 100_000;
@@ -690,45 +689,25 @@ fn translate_http(
 }
 
 fn free_backends_race(text: &str, source: &str, target: &str) -> Result<(String, String), String> {
-    let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String), String>>();
-    let t1 = text.to_string();
-    let s1 = source.to_string();
-    let g1 = target.to_string();
-    let tx1 = tx.clone();
-    thread::spawn(move || {
-        let _ = tx1.send(google_gtx(&t1, &s1, &g1));
-    });
-    let t2 = text.to_string();
-    let s2 = source.to_string();
-    let g2 = target.to_string();
-    thread::spawn(move || {
-        let _ = tx.send(mymemory(&t2, &s2, &g2));
-    });
-
-    let mut errors = Vec::new();
-    // Must exceed http::TOTAL so a slow backend can still report (4s + slack).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4500);
-    for _ in 0..2 {
-        let remain = deadline.saturating_duration_since(std::time::Instant::now());
-        if remain.is_zero() {
-            break;
-        }
-        match rx.recv_timeout(remain) {
-            Ok(Ok(v)) => return Ok(v),
-            Ok(Err(e)) => errors.push(e),
-            Err(_) => break,
-        }
-    }
-    if errors.is_empty() {
-        Err("Offline or timed out".into())
-    } else {
-        // Prefer a short human message when every backend is unreachable.
-        let joined = errors.join("; ");
-        let low = joined.to_ascii_lowercase();
-        if low.contains("unreachable") || low.contains("timed out") {
-            Err("Offline or blocked · check network".into())
-        } else {
-            Err(joined)
+    // P5: prefer sequential fallback over a concurrent race. Try Google first
+    // (bounded by http::TOTAL); only if it fails do we try MyMemory. This avoids
+    // orphaning a worker thread that lingers up to the 4s timeout after the first
+    // backend already returned, which would pile up under paste storms. The UI
+    // layer additionally single-flights translate so only one chain runs at a time.
+    match google_gtx(text, source, target) {
+        Ok(v) => Ok(v),
+        Err(google_err) => {
+            let joined = match mymemory(text, source, target) {
+                Ok(v) => return Ok(v),
+                Err(mem_err) => format!("{google_err}; {mem_err}"),
+            };
+            // Prefer a short human message when every backend is unreachable.
+            let low = joined.to_ascii_lowercase();
+            if low.contains("unreachable") || low.contains("timed out") {
+                Err("Offline or blocked · check network".into())
+            } else {
+                Err(joined)
+            }
         }
     }
 }

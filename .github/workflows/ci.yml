@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libgtk-4-dev libglib2.0-dev \
+            libpango1.0-dev libgdk-pixbuf-2.0-dev \
+            libgraphene-1.0-dev libwayland-dev
+
+      - name: Try install gtk4-layer-shell
+        run: |
+          sudo apt-get install -y libgtk4-layer-shell-dev \
+            || sudo apt-get install -y gtk4-layer-shell \
+            || echo "layer-shell package not available on this runner"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy -D warnings
+        run: cargo clippy --features layer-shell -- -D warnings
+
+      - name: Run tests
+        run: cargo test --features layer-shell
