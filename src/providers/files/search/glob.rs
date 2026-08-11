@@ -141,9 +141,7 @@ pub(super) fn find_path_segment(path_lower: &str, seg: &str, start: usize) -> Op
     let mut i = start.min(path_lower.len());
     while i < path_lower.len() {
         let rest = &path_lower[i..];
-        let Some(rel) = rest.find(seg) else {
-            return None;
-        };
+        let rel = rest.find(seg)?;
         let abs = i + rel;
         let before_ok = abs == 0 || bytes[abs - 1] == b'/';
         let after = abs + seg.len();

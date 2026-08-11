@@ -294,7 +294,7 @@ impl IndexState {
                         self.capped.store(true, Ordering::Relaxed);
                         return true;
                     }
-                    if items.len() % 250 == 0 {
+                    if items.len().is_multiple_of(250) {
                         self.progress.store(items.len(), Ordering::Relaxed);
                     }
                 }
@@ -571,7 +571,7 @@ fn cache_ttl_stale() -> bool {
     let Ok(s) = fs::read_to_string(meta_path()) else {
         return true;
     };
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    let parts: Vec<&str> = s.split_whitespace().collect();
     // meta: version ts fingerprint
     if parts.len() < 2 {
         return true;

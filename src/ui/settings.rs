@@ -70,6 +70,11 @@ const CATEGORIES: &[Category] = &[
     },
 ];
 
+/// Callback stored in a settings overlay slot (no args).
+type OnDoneSlot = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+/// Callback stored in a settings overlay slot (returns whether one was open).
+type OnDoneBoolSlot = Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>;
+
 pub struct SettingsPanel {
     pub root: GtkBox,
     status: Label,
@@ -77,9 +82,9 @@ pub struct SettingsPanel {
     engine: Arc<Engine>,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
-    on_done: Rc<RefCell<Option<Box<dyn Fn()>>>>,
+    on_done: OnDoneSlot,
     /// Closes in-panel overlays (e.g. default-app picker). Returns true if one was open.
-    dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>,
+    dismiss_overlay: OnDoneBoolSlot,
 }
 
 impl SettingsPanel {
@@ -246,8 +251,7 @@ impl SettingsPanel {
         let exclusions_page = build_exclusions_page(&engine);
         content_stack.add_named(&exclusions_page, Some("exclusions"));
 
-        let dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>> =
-            Rc::new(RefCell::new(None));
+        let dismiss_overlay: OnDoneBoolSlot = Rc::new(RefCell::new(None));
 
         let defaults_page = build_defaults_page(&engine, dismiss_overlay.clone());
         content_stack.add_named(&defaults_page, Some("defaults"));
@@ -319,7 +323,7 @@ impl SettingsPanel {
             root.add_controller(key);
         }
 
-        let on_done: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let on_done: OnDoneSlot = Rc::new(RefCell::new(None));
         {
             let on_done = on_done.clone();
             done.connect_clicked(move |_| {
@@ -949,10 +953,7 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     outer
 }
 
-fn build_defaults_page(
-    engine: &Arc<Engine>,
-    dismiss_overlay: Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>,
-) -> GtkBox {
+fn build_defaults_page(engine: &Arc<Engine>, dismiss_overlay: OnDoneBoolSlot) -> GtkBox {
     let (outer, body) = page_shell(
         "preferences-desktop-default-applications-symbolic",
         "Default apps",

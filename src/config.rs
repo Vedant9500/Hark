@@ -734,10 +734,12 @@ impl ConfigStore {
         }
         for m in &mounts {
             let key = m.target.to_string_lossy().to_string();
-            if !cfg.index.include_mounts.contains_key(&key) {
-                // windows_c off by default (large); others on
-                let on = !key.contains("windows_c") && !key.contains("windowsEFI");
-                cfg.index.include_mounts.insert(key, on);
+            // windows_c off by default (large); others on
+            let on = !key.contains("windows_c") && !key.contains("windowsEFI");
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                cfg.index.include_mounts.entry(key)
+            {
+                e.insert(on);
                 changed = true;
             }
         }
@@ -973,13 +975,12 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
     // Longest matching mount prefix
     let mut best: Option<&MountInfo> = None;
     for m in mounts {
-        if path.starts_with(&m.target) {
-            if best
+        if path.starts_with(&m.target)
+            && best
                 .map(|b| m.target.components().count() > b.target.components().count())
                 .unwrap_or(true)
-            {
-                best = Some(m);
-            }
+        {
+            best = Some(m);
         }
     }
 

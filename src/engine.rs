@@ -352,7 +352,7 @@ impl Engine {
             }
         }
 
-        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results.sort_by_key(|b| std::cmp::Reverse(b.score));
         results.truncate(15);
         results
     }
@@ -680,6 +680,12 @@ impl Engine {
     #[cfg(feature = "bench")]
     pub fn search_calc_only(&self, query: &str) -> Vec<SearchResult> {
         self.calc.search(query)
+    }
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

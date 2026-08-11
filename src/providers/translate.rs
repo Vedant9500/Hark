@@ -211,10 +211,7 @@ fn parse_job(query: &str, cfg: &TranslateConfig) -> Option<(String, String, Stri
 /// Two lang codes and nothing else (`tr en zh`).
 fn incomplete_direction(rest: &str) -> bool {
     let mut parts = rest.split_whitespace();
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(a), Some(b), None) if is_lang_code(a) && is_lang_code(b) => true,
-        _ => false,
-    }
+    matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if is_lang_code(a) && is_lang_code(b))
 }
 
 /// True when first two whitespace-separated tokens look like language codes
@@ -255,7 +252,7 @@ fn is_lang_code(tok: &str) -> bool {
         return false;
     }
     let lower = t.to_ascii_lowercase();
-    let parts: Vec<&str> = lower.split(|c| c == '-' || c == '_').collect();
+    let parts: Vec<&str> = lower.split(['-', '_']).collect();
     if parts.is_empty() || parts.len() > 2 {
         return false;
     }
@@ -447,7 +444,7 @@ pub fn strip_translate_prefix(query: &str) -> (bool, &str) {
     let lower = q.to_ascii_lowercase();
     for prefix in ["translate ", "tr ", "译 "] {
         let plen = prefix.len();
-        if prefix.chars().all(|c| c.is_ascii()) {
+        if prefix.is_ascii() {
             if lower.starts_with(prefix) {
                 return (true, q[plen..].trim());
             }

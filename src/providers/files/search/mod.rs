@@ -71,6 +71,7 @@ pub(crate) const DEEP_MAX_ROOTS: usize = 12;
 /// Live hits slightly below equivalent index hits when scores would tie.
 pub(crate) const DEEP_SCORE_PENALTY: i64 = 500;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn search_index(
     index: &[IndexedPath],
     query: &str,

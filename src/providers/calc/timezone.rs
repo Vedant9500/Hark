@@ -248,9 +248,7 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         }
         let (from_tz, from_label) =
             resolve_place(from_prefix).or_else(|| predict_tz(from_prefix))?;
-        let (to_tz, to_label) = if to_prefix.is_empty() {
-            return None;
-        } else if to_prefix.len() < 2 {
+        let (to_tz, to_label) = if to_prefix.is_empty() || to_prefix.len() < 2 {
             return None;
         } else {
             resolve_place(to_prefix).or_else(|| predict_tz(to_prefix))?

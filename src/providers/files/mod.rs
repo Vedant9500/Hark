@@ -151,7 +151,7 @@ impl FileProvider {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let path_style = self.state.config.with(|c| c.index.path_style.clone());
+        let path_style = self.state.config.with(|c| c.index.path_style);
         let mounts = self.state.mounts.read().unwrap_or_else(|p| p.into_inner());
         Some(SearchResult {
             id: format!("path:{}", path.display()),

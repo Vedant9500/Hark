@@ -348,8 +348,7 @@ pub(crate) fn normalize_unit(u: &str) -> String {
     let u = u
         .to_lowercase()
         .replace('°', "")
-        .replace('µ', "u")
-        .replace('μ', "u")
+        .replace(['µ', 'μ'], "u")
         .replace('²', "2")
         .replace('³', "3")
         .replace('^', "");

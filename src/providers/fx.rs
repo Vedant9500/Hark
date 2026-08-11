@@ -133,6 +133,12 @@ impl FxStore {
     }
 }
 
+impl Default for FxStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn rate_vs_base(cache: &RatesCache, code: &str) -> Option<f64> {
     if code == cache.base {
         return Some(1.0);

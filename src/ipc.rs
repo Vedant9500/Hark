@@ -114,7 +114,7 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
 /// and rebind once so a new daemon can take over after a crash.
 fn bind_socket(path: &std::path::Path) -> Option<UnixListener> {
     match UnixListener::bind(path) {
-        Ok(l) => return Some(l),
+        Ok(l) => Some(l),
         Err(e) => {
             // Path busy or leftover socket file.
             if path.exists() {

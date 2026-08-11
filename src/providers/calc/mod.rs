@@ -84,6 +84,12 @@ impl CalcProvider {
     }
 }
 
+impl Default for CalcProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// True when query is almost certainly not calc/convert/timezone.
 fn looks_like_plain_text(q: &str) -> bool {
     let lower = q.to_ascii_lowercase();

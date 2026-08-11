@@ -53,6 +53,7 @@ pub(super) fn indexed_to_result(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn score_free_text_full(
     index: &[IndexedPath],
     q: &str,
@@ -171,14 +172,11 @@ fn finish_free_text_fuzzy(
                 continue;
             }
         }
-        let allow_path_fuzzy = match heap.peek() {
+        let allow_path_fuzzy = !matches!(
+            heap.peek(),
             Some(Reverse((min_score, _, _)))
-                if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE =>
-            {
-                false
-            }
-            _ => true,
-        };
+                if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE
+        );
         fuzzy_left -= 1;
         let Some(score) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
             continue;
@@ -321,10 +319,10 @@ fn decode_session_name(name: &str) -> String {
         return rest.replace("--", " ").trim().to_string();
     }
     if let Some(rest) = inner.strip_prefix("mnt-windows_d-") {
-        return rest.replace('-', " ").replace('_', " ");
+        return rest.replace(['-', '_'], " ");
     }
     if let Some(rest) = inner.strip_prefix("mnt-windows_c-") {
-        return rest.replace('-', " ").replace('_', " ");
+        return rest.replace(['-', '_'], " ");
     }
     inner.replace("--", "/").replace('-', " ")
 }

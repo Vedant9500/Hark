@@ -309,6 +309,11 @@ impl TypoStore {
             .aliases
             .len()
     }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Public view of one learned alias (Settings UI).
@@ -440,7 +445,7 @@ fn prune_aliases(map: &mut HashMap<String, AliasEntry>, keep: usize, now: u64) {
         .iter()
         .map(|(k, e)| (k.clone(), alias_frecency(e.count, e.last, now)))
         .collect();
-    items.sort_by(|a, b| a.1.cmp(&b.1)); // coldest first
+    items.sort_by_key(|a| a.1); // coldest first
     let drop_n = map.len().saturating_sub(keep);
     for (k, _) in items.into_iter().take(drop_n) {
         map.remove(&k);

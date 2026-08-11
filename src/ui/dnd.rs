@@ -266,7 +266,7 @@ fn content_for_path(path: &Path) -> ContentProvider {
     let uri_list = format!("{uri}\r\n");
     let uri_bytes = glib::Bytes::from_owned(uri_list.into_bytes());
 
-    let list = FileList::from_array(&[file.clone()]);
+    let list = FileList::from_array(std::slice::from_ref(&file));
 
     ContentProvider::new_union(&[
         ContentProvider::for_value(&list.to_value()),
@@ -322,7 +322,7 @@ fn drag_thumbnail_icon(path: &Path) -> Option<gdk::Texture> {
 
     thread_local! {
         static MEMO: RefCell<Option<(PathBuf, Option<gdk::Texture>)>> =
-            RefCell::new(None);
+            const { RefCell::new(None) };
     }
 
     MEMO.with(|slot| {

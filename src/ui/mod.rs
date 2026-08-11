@@ -601,7 +601,7 @@ impl Launcher {
             list.connect_row_selected(move |_, row| {
                 if let Some(row) = row {
                     // Keep keyboard/mouse selection in view even while focus stays on search.
-                    ensure_row_visible(&row);
+                    ensure_row_visible(row);
                     let idx = row.index() as usize;
                     selected.set(idx);
                     if suppress_select.get() {
@@ -660,10 +660,7 @@ impl Launcher {
             let ui_symbolic = ui_symbolic.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
             let actions_chip = actions_chip.clone();
-            let dismiss_settings_overlay = {
-                let settings_dismiss = settings.dismiss_overlay_handle();
-                settings_dismiss
-            };
+            let dismiss_settings_overlay = settings.dismiss_overlay_handle();
 
             let settings_nav = settings.nav.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, state| {
@@ -1368,7 +1365,7 @@ mod tab_complete_tests {
 }
 
 /// Apply an action from the secondary panel (or a keyboard shortcut).
-
+#[allow(clippy::too_many_arguments)]
 fn run_secondary_action<F: Fn() + 'static>(
     engine: &Arc<Engine>,
     spec: ActionSpec,
@@ -1515,6 +1512,7 @@ fn run_secondary_action<F: Fn() + 'static>(
 }
 
 /// Re-render the list from the in-memory `results` vec (no re-search).
+#[allow(clippy::too_many_arguments)]
 fn rebind_results_from_cache(
     list: &ListBox,
     row_pool: &Rc<RefCell<ResultRowPool>>,
@@ -1549,7 +1547,7 @@ fn rebind_results_from_cache(
     let idx = selected.get().min(found.len().saturating_sub(1));
     selected.set(if found.is_empty() { 0 } else { idx });
 
-    if let Some(row) = row_pool.borrow().row_at(selected.get()).map(|r| r.clone()) {
+    if let Some(row) = row_pool.borrow().row_at(selected.get()).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -1665,6 +1663,7 @@ fn apply_body_chrome(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refresh_results(
     engine: &Arc<Engine>,
     query: &str,
@@ -1727,7 +1726,7 @@ fn refresh_results(
     selected.set(0);
     *results.borrow_mut() = found;
 
-    if let Some(row) = row_pool.borrow().row_at(0).map(|r| r.clone()) {
+    if let Some(row) = row_pool.borrow().row_at(0).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -1957,6 +1956,7 @@ fn schedule_translate_job(
 }
 
 /// Replace pending translate row with network result (success or soft-fail).
+#[allow(clippy::too_many_arguments)]
 fn apply_translate_hits(
     hits: &[SearchResult],
     list: &ListBox,
@@ -2001,7 +2001,7 @@ fn apply_translate_hits(
     selected.set(0);
     *results.borrow_mut() = out;
 
-    if let Some(row) = row_pool.borrow().row_at(0).map(|r| r.clone()) {
+    if let Some(row) = row_pool.borrow().row_at(0).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
@@ -2017,6 +2017,7 @@ fn apply_translate_hits(
 
 /// Merge async deep file hits into the current result list without clobbering
 /// selection when the user has already moved.
+#[allow(clippy::too_many_arguments)]
 fn apply_deep_hits(
     deep_hits: &[SearchResult],
     list: &ListBox,
@@ -2077,7 +2078,7 @@ fn apply_deep_hits(
     selected.set(new_sel);
     *results.borrow_mut() = merged;
 
-    if let Some(row) = row_pool.borrow().row_at(new_sel).map(|r| r.clone()) {
+    if let Some(row) = row_pool.borrow().row_at(new_sel).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);

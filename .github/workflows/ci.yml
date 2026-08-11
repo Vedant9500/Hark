@@ -11,7 +11,8 @@ permissions:
 jobs:
   lint-test:
     name: fmt + clippy + test
-    runs-on: ubuntu-22.04
+    # ubuntu-22.04 ships GTK 4.6, but blink requires GTK >= 4.12 (v4_12 feature).
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4

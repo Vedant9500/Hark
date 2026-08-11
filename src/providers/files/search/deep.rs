@@ -520,7 +520,7 @@ fn roots_from_index_name(index: &[IndexedPath], q_lower: &str) -> Vec<PathBuf> {
         let boost = score * 10 - item.depth as i64 + if item.high_value { 5 } else { 0 };
         roots.push((boost, item.path.clone()));
     }
-    roots.sort_by(|a, b| b.0.cmp(&a.0));
+    roots.sort_by_key(|b| std::cmp::Reverse(b.0));
     roots.truncate(DEEP_MAX_ROOTS);
     roots.into_iter().map(|(_, p)| p).collect()
 }
@@ -550,7 +550,7 @@ pub(super) fn roots_from_segments(index: &[IndexedPath], segments: &[String]) ->
         };
         candidates.push((score, item.path.clone(), item.path_lower.clone()));
     }
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     // If we have more segments, try to refine to the deepest matching folder.
     if segments.len() > 1 {
@@ -583,7 +583,7 @@ pub(super) fn roots_from_segments(index: &[IndexedPath], segments: &[String]) ->
             refined.push((score, item.path.clone()));
         }
         if !refined.is_empty() {
-            refined.sort_by(|a, b| b.0.cmp(&a.0));
+            refined.sort_by_key(|b| std::cmp::Reverse(b.0));
             refined.truncate(DEEP_MAX_ROOTS);
             return refined.into_iter().map(|(_, p)| p).collect();
         }
@@ -600,7 +600,7 @@ fn high_value_shallow_roots(index: &[IndexedPath]) -> Vec<PathBuf> {
             roots.push((item.depth, item.path.clone()));
         }
     }
-    roots.sort_by(|a, b| a.0.cmp(&b.0));
+    roots.sort_by_key(|a| a.0);
     // Dedupe by path
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -615,6 +615,7 @@ fn high_value_shallow_roots(index: &[IndexedPath]) -> Vec<PathBuf> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn live_deep_under_roots(
     roots: &[PathBuf],
     segments: &[String],
@@ -749,7 +750,7 @@ pub(super) fn live_deep_under_roots(
         }
     }
 
-    hit_paths.sort_by(|a, b| b.0.cmp(&a.0));
+    hit_paths.sort_by_key(|b| std::cmp::Reverse(b.0));
     hit_paths
         .into_iter()
         .map(|(score, path, is_dir)| {

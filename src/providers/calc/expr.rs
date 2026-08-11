@@ -324,7 +324,7 @@ fn apply_magnitude_suffix(bytes: &[u8], i: usize, num: f64) -> Option<(f64, usiz
 }
 
 fn factorial(x: f64) -> Option<f64> {
-    if x < 0.0 || x > 170.0 {
+    if !(0.0..=170.0).contains(&x) {
         return None;
     }
     // exact for near-integers

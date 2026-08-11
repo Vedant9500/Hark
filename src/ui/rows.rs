@@ -45,9 +45,10 @@ impl IconResolveCache {
     }
 
     fn insert(&mut self, key: String, value: String) {
-        if self.map.contains_key(&key) {
+        use std::collections::hash_map::Entry;
+        if let Entry::Occupied(mut e) = self.map.entry(key.clone()) {
             // Refresh value; keep existing order slot.
-            self.map.insert(key, value);
+            e.insert(value);
             return;
         }
         while self.map.len() >= ICON_CACHE_CAP {
@@ -114,6 +115,7 @@ impl ResultRowPool {
     ) {
         let n = items.len().min(ROW_POOL_CAP);
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             self.slots[i].bind(&items[i], icon_size, symbolic_icons);
         }

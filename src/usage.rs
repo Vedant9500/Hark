@@ -114,7 +114,7 @@ impl UsageStore {
             .iter()
             .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
             .collect();
-        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.sort_by_key(|b| std::cmp::Reverse(b.1));
         items.truncate(n);
         items
     }
@@ -138,7 +138,7 @@ impl UsageStore {
                 Some((path.to_string(), frecency(e.count, e.last, now)))
             })
             .collect();
-        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.sort_by_key(|b| std::cmp::Reverse(b.1));
         items.truncate(n);
         items.into_iter().map(|(p, _)| p).collect()
     }
@@ -196,7 +196,7 @@ fn prune_entries(entries: &mut HashMap<String, UsageEntry>, keep: usize, now: u6
         .iter()
         .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
     let retain: std::collections::HashSet<String> =
         ranked.into_iter().take(keep).map(|(id, _)| id).collect();
     entries.retain(|id, _| retain.contains(id));
