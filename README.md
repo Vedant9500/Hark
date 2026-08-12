@@ -36,10 +36,10 @@ Linux doesn’t have one universal “APK / MSI”. Hark ships the closest equiv
 ### One-line (after you publish a GitHub Release)
 
 ```bash
-curl -fsSL https://github.com/Vedant9500/Blink/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/Vedant9500/Hark/releases/latest/download/install.sh | bash
 
 # optional: also enable login autostart of the daemon
-curl -fsSL https://github.com/Vedant9500/Blink/releases/latest/download/install.sh | bash -s -- --autostart
+curl -fsSL https://github.com/Vedant9500/Hark/releases/latest/download/install.sh | bash -s -- --autostart
 ```
 
 ### Portable binary package (no GitHub needed)

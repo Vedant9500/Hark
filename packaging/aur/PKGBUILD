@@ -5,25 +5,25 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
 arch=('x86_64')
-url="https://github.com/Vedant9500/Blink"
+url="https://github.com/Vedant9500/Hark"
 license=('MIT')
 depends=('gtk4' 'glib2')
 optdepends=(
   'gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors'
 )
 makedepends=('cargo' 'pkgconf')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Blink/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('80e2cf1a73278103e5fcb2424afa9a87125d6798672d0c50bee289c3d3a367d7')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Hark/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('8698433a64f16689e85119ab8a58eab7aa21e84f8b6752839faef721f27589a2')
 options=('!lto') # Cargo sets LTO in profile.release
 
 prepare() {
-  cd "Blink-$pkgver"
+  cd "Hark-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
 }
 
 build() {
-  cd "Blink-$pkgver"
+  cd "Hark-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   local features=()
@@ -34,13 +34,13 @@ build() {
 }
 
 check() {
-  cd "Blink-$pkgver"
+  cd "Hark-$pkgver"
   cargo test --frozen --features layer-shell || \
     cargo test --frozen
 }
 
 package() {
-  cd "Blink-$pkgver"
+  cd "Hark-$pkgver"
   install -Dm755 "target/release/hark" "$pkgdir/usr/bin/hark"
   install -Dm644 "packaging/hark.desktop" "$pkgdir/usr/share/applications/hark.desktop"
   install -Dm644 "assets/hark.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/hark.svg"

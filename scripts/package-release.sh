@@ -40,7 +40,7 @@ if [[ -z "$GITHUB_REPO" ]]; then
   fi
 fi
 if [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" == *"github.com"* ]]; then
-  GITHUB_REPO="Vedant9500/Blink"
+  GITHUB_REPO="Vedant9500/Hark"
 fi
 
 echo "==> Packaging Hark v${VERSION} (${ARCH}-${OS})"
