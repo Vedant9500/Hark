@@ -9,6 +9,7 @@ pkgbase = hark
 	makedepends = pkgconf
 	depends = gtk4
 	depends = glib2
+	depends = xdg-utils
 	optdepends = gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors
 	options = !lto
 	source = hark-0.1.0.tar.gz::https://github.com/Vedant9500/Hark/archive/refs/tags/v0.1.0.tar.gz

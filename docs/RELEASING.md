@@ -91,7 +91,8 @@ concrete things must be fixed before it's submission-ready.
   → `cargo test --frozen --features layer-shell`.
 - [x] Reconsider `arch=('aarch64')`: **dropped** — no cross toolchain to build-test it.
 - [x] `makedepends=('cargo')` — correct as-is.
-- [x] `depends=('gtk4' 'glib2')` + `optdepends=('gtk4-layer-shell')` — correct.
+- [x] `depends=('gtk4' 'glib2' 'xdg-utils')` + `optdepends=('gtk4-layer-shell')` — correct
+      (`xdg-utils` added 2026-08-12: hark shells out to `xdg-open`).
 
 ### 2.2 Generate and commit `.SRCINFO`
 
@@ -102,12 +103,14 @@ concrete things must be fixed before it's submission-ready.
 
 ### 2.3 Validate locally before submitting
 
-- [ ] `namcap PKGBUILD` and `namcap <built>.pkg.tar.zst` — lint for packaging errors.
-- [ ] Build in a clean chroot (`devtools`, e.g. `ccm s` / `extra-x86_64-build`) to catch
+- [x] `namcap PKGBUILD` and `namcap <built>.pkg.tar.zst` — lint for packaging errors.
+      Found + fixed: missing `xdg-utils` (app shells out to `xdg-open`) → added to `depends`.
+- [x] Build in a clean chroot (`devtools`, e.g. `ccm s` / `extra-x86_64-build`) to catch
       missing deps that only appear without your local packages. This is the #1 missed
-      dependency detector.
-- [ ] Confirm the tag in `source=` (currently `v$pkgver`) matches a **real pushed GitHub
+      dependency detector. (2026-08-12: clean build + namcap package scan pass.)
+- [x] Confirm the tag in `source=` (currently `v$pkgver`) matches a **real pushed GitHub
       tag** — the tarball URL must resolve, or the build fails at download time.
+      (`v0.1.0` resolves; sha256 `8698433a…89a2` verified against upstream tarball.)
 
 ### 2.4 Submit to the AUR
 

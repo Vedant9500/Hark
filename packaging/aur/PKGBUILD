@@ -7,7 +7,7 @@ pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
 arch=('x86_64')
 url="https://github.com/Vedant9500/Hark"
 license=('MIT')
-depends=('gtk4' 'glib2')
+depends=('gtk4' 'glib2' 'xdg-utils')
 optdepends=(
   'gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors'
 )
