@@ -8,6 +8,7 @@
 | **[OPTIMIZATION.md](./OPTIMIZATION.md)** | Short tracker (done / open / measure) |
 | **[TRANSLATE.md](./TRANSLATE.md)** | Translate provider: usage, languages, aliases, backends |
 | **[ACTION-PANEL-AUDIT.md](./ACTION-PANEL-AUDIT.md)** | Raycast-style actions panel research + implementation tracker |
+| **[RELEASING.md](./RELEASING.md)** | Release + AUR publishing roadmap (codebase hygiene → AUR submit) |
 | **[../README.md](../README.md)** | Install & overview |
 | **[../FEATURES.md](../FEATURES.md)** | User-facing feature list |
 | **[../todo.md](../todo.md)** | Product backlog / known gaps |

@@ -1,0 +1,5 @@
+# Single source of truth for the toolchain in CI, local dev, and the AUR PKGBUILD
+# (which exports RUSTUP_TOOLCHAIN=stable). Pinned to stable so versions don't drift
+# between your machine, GitHub Actions, and a user's makepkg.
+[toolchain]
+channel = "stable"

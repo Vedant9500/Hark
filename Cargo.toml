@@ -2,6 +2,9 @@
 name = "blink"
 version = "0.1.0"
 edition = "2021"
+# Lowest Rust version the dependency tree supports (gtk4/glib 0.20 require 1.70).
+# AUR PKGBUILD builds with stable; keep this as a floor, not a target.
+rust-version = "1.70"
 description = "Raycast-style launcher for Linux (Hyprland/Wayland)"
 license = "MIT"
 readme = "README.md"

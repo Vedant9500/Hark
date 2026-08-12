@@ -294,7 +294,7 @@ impl IndexState {
                         self.capped.store(true, Ordering::Relaxed);
                         return true;
                     }
-                    if items.len().is_multiple_of(250) {
+                    if items.len() % 250 == 0 {
                         self.progress.store(items.len(), Ordering::Relaxed);
                     }
                 }

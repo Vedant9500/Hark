@@ -39,7 +39,9 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy -D warnings
-        run: cargo clippy --features layer-shell -- -D warnings
+        # Gate the same flag set local dev lints with (all targets, all features),
+        # so nothing slips through that only shows up with --all-features.
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --features layer-shell
+        run: cargo test --all-features

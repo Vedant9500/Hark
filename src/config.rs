@@ -1118,8 +1118,10 @@ mod config_store_tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("config.json");
         // Minimal valid config already at current version with excludes.
-        let mut cfg = BlinkConfig::default();
-        cfg.version = CONFIG_VERSION;
+        let cfg = BlinkConfig {
+            version: CONFIG_VERSION,
+            ..Default::default()
+        };
         fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
 
         let store = ConfigStore {
@@ -1248,8 +1250,10 @@ mod config_store_tests {
 
     #[test]
     fn translate_sanitize_clears_blocked_endpoint() {
-        let mut cfg = TranslateConfig::default();
-        cfg.endpoint = "http://169.254.169.254/".into();
+        let mut cfg = TranslateConfig {
+            endpoint: "http://169.254.169.254/".into(),
+            ..Default::default()
+        };
         cfg.sanitize();
         assert!(cfg.endpoint.is_empty());
 
@@ -1273,8 +1277,10 @@ mod config_store_tests {
         ));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("config.json");
-        let mut cfg = BlinkConfig::default();
-        cfg.version = CONFIG_VERSION;
+        let cfg = BlinkConfig {
+            version: CONFIG_VERSION,
+            ..Default::default()
+        };
         // Start world-readable so we can prove save tightens mode.
         fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();

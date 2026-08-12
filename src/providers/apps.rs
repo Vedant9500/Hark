@@ -44,6 +44,14 @@ impl AppProvider {
         self.apps.read().unwrap_or_else(|p| p.into_inner()).len()
     }
 
+    #[cfg(feature = "bench")]
+    pub fn is_empty(&self) -> bool {
+        self.apps
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty()
+    }
+
     /// Test-only: inject apps directly (no filesystem `.desktop` scan).
     /// `id`, `name` are used as-is; a minimal search blob is derived from name + id.
     #[cfg(test)]

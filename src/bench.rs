@@ -111,7 +111,7 @@ pub fn run_bench() {
     let cpu_burst1 = proc_cpu_self();
     let burst_cpu_ms = cpu_delta_ms(cpu_burst0, cpu_burst1);
     let burst_util = if burst_wall.as_millis() > 0 {
-        (burst_cpu_ms as f64) * 100.0 / (burst_wall.as_millis() as f64)
+        burst_cpu_ms * 100.0 / (burst_wall.as_millis() as f64)
     } else {
         0.0
     };

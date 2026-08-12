@@ -1,0 +1,30 @@
+name: Security audit
+
+on:
+  schedule:
+    # Weekly: RUSTSEC and license databases change independently of code.
+    - cron: "23 4 3 * *"
+  # Also on demand, so you can bump a blocked advisory same-day.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit + deny
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo-audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2

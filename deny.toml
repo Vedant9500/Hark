@@ -1,0 +1,46 @@
+# cargo-deny configuration for blink-launcher.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Don't try to crawl into the vendored GTK binding sources; only what Cargo.lock
+# actually pulls in matters.
+# (defaults are fine; listed for clarity)
+
+[advisories]
+# Fail the build on any unpatched RUSTSEC advisory in the dependency tree.
+version = 2
+yanked = "deny"
+
+[bans]
+# Only warn (not fail) on duplicate versions — the GTK4/glib binding chain is
+# heavy and forcing zero-dupes day one would block everything. Triage later.
+multiple-versions = "warn"
+
+[sources]
+# Only crates.io. No vendored/git/registry shuffling.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
+
+[licenses]
+version = 2
+# Everything listed here is OSI or FSF approved and common in the Rust
+# ecosystem. Blink itself is MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Unlicense",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    # webpki-roots (Mozilla CA cert bundle) is CDLA-Permissive — data license, fine.
+    "CDLA-Permissive-2.0",
+]
+# SPDX expressions only; cargo-deny parses these, don't warn on unknown ids.
+confidence-threshold = 0.8
