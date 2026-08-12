@@ -85,27 +85,18 @@ concrete things must be fixed before it's submission-ready.
 
 ### 2.1 Fix PKGBUILD correctness issues
 
-- [ ] **Replace `sha256sums=('SKIP')` with real checksums.**
-  Run `makepkg -g` / `updpkgsums` against the tagged source tarball and commit the real
-  hashes. `SKIP` is a red flag in AUR review — reviewers expect a pinned checksum.
-- [ ] **Drop `--release` from `check()`.**
-  Arch guidelines say use `cargo test --frozen` (no `--release`) so overflow checks and
-  `debug_assert!` stay on. Tests don't ship, so release-mode testing adds nothing.
-  → `cargo test --frozen` (keep `--features layer-shell`, as now).
-- [ ] Reconsider `arch=('aarch64')`: fine to keep but you must **also build-test it**
-  (cross target) or drop it — don't advertise aarch64 you can't verify.
-- [ ] `makedepends=('cargo')` — the guideline names `cargo` (the `rust` meta handles
-      rustc); this is already correct.
-- [ ] Confirm `depends=('gtk4' 'glib2')` + `optdepends=('gtk4-layer-shell')` match
-      runtime needs (layer-shell is optional — correct as optdepends).
+- [x] **Replace `sha256sums=('SKIP')` with real checksums.**
+  `updpkgsums` against `v0.1.0` tag → `80e2cf1a…67d7`.
+- [x] **Drop `--release` from `check()`.**
+  → `cargo test --frozen --features layer-shell`.
+- [x] Reconsider `arch=('aarch64')`: **dropped** — no cross toolchain to build-test it.
+- [x] `makedepends=('cargo')` — correct as-is.
+- [x] `depends=('gtk4' 'glib2')` + `optdepends=('gtk4-layer-shell')` — correct.
 
 ### 2.2 Generate and commit `.SRCINFO`
 
-- [ ] The AUR requires a **`.SRCINFO`** file alongside `PKGBUILD` — it is currently
-      **absent**. Generate with:
-      ```sh
-      cd packaging/aur && makepkg --printsrcinfo > .SRCINFO
-      ```
+- [x] The AUR requires a **`.SRCINFO`** file alongside `PKGBUILD` — generated via
+      `makepkg --printsrcinfo > .SRCINFO`.
 - [ ] Commit `.SRCINFO` **every time** `PKGBUILD` metadata changes (pkgver, deps, …) or
       the AUR will reject the push / show stale versions.
 

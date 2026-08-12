@@ -1,0 +1,17 @@
+pkgbase = hark
+	pkgdesc = Raycast-style launcher for Linux (Hyprland/Wayland)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/Vedant9500/Blink
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	makedepends = pkgconf
+	depends = gtk4
+	depends = glib2
+	optdepends = gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors
+	options = !lto
+	source = hark-0.1.0.tar.gz::https://github.com/Vedant9500/Blink/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = 80e2cf1a73278103e5fcb2424afa9a87125d6798672d0c50bee289c3d3a367d7
+
+pkgname = hark

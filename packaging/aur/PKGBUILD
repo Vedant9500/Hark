@@ -13,7 +13,7 @@ optdepends=(
 )
 makedepends=('cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Blink/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('80e2cf1a73278103e5fcb2424afa9a87125d6798672d0c50bee289c3d3a367d7')
 options=('!lto') # Cargo sets LTO in profile.release
 
 prepare() {
