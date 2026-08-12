@@ -30,24 +30,24 @@ impl ActionPanel {
         popover.set_position(PositionType::Top);
         popover.set_autohide(true);
         popover.set_has_arrow(false);
-        popover.add_css_class("blink-action-panel");
+        popover.add_css_class("hark-action-panel");
 
         let outer = GtkBox::new(Orientation::Vertical, 4);
-        outer.add_css_class("blink-action-panel-inner");
+        outer.add_css_class("hark-action-panel-inner");
         outer.set_margin_top(6);
         outer.set_margin_bottom(6);
         outer.set_margin_start(6);
         outer.set_margin_end(6);
 
         let header = Label::new(Some("Actions"));
-        header.add_css_class("blink-action-panel-header");
+        header.add_css_class("hark-action-panel-header");
         header.set_halign(Align::Start);
         header.set_margin_start(6);
         header.set_margin_bottom(2);
         header.set_can_target(false);
 
         let list = GtkBox::new(Orientation::Vertical, 2);
-        list.add_css_class("blink-action-panel-list");
+        list.add_css_class("hark-action-panel-list");
 
         outer.append(&header);
         outer.append(&list);
@@ -110,7 +110,7 @@ impl ActionPanel {
 
         for (idx, spec) in specs.iter().enumerate() {
             let btn = Button::new();
-            btn.add_css_class("blink-action-panel-row");
+            btn.add_css_class("hark-action-panel-row");
             btn.add_css_class("flat");
             btn.set_halign(Align::Fill);
             btn.set_hexpand(true);
@@ -127,7 +127,7 @@ impl ActionPanel {
             line.set_can_target(false);
 
             let label = Label::new(Some(&spec.label));
-            label.add_css_class("blink-action-panel-label");
+            label.add_css_class("hark-action-panel-label");
             label.set_halign(Align::Start);
             label.set_hexpand(true);
             label.set_can_target(false);
@@ -138,7 +138,7 @@ impl ActionPanel {
 
             if let Some(keys) = spec.shortcut {
                 let hint = Label::new(Some(keys));
-                hint.add_css_class("blink-action-panel-shortcut");
+                hint.add_css_class("hark-action-panel-shortcut");
                 hint.set_halign(Align::End);
                 hint.set_can_target(false);
                 line.append(&hint);
@@ -234,7 +234,7 @@ fn fire_activate(
         return;
     };
     let Some(cb) = on_activate.borrow().clone() else {
-        eprintln!("blink: action panel activate with no callback");
+        eprintln!("hark: action panel activate with no callback");
         return;
     };
     firing.set(true);

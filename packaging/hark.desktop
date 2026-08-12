@@ -1,11 +1,11 @@
 #!/usr/bin/env xdg-open
 [Desktop Entry]
 Type=Application
-Name=Blink
+Name=Hark
 GenericName=Launcher
 Comment=Raycast-style launcher for Linux (Hyprland/Wayland)
-Exec=blink
-Icon=blink
+Exec=hark
+Icon=hark
 Terminal=false
 Categories=Utility;Core;
 Keywords=launcher;search;raycast;rofi;spotlight;

@@ -160,7 +160,7 @@ impl Default for IndexConfig {
     }
 }
 
-/// Per-category app overrides for opening files from Blink.
+/// Per-category app overrides for opening files from Hark.
 /// Values are desktop ids (e.g. `org.gnome.Loupe.desktop` or `org.gnome.Loupe`).
 /// Empty / missing = system default (`xdg-open`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -623,12 +623,12 @@ fn is_blocked_ipv6(host: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct BlinkConfig {
+pub struct HarkConfig {
     #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default)]
     pub index: IndexConfig,
-    /// Per-category default apps for opening files from Blink (not system MIME).
+    /// Per-category default apps for opening files from Hark (not system MIME).
     #[serde(default)]
     pub open_with: OpenWithConfig,
     /// Appearance: transparency, accent, font, icons, radius.
@@ -658,7 +658,7 @@ pub struct MountInfo {
 
 pub struct ConfigStore {
     /// Arc swap on update — hot paths clone the Arc, not the whole config tree.
-    inner: RwLock<Arc<BlinkConfig>>,
+    inner: RwLock<Arc<HarkConfig>>,
     path: PathBuf,
 }
 
@@ -666,7 +666,7 @@ impl ConfigStore {
     /// Test-only: build a store over an in-memory config backed by `path`
     /// (writes stay in the temp dir; never touches the real config).
     #[cfg(test)]
-    pub(crate) fn with_path(cfg: BlinkConfig, path: std::path::PathBuf) -> Self {
+    pub(crate) fn with_path(cfg: HarkConfig, path: std::path::PathBuf) -> Self {
         Self {
             inner: RwLock::new(Arc::new(cfg)),
             path,
@@ -679,35 +679,35 @@ impl ConfigStore {
         let mut recovered = false;
         let mut cfg = if path.exists() {
             match fs::read_to_string(&path) {
-                Ok(contents) => match serde_json::from_str::<BlinkConfig>(&contents) {
+                Ok(contents) => match serde_json::from_str::<HarkConfig>(&contents) {
                     Ok(cfg) => cfg,
                     Err(err) => {
                         recovered = true;
                         match backup_invalid_config(&path) {
                             Some(backup) => eprintln!(
-                                "blink: invalid config {} ({err}); using defaults (backup: {})",
+                                "hark: invalid config {} ({err}); using defaults (backup: {})",
                                 path.display(),
                                 backup.display()
                             ),
                             None => eprintln!(
-                                "blink: invalid config {} ({err}); using defaults (backup failed)",
+                                "hark: invalid config {} ({err}); using defaults (backup failed)",
                                 path.display()
                             ),
                         }
-                        BlinkConfig::default()
+                        HarkConfig::default()
                     }
                 },
                 Err(err) => {
                     // Read failure (permissions etc.) — do not clobber the file.
                     eprintln!(
-                        "blink: could not read config {} ({err}); using defaults",
+                        "hark: could not read config {} ({err}); using defaults",
                         path.display()
                     );
-                    BlinkConfig::default()
+                    HarkConfig::default()
                 }
             }
         } else {
-            BlinkConfig::default()
+            HarkConfig::default()
         };
 
         // Seed mount defaults for newly discovered mounts
@@ -769,17 +769,17 @@ impl ConfigStore {
 
     /// Full owned clone — prefer [`snapshot`] or [`with`] on hot paths.
     #[allow(dead_code)] // public API for owned detach; hot paths use snapshot/with
-    pub fn get(&self) -> BlinkConfig {
+    pub fn get(&self) -> HarkConfig {
         (*self.snapshot()).clone()
     }
 
     /// Cheap shared handle to the current config (clone Arc only).
-    pub fn snapshot(&self) -> Arc<BlinkConfig> {
+    pub fn snapshot(&self) -> Arc<HarkConfig> {
         self.inner.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Borrow config without cloning the full snapshot (hot paths).
-    pub fn with<R>(&self, f: impl FnOnce(&BlinkConfig) -> R) -> R {
+    pub fn with<R>(&self, f: impl FnOnce(&HarkConfig) -> R) -> R {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         f(g.as_ref())
     }
@@ -787,7 +787,7 @@ impl ConfigStore {
     /// Apply a mutation. Clones the config, runs `f`, sanitizes UI/translate.
     /// Swaps the Arc and writes disk **only when** the result differs from the
     /// previous snapshot (no-op promote/settings toggles must not thrash I/O).
-    pub fn update<F: FnOnce(&mut BlinkConfig)>(&self, f: F) {
+    pub fn update<F: FnOnce(&mut HarkConfig)>(&self, f: F) {
         let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         let mut cfg = (**g).clone();
         f(&mut cfg);
@@ -830,7 +830,7 @@ impl ConfigStore {
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("blink/config.json")
+        .join("hark/config.json")
 }
 
 /// Copy a corrupt config aside (`config.json.invalid`) so the user can recover
@@ -1108,7 +1108,7 @@ mod config_store_tests {
     #[test]
     fn update_skips_save_when_unchanged() {
         let dir = std::env::temp_dir().join(format!(
-            "blink-config-test-{}-{}",
+            "hark-config-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1118,7 +1118,7 @@ mod config_store_tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("config.json");
         // Minimal valid config already at current version with excludes.
-        let cfg = BlinkConfig {
+        let cfg = HarkConfig {
             version: CONFIG_VERSION,
             ..Default::default()
         };
@@ -1157,7 +1157,7 @@ mod config_store_tests {
     #[test]
     fn invalid_config_is_backed_up_before_use() {
         let dir = std::env::temp_dir().join(format!(
-            "blink-config-backup-test-{}-{}",
+            "hark-config-backup-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1268,7 +1268,7 @@ mod config_store_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join(format!(
-            "blink-config-perm-{}-{}",
+            "hark-config-perm-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1277,7 +1277,7 @@ mod config_store_tests {
         ));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("config.json");
-        let cfg = BlinkConfig {
+        let cfg = HarkConfig {
             version: CONFIG_VERSION,
             ..Default::default()
         };

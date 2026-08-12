@@ -107,7 +107,7 @@ pub(crate) fn store_freedesktop_thumbnail(
         .unwrap_or_else(|| "0".into());
 
     // Atomic-ish write via temp then rename.
-    let tmp = dir.join(format!(".{digest}.blink-tmp.png"));
+    let tmp = dir.join(format!(".{digest}.hark-tmp.png"));
     let options = [
         ("tEXt::Thumb::URI", uri.as_str()),
         ("tEXt::Thumb::MTime", mtime.as_str()),

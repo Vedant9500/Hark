@@ -12,7 +12,7 @@ jobs:
   lint-test:
     name: fmt + clippy + test
     # No native Arch runner exists; run inside an archlinux container.
-    # Arch ships gtk4-layer-shell (blink's primary Hyprland/Wayland target),
+    # Arch ships gtk4-layer-shell (hark's primary Hyprland/Wayland target),
     # so the layer-shell feature builds and is gated here.
     runs-on: ubuntu-24.04
     container:

@@ -1,4 +1,4 @@
-# Blink
+# Hark
 
 Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 
@@ -23,7 +23,7 @@ Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
 
 ## Install (share with friends)
 
-Linux doesn’t have one universal “APK / MSI”. Blink ships the closest equivalents:
+Linux doesn’t have one universal “APK / MSI”. Hark ships the closest equivalents:
 
 | What | Who it’s for | How |
 |------|----------------|-----|
@@ -36,10 +36,10 @@ Linux doesn’t have one universal “APK / MSI”. Blink ships the closest equi
 ### One-line (after you publish a GitHub Release)
 
 ```bash
-curl -fsSL https://github.com/deshmukhvedant95/blink/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/Vedant9500/Blink/releases/latest/download/install.sh | bash
 
 # optional: also enable login autostart of the daemon
-curl -fsSL https://github.com/deshmukhvedant95/blink/releases/latest/download/install.sh | bash -s -- --autostart
+curl -fsSL https://github.com/Vedant9500/Blink/releases/latest/download/install.sh | bash -s -- --autostart
 ```
 
 ### Portable binary package (no GitHub needed)
@@ -49,11 +49,11 @@ Friend does **not** need Rust — just GTK4.
 ```bash
 # you build once:
 ./scripts/package-release.sh
-# share: dist/blink-0.1.0-x86_64-linux.tar.gz
+# share: dist/hark-0.1.0-x86_64-linux.tar.gz
 
 # friend installs:
-tar xzf blink-0.1.0-x86_64-linux.tar.gz
-./blink-0.1.0-x86_64-linux/install.sh
+tar xzf hark-0.1.0-x86_64-linux.tar.gz
+./hark-0.1.0-x86_64-linux/install.sh
 ```
 
 ### Complete source package (no GitHub / no git clone)
@@ -63,11 +63,11 @@ Share the full code so they can build/modify it themselves:
 ```bash
 # you run:
 ./scripts/package-source.sh
-# share: dist/blink-0.1.0-source.tar.gz   (small — excludes target/)
+# share: dist/hark-0.1.0-source.tar.gz   (small — excludes target/)
 
 # friend:
-tar xzf blink-0.1.0-source.tar.gz
-cd blink-0.1.0-source
+tar xzf hark-0.1.0-source.tar.gz
+cd hark-0.1.0-source
 # read BUILD_FROM_SOURCE.txt
 ./scripts/install.sh          # build + install + restart daemon
 # ./scripts/install.sh --no-restart
@@ -113,7 +113,7 @@ cargo build --release --features layer-shell
 ### Make a shareable release yourself
 
 ```bash
-# builds binary + dist/blink-*-linux.tar.gz + dist/install.sh + SHA256SUMS
+# builds binary + dist/hark-*-linux.tar.gz + dist/install.sh + SHA256SUMS
 ./scripts/package-release.sh
 
 # optional .deb (Ubuntu/Debian friends)
@@ -130,21 +130,21 @@ git push origin v0.1.0
 
 ## Hyprland
 
-Blink runs as a **resident daemon** (started on login). **Alt+A** toggles the window instantly.
+Hark runs as a **resident daemon** (started on login). **Alt+A** toggles the window instantly.
 
 ```lua
 -- execs.lua  (preload, no window)
-hl.exec_cmd("blink --daemon")
+hl.exec_cmd("hark --daemon")
 
 -- keybinds.lua  (toggle via single-instance activate)
-hl.bind(vars.kbBlink, hl.dsp.exec_cmd("blink"))  -- kbBlink = ALT + A
+hl.bind(vars.kbHark, hl.dsp.exec_cmd("hark"))  -- kbHark = ALT + A
 ```
 
 Or in `hyprland.conf`:
 
 ```conf
-exec-once = blink --daemon
-bind = ALT, A, exec, blink
+exec-once = hark --daemon
+bind = ALT, A, exec, hark
 ```
 
 ## Prefixes
@@ -162,5 +162,5 @@ bind = ALT, A, exec, blink
 - **[packaging/](packaging/)** — desktop entry, user installer, AUR `PKGBUILD`
 
 ```bash
-blink --bench   # needs: cargo build --release --features "layer-shell,bench"
+hark --bench   # needs: cargo build --release --features "layer-shell,bench"
 ```

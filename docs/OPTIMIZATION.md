@@ -1,4 +1,4 @@
-# Blink — optimization tracker
+# Hark — optimization tracker
 
 **Last updated:** 2026-07-17  
 **Metrics:** [`performance.md`](./performance.md)  
@@ -16,7 +16,7 @@ cargo build --release --features layer-shell
 
 # Micro-bench harness
 cargo build --release --features "layer-shell,bench"
-./target/release/blink --bench | tee docs/bench/run-$(date +%F).txt
+./target/release/hark --bench | tee docs/bench/run-$(date +%F).txt
 ```
 
 Update [`performance.md`](./performance.md) when defaults or the reference machine change.  
@@ -68,6 +68,6 @@ Product gaps **not** in scope for optimization (intentionally deferred) are list
 
 ## Notes
 
-- Index cache: `~/.cache/blink/file-index.json` (v6).  
-- Config: `~/.config/blink/config.json`.  
+- Index cache: `~/.cache/hark/file-index.json` (v6).  
+- Config: `~/.config/hark/config.json`.  
 - Daemon install should use **`--features layer-shell`** without `bench` for a smaller binary.

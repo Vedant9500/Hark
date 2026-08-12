@@ -1,6 +1,6 @@
 # Translation
 
-Blink can translate pasted or typed text via the translate provider
+Hark can translate pasted or typed text via the translate provider
 (`src/providers/translate.rs`). Results appear as a conversion row (copy on Enter).
 
 Network work never runs on the GTK main thread. Empty **API endpoint** races free
@@ -23,7 +23,7 @@ translate jobs. Pure Latin app-style queries (`firefox`, `hello world`) are **no
 auto-detected — use `tr …` for those.
 
 If auto-detect would translate into the same language as the source (e.g. Chinese
-paste with target `zh`), Blink flips the target to English (or Chinese if the
+paste with target `zh`), Hark flips the target to English (or Chinese if the
 source is English). Explicit `tr en en …` is left alone.
 
 ## Auto-detect scripts
@@ -97,7 +97,7 @@ region) is accepted and passed through after light normalization. Whether the
 **backend** supports that pair depends on Google / MyMemory / your LibreTranslate
 instance — unsupported pairs soft-fail in the UI.
 
-### Aliases Blink normalizes
+### Aliases Hark normalizes
 
 Typed aliases are folded to the canonical form above before caching and HTTP:
 
@@ -154,12 +154,12 @@ Settings → **Tools** → Translation:
 | API endpoint | LibreTranslate base URL; empty = free race |
 | API key | Optional for self-hosted LibreTranslate |
 
-On-disk: `translate` section of the Blink config (`enabled`, `target_lang`,
+On-disk: `translate` section of the Hark config (`enabled`, `target_lang`,
 `endpoint`, `api_key`, `auto_detect`, `max_chars`).
 
 ## Cache
 
-- Process memory + durable `~/.cache/blink/translate/` (or platform cache dir)
+- Process memory + durable `~/.cache/hark/translate/` (or platform cache dir)
 - Success TTL ~14 days; fail cache ~90s to avoid hammering free APIs
 - Cache key = source + target + whitespace-normalized text
 

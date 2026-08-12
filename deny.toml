@@ -1,4 +1,4 @@
-# cargo-deny configuration for blink-launcher.
+# cargo-deny configuration for hark-launcher.
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
@@ -25,7 +25,7 @@ allow-git = []
 [licenses]
 version = 2
 # Everything listed here is OSI or FSF approved and common in the Rust
-# ecosystem. Blink itself is MIT.
+# ecosystem. Hark itself is MIT.
 allow = [
     "MIT",
     "Apache-2.0",

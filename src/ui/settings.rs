@@ -90,20 +90,20 @@ pub struct SettingsPanel {
 impl SettingsPanel {
     pub fn new(engine: Arc<Engine>, theme: Rc<ThemeManager>) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
-        root.add_css_class("blink-settings");
+        root.add_css_class("hark-settings");
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.set_overflow(gtk::Overflow::Hidden);
 
         // Dual panel body (no bulky top chrome — Esc closes)
         let split = GtkBox::new(Orientation::Horizontal, 0);
-        split.add_css_class("blink-settings-split");
+        split.add_css_class("hark-settings-split");
         split.set_hexpand(true);
         split.set_vexpand(true);
 
         // --- Left nav ---
         let nav_col = GtkBox::new(Orientation::Vertical, 0);
-        nav_col.add_css_class("blink-settings-nav-col");
+        nav_col.add_css_class("hark-settings-nav-col");
         nav_col.set_hexpand(false);
         nav_col.set_vexpand(true);
 
@@ -111,7 +111,7 @@ impl SettingsPanel {
             .placeholder_text("Search…")
             .hexpand(true)
             .build();
-        search.add_css_class("blink-settings-search");
+        search.add_css_class("hark-settings-search");
         search.set_primary_icon_name(Some("system-search-symbolic"));
         search.set_margin_start(10);
         search.set_margin_end(10);
@@ -127,20 +127,20 @@ impl SettingsPanel {
             .hexpand(false)
             .vexpand(true)
             .build();
-        nav_scroll.add_css_class("blink-settings-nav-scroll");
+        nav_scroll.add_css_class("hark-settings-nav-scroll");
 
         let nav = ListBox::new();
-        nav.add_css_class("blink-settings-nav");
+        nav.add_css_class("hark-settings-nav");
         nav.set_selection_mode(gtk::SelectionMode::Single);
         nav.set_hexpand(false);
 
         for (i, cat) in CATEGORIES.iter().enumerate() {
             let row = ListBoxRow::new();
-            row.add_css_class("blink-settings-nav-row");
+            row.add_css_class("hark-settings-nav-row");
             row.set_selectable(true);
 
             let item = GtkBox::new(Orientation::Horizontal, 10);
-            item.add_css_class("blink-settings-nav-item");
+            item.add_css_class("hark-settings-nav-item");
             item.set_margin_start(10);
             item.set_margin_end(10);
             item.set_margin_top(7);
@@ -148,12 +148,12 @@ impl SettingsPanel {
             item.set_valign(gtk::Align::Center);
 
             let icon = Image::from_icon_name(cat.icon);
-            icon.add_css_class("blink-settings-nav-icon");
+            icon.add_css_class("hark-settings-nav-icon");
             icon.set_pixel_size(16);
             icon.set_valign(gtk::Align::Center);
 
             let name = Label::new(Some(cat.title));
-            name.add_css_class("blink-settings-nav-title");
+            name.add_css_class("hark-settings-nav-title");
             name.set_halign(gtk::Align::Start);
             name.set_hexpand(true);
             name.set_xalign(0.0);
@@ -206,22 +206,22 @@ impl SettingsPanel {
 
         // Bottom close hint in nav
         let nav_footer = GtkBox::new(Orientation::Horizontal, 6);
-        nav_footer.add_css_class("blink-settings-nav-footer");
+        nav_footer.add_css_class("hark-settings-nav-footer");
         nav_footer.set_margin_start(12);
         nav_footer.set_margin_end(12);
         nav_footer.set_margin_top(6);
         nav_footer.set_margin_bottom(10);
 
         let esc = Label::new(Some("esc"));
-        esc.add_css_class("blink-keycap");
+        esc.add_css_class("hark-keycap");
         let close_hint = Label::new(Some("Close"));
-        close_hint.add_css_class("blink-settings-nav-footer-label");
+        close_hint.add_css_class("hark-settings-nav-footer-label");
         close_hint.set_halign(gtk::Align::Start);
         close_hint.set_hexpand(true);
 
         let done = Button::with_label("Done");
-        done.add_css_class("blink-settings-btn");
-        done.add_css_class("blink-settings-done");
+        done.add_css_class("hark-settings-btn");
+        done.add_css_class("hark-settings-done");
         done.set_halign(gtk::Align::End);
 
         nav_footer.append(&esc);
@@ -234,7 +234,7 @@ impl SettingsPanel {
 
         // --- Right content stack ---
         let content_stack = gtk::Stack::new();
-        content_stack.add_css_class("blink-settings-content-stack");
+        content_stack.add_css_class("hark-settings-content-stack");
         content_stack.set_hexpand(true);
         content_stack.set_vexpand(true);
         content_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -366,20 +366,20 @@ impl SettingsPanel {
 
 fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     let outer = GtkBox::new(Orientation::Vertical, 0);
-    outer.add_css_class("blink-settings-page");
+    outer.add_css_class("hark-settings-page");
     outer.set_hexpand(true);
     outer.set_vexpand(true);
 
     // Sticky page header
     let header = GtkBox::new(Orientation::Horizontal, 10);
-    header.add_css_class("blink-settings-page-header");
+    header.add_css_class("hark-settings-page-header");
     header.set_margin_start(20);
     header.set_margin_end(20);
     header.set_margin_top(16);
     header.set_margin_bottom(4);
 
     let icon_w = Image::from_icon_name(icon);
-    icon_w.add_css_class("blink-settings-page-icon");
+    icon_w.add_css_class("hark-settings-page-icon");
     icon_w.set_pixel_size(18);
     icon_w.set_valign(gtk::Align::Center);
 
@@ -387,12 +387,12 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     head_text.set_hexpand(true);
 
     let t = Label::new(Some(title));
-    t.add_css_class("blink-settings-page-title");
+    t.add_css_class("hark-settings-page-title");
     t.set_halign(gtk::Align::Start);
     t.set_xalign(0.0);
 
     let s = Label::new(Some(subtitle));
-    s.add_css_class("blink-settings-page-sub");
+    s.add_css_class("hark-settings-page-sub");
     s.set_halign(gtk::Align::Start);
     s.set_xalign(0.0);
     s.set_wrap(true);
@@ -414,7 +414,7 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
         .build();
 
     let body = GtkBox::new(Orientation::Vertical, 14);
-    body.add_css_class("blink-settings-body");
+    body.add_css_class("hark-settings-body");
     body.set_margin_start(20);
     body.set_margin_end(20);
     body.set_margin_top(12);
@@ -425,17 +425,17 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     (outer, body)
 }
 
-fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> (GtkBox, Label) {
+fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> (GtkBox, Label) {
     let (outer, body) = page_shell(
         "folder-saved-search-symbolic",
         "Indexing",
-        "Choose which locations Blink searches and rebuild the file index.",
+        "Choose which locations Hark searches and rebuild the file index.",
     );
 
     body.append(&group_label("Scan depth"));
 
     let depth_card = GtkBox::new(Orientation::Vertical, 0);
-    depth_card.add_css_class("blink-settings-card");
+    depth_card.add_css_class("hark-settings-card");
 
     let depth_row = setting_row(
         "Levels from each root",
@@ -446,18 +446,18 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -
     stepper.set_valign(gtk::Align::Center);
 
     let depth_dec = Button::with_label("−");
-    depth_dec.add_css_class("blink-settings-btn");
-    depth_dec.add_css_class("blink-settings-icon-btn");
+    depth_dec.add_css_class("hark-settings-btn");
+    depth_dec.add_css_class("hark-settings-icon-btn");
     depth_dec.set_tooltip_text(Some("Shallower (faster, fewer files)"));
 
     let depth_val = Label::new(Some(&format!("{}", cfg.index.max_depth.clamp(1, 6))));
-    depth_val.add_css_class("blink-settings-stepper-val");
+    depth_val.add_css_class("hark-settings-stepper-val");
     depth_val.set_width_chars(2);
     depth_val.set_halign(gtk::Align::Center);
 
     let depth_inc = Button::with_label("+");
-    depth_inc.add_css_class("blink-settings-btn");
-    depth_inc.add_css_class("blink-settings-icon-btn");
+    depth_inc.add_css_class("hark-settings-btn");
+    depth_inc.add_css_class("hark-settings-icon-btn");
     depth_inc.set_tooltip_text(Some("Deeper (slower, more files)"));
 
     stepper.append(&depth_dec);
@@ -470,8 +470,8 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -
         "Cap {} items · rebuild TTL 30m · skips .git, .venv, node_modules, …",
         crate::providers::files::MAX_INDEX
     )));
-    caps.add_css_class("blink-hint");
-    caps.add_css_class("blink-settings-card-footer");
+    caps.add_css_class("hark-hint");
+    caps.add_css_class("hark-settings-card-footer");
     caps.set_halign(gtk::Align::Start);
     caps.set_wrap(true);
     depth_card.append(&Separator::new(Orientation::Horizontal));
@@ -524,7 +524,7 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -
     body.append(&group_label("Sources"));
 
     let sources = GtkBox::new(Orientation::Vertical, 0);
-    sources.add_css_class("blink-settings-card");
+    sources.add_css_class("hark-settings-card");
 
     let home_row = check_setting_row("Home directory (~)", None, cfg.index.include_home);
     {
@@ -566,22 +566,22 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -
     body.append(&group_label("Index"));
 
     let rebuild_row = GtkBox::new(Orientation::Vertical, 10);
-    rebuild_row.add_css_class("blink-settings-card");
+    rebuild_row.add_css_class("hark-settings-card");
 
     let rebuild_head = setting_row(
         "Rebuild index now",
         Some("Force a full re-scan of all enabled sources."),
     );
     let rebuild = Button::with_label("Rebuild");
-    rebuild.add_css_class("blink-settings-btn");
-    rebuild.add_css_class("blink-settings-primary");
+    rebuild.add_css_class("hark-settings-btn");
+    rebuild.add_css_class("hark-settings-primary");
     rebuild.set_valign(gtk::Align::Center);
     rebuild_head.append(&rebuild);
     rebuild_row.append(&rebuild_head);
 
     let status = Label::new(Some(&engine.format_index_status()));
-    status.add_css_class("blink-hint");
-    status.add_css_class("blink-settings-card-footer");
+    status.add_css_class("hark-hint");
+    status.add_css_class("hark-settings-card-footer");
     status.set_halign(gtk::Align::Start);
     status.set_wrap(true);
     rebuild_row.append(&Separator::new(Orientation::Horizontal));
@@ -608,22 +608,22 @@ fn build_typos_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
         "input-keyboard-symbolic",
         "Typo aliases",
-        "Blink learns near-miss searches (e.g. wats → WhatsApp). Manage them here.",
+        "Hark learns near-miss searches (e.g. wats → WhatsApp). Manage them here.",
     );
 
     let hint = Label::new(Some(
         "Aliases are learned automatically when you open a result after a typo or rewrite. \
-Manual pins always rank strongly. Stored in ~/.local/state/blink/typos.json.",
+Manual pins always rank strongly. Stored in ~/.local/state/hark/typos.json.",
     ));
-    hint.add_css_class("blink-hint");
+    hint.add_css_class("hark-hint");
     hint.set_wrap(true);
     hint.set_halign(gtk::Align::Start);
     hint.set_margin_bottom(8);
     body.append(&hint);
 
     let list = GtkBox::new(Orientation::Vertical, 0);
-    list.add_css_class("blink-settings-card");
-    list.add_css_class("blink-settings-list");
+    list.add_css_class("hark-settings-card");
+    list.add_css_class("hark-settings-list");
     refill_typo_list(&list, engine);
 
     // Refresh when the page is shown again (after learning more typos).
@@ -639,7 +639,7 @@ Manual pins always rank strongly. Stored in ~/.local/state/blink/typos.json.",
     actions.set_margin_top(4);
     actions.set_margin_bottom(10);
     let clear = Button::with_label("Forget all");
-    clear.add_css_class("blink-settings-btn");
+    clear.add_css_class("hark-settings-btn");
     clear.set_tooltip_text(Some("Remove every learned and manual alias"));
     {
         let engine = engine.clone();
@@ -658,7 +658,7 @@ Manual pins always rank strongly. Stored in ~/.local/state/blink/typos.json.",
     let add_hint = Label::new(Some(
         "Pin a typo to an app name or file path (e.g. typo “wats”, open “WhatsApp”).",
     ));
-    add_hint.add_css_class("blink-hint");
+    add_hint.add_css_class("hark-hint");
     add_hint.set_wrap(true);
     add_hint.set_halign(gtk::Align::Start);
     add_hint.set_margin_bottom(6);
@@ -669,23 +669,23 @@ Manual pins always rank strongly. Stored in ~/.local/state/blink/typos.json.",
         .placeholder_text("When I type… (e.g. wats)")
         .hexpand(true)
         .build();
-    typo_entry.add_css_class("blink-settings-entry");
+    typo_entry.add_css_class("hark-settings-entry");
     let target_entry = Entry::builder()
         .placeholder_text("Open… (app name or path)")
         .hexpand(true)
         .build();
-    target_entry.add_css_class("blink-settings-entry");
+    target_entry.add_css_class("hark-settings-entry");
 
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
     let status = Label::new(None);
-    status.add_css_class("blink-hint");
+    status.add_css_class("hark-hint");
     status.set_halign(gtk::Align::Start);
     status.set_hexpand(true);
     status.set_ellipsize(gtk::pango::EllipsizeMode::End);
     status.set_xalign(0.0);
     let add = Button::with_label("Add");
-    add.add_css_class("blink-settings-btn");
-    add.add_css_class("blink-settings-primary");
+    add.add_css_class("hark-settings-btn");
+    add.add_css_class("hark-settings-primary");
     {
         let engine = engine.clone();
         let typo_entry = typo_entry.clone();
@@ -724,10 +724,10 @@ fn refill_typo_list(list: &GtkBox, engine: &Arc<Engine>) {
     let items = engine.list_typo_aliases();
     if items.is_empty() {
         let empty = Label::new(Some(
-            "No aliases yet — mistype, open the right result, and Blink will learn.",
+            "No aliases yet — mistype, open the right result, and Hark will learn.",
         ));
-        empty.add_css_class("blink-hint");
-        empty.add_css_class("blink-settings-list-row");
+        empty.add_css_class("hark-hint");
+        empty.add_css_class("hark-settings-list-row");
         empty.set_halign(gtk::Align::Start);
         empty.set_wrap(true);
         list.append(&empty);
@@ -743,7 +743,7 @@ fn refill_typo_list(list: &GtkBox, engine: &Arc<Engine>) {
 
 fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 8);
-    row.add_css_class("blink-settings-list-row");
+    row.add_css_class("hark-settings-list-row");
 
     let text_col = GtkBox::new(Orientation::Vertical, 2);
     text_col.set_hexpand(true);
@@ -754,7 +754,7 @@ fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkB
     title.set_halign(gtk::Align::Start);
     title.set_xalign(0.0);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    title.add_css_class("blink-settings-list-label");
+    title.add_css_class("hark-settings-list-label");
 
     let strength = if alias.count >= 2 {
         "strong"
@@ -768,14 +768,14 @@ fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkB
     sub.set_halign(gtk::Align::Start);
     sub.set_xalign(0.0);
     sub.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    sub.add_css_class("blink-hint");
+    sub.add_css_class("hark-hint");
 
     text_col.append(&title);
     text_col.append(&sub);
 
     let rm = Button::with_label("×");
-    rm.add_css_class("blink-settings-btn");
-    rm.add_css_class("blink-settings-icon-btn");
+    rm.add_css_class("hark-settings-btn");
+    rm.add_css_class("hark-settings-icon-btn");
     rm.set_tooltip_text(Some("Forget this alias"));
     {
         let engine = engine.clone();
@@ -817,8 +817,8 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
     );
 
     let list = GtkBox::new(Orientation::Vertical, 0);
-    list.add_css_class("blink-settings-card");
-    list.add_css_class("blink-settings-list");
+    list.add_css_class("hark-settings-card");
+    list.add_css_class("hark-settings-list");
     refill_extra_list(&list, engine);
 
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -827,10 +827,10 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
         .placeholder_text("/path/to/folder")
         .hexpand(true)
         .build();
-    entry.add_css_class("blink-settings-entry");
+    entry.add_css_class("hark-settings-entry");
     let add = Button::with_label("Add");
-    add.add_css_class("blink-settings-btn");
-    add.add_css_class("blink-settings-primary");
+    add.add_css_class("hark-settings-btn");
+    add.add_css_class("hark-settings-primary");
     {
         let engine = engine.clone();
         let entry = entry.clone();
@@ -861,15 +861,15 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
         "Pinned folders always get depth 6 in the index and are preferred for live deep search. \
          Opening a deep file can auto-promote its parent project folder.",
     ));
-    deep_hint.add_css_class("blink-hint");
+    deep_hint.add_css_class("hark-hint");
     deep_hint.set_wrap(true);
     deep_hint.set_halign(gtk::Align::Start);
     deep_hint.set_margin_bottom(6);
     body.append(&deep_hint);
 
     let deep_list = GtkBox::new(Orientation::Vertical, 0);
-    deep_list.add_css_class("blink-settings-card");
-    deep_list.add_css_class("blink-settings-list");
+    deep_list.add_css_class("hark-settings-card");
+    deep_list.add_css_class("hark-settings-list");
     refill_deep_list(&deep_list, engine);
 
     let deep_add_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -878,10 +878,10 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
         .placeholder_text("~/projects/my-app")
         .hexpand(true)
         .build();
-    deep_entry.add_css_class("blink-settings-entry");
+    deep_entry.add_css_class("hark-settings-entry");
     let deep_add = Button::with_label("Pin");
-    deep_add.add_css_class("blink-settings-btn");
-    deep_add.add_css_class("blink-settings-primary");
+    deep_add.add_css_class("hark-settings-btn");
+    deep_add.add_css_class("hark-settings-primary");
     {
         let engine = engine.clone();
         let deep_entry = deep_entry.clone();
@@ -913,8 +913,8 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     );
 
     let list = GtkBox::new(Orientation::Vertical, 0);
-    list.add_css_class("blink-settings-card");
-    list.add_css_class("blink-settings-list");
+    list.add_css_class("hark-settings-card");
+    list.add_css_class("hark-settings-list");
     refill_exclude_list(&list, engine);
 
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -923,10 +923,10 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
         .placeholder_text("name or path fragment")
         .hexpand(true)
         .build();
-    entry.add_css_class("blink-settings-entry");
+    entry.add_css_class("hark-settings-entry");
     let add = Button::with_label("Add");
-    add.add_css_class("blink-settings-btn");
-    add.add_css_class("blink-settings-primary");
+    add.add_css_class("hark-settings-btn");
+    add.add_css_class("hark-settings-primary");
     {
         let engine = engine.clone();
         let entry = entry.clone();
@@ -957,13 +957,13 @@ fn build_defaults_page(engine: &Arc<Engine>, dismiss_overlay: OnDoneBoolSlot) ->
     let (outer, body) = page_shell(
         "preferences-desktop-default-applications-symbolic",
         "Default apps",
-        "Choose which app Blink uses for each file kind. Empty means system default (xdg-open).",
+        "Choose which app Hark uses for each file kind. Empty means system default (xdg-open).",
     );
 
     // Host stack: list page ↔ in-panel app picker (no extra Window — layer-shell exclusive
     // keyboard grab cannot focus a separate modal, which deadlocks Esc / interaction).
     let host = gtk::Stack::new();
-    host.add_css_class("blink-settings-defaults-host");
+    host.add_css_class("hark-settings-defaults-host");
     host.set_hexpand(true);
     host.set_vexpand(true);
     host.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -979,7 +979,7 @@ fn build_defaults_page(engine: &Arc<Engine>, dismiss_overlay: OnDoneBoolSlot) ->
     list_page.append(&group_label("Open with"));
 
     let card = GtkBox::new(Orientation::Vertical, 0);
-    card.add_css_class("blink-settings-card");
+    card.add_css_class("hark-settings-card");
 
     let host_rc = Rc::new(host.clone());
     let picker_open = Rc::new(Cell::new(false));
@@ -1016,9 +1016,9 @@ fn build_defaults_page(engine: &Arc<Engine>, dismiss_overlay: OnDoneBoolSlot) ->
     list_page.append(&card);
 
     let hint = Label::new(Some(
-        "These overrides apply only inside Blink — they do not change system MIME defaults.",
+        "These overrides apply only inside Hark — they do not change system MIME defaults.",
     ));
-    hint.add_css_class("blink-hint");
+    hint.add_css_class("hark-hint");
     hint.set_halign(gtk::Align::Start);
     hint.set_wrap(true);
     hint.set_margin_top(10);
@@ -1038,7 +1038,7 @@ fn defaults_category_row(
     picker_open: Rc<Cell<bool>>,
 ) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 10);
-    row.add_css_class("blink-settings-list-row");
+    row.add_css_class("hark-settings-list-row");
     row.set_hexpand(true);
 
     let icon = Image::from_icon_name(cat.icon());
@@ -1051,7 +1051,7 @@ fn defaults_category_row(
     text.set_valign(gtk::Align::Center);
 
     let title = Label::new(Some(cat.label()));
-    title.add_css_class("blink-settings-list-label");
+    title.add_css_class("hark-settings-list-label");
     title.set_halign(gtk::Align::Start);
     title.set_xalign(0.0);
 
@@ -1063,7 +1063,7 @@ fn defaults_category_row(
         .map(|s| s.to_string());
     let sub_text = format_open_with_label(engine, current.as_deref());
     let sub = Label::new(Some(&sub_text));
-    sub.add_css_class("blink-settings-list-sub");
+    sub.add_css_class("hark-settings-list-sub");
     sub.set_halign(gtk::Align::Start);
     sub.set_xalign(0.0);
     sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -1074,11 +1074,11 @@ fn defaults_category_row(
     text.append(&sub);
 
     let choose = Button::with_label("Choose…");
-    choose.add_css_class("blink-settings-btn");
+    choose.add_css_class("hark-settings-btn");
     choose.set_valign(gtk::Align::Center);
 
     let reset = Button::with_label("System");
-    reset.add_css_class("blink-settings-btn");
+    reset.add_css_class("hark-settings-btn");
     reset.set_valign(gtk::Align::Center);
     reset.set_tooltip_text(Some("Use system default (xdg-open)"));
     reset.set_sensitive(current.is_some());
@@ -1122,8 +1122,8 @@ fn format_open_with_label(engine: &Engine, desktop_id: Option<&str>) -> String {
     match desktop_id {
         None => "System default".into(),
         Some(id) => match engine.app_display_name(id) {
-            Some(name) => format!("{name} (Blink)"),
-            None => format!("{id} (Blink)"),
+            Some(name) => format!("{name} (Hark)"),
+            None => format!("{id} (Hark)"),
         },
     }
 }
@@ -1142,7 +1142,7 @@ fn show_app_picker(
     }
 
     let root = GtkBox::new(Orientation::Vertical, 0);
-    root.add_css_class("blink-settings-picker");
+    root.add_css_class("hark-settings-picker");
     root.set_hexpand(true);
     root.set_vexpand(true);
 
@@ -1150,14 +1150,14 @@ fn show_app_picker(
     top.set_margin_bottom(8);
 
     let back = Button::with_label("← Back");
-    back.add_css_class("blink-settings-btn");
+    back.add_css_class("hark-settings-btn");
     back.set_halign(gtk::Align::Start);
 
     let head = Label::new(Some(&format!(
         "Open {} with…",
         cat.label().to_ascii_lowercase()
     )));
-    head.add_css_class("blink-settings-page-title");
+    head.add_css_class("hark-settings-page-title");
     head.set_halign(gtk::Align::Start);
     head.set_hexpand(true);
     head.set_xalign(0.0);
@@ -1166,7 +1166,7 @@ fn show_app_picker(
     top.append(&head);
 
     let sub = Label::new(Some(cat.subtitle()));
-    sub.add_css_class("blink-hint");
+    sub.add_css_class("hark-hint");
     sub.set_halign(gtk::Align::Start);
     sub.set_margin_bottom(8);
 
@@ -1174,7 +1174,7 @@ fn show_app_picker(
         .placeholder_text("Filter apps…")
         .hexpand(true)
         .build();
-    search.add_css_class("blink-settings-search");
+    search.add_css_class("hark-settings-search");
     search.set_primary_icon_name(Some("system-search-symbolic"));
     search.set_margin_bottom(8);
 
@@ -1187,14 +1187,14 @@ fn show_app_picker(
         .build();
 
     let list = ListBox::new();
-    list.add_css_class("blink-settings-nav");
+    list.add_css_class("hark-settings-nav");
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.set_activate_on_single_click(true);
 
     // System default row first
     {
         let row = ListBoxRow::new();
-        row.add_css_class("blink-settings-nav-row");
+        row.add_css_class("hark-settings-nav-row");
         row.set_widget_name("__system__");
         let item = GtkBox::new(Orientation::Horizontal, 10);
         item.set_margin_start(10);
@@ -1204,7 +1204,7 @@ fn show_app_picker(
         let icon = Image::from_icon_name("emblem-system-symbolic");
         icon.set_pixel_size(18);
         let name = Label::new(Some("System default"));
-        name.add_css_class("blink-settings-nav-title");
+        name.add_css_class("hark-settings-nav-title");
         name.set_halign(gtk::Align::Start);
         name.set_hexpand(true);
         name.set_xalign(0.0);
@@ -1217,7 +1217,7 @@ fn show_app_picker(
     let apps = engine.list_apps_for_picker();
     for app in &apps {
         let row = ListBoxRow::new();
-        row.add_css_class("blink-settings-nav-row");
+        row.add_css_class("hark-settings-nav-row");
         row.set_widget_name(&app.desktop_id);
         row.set_tooltip_text(Some(&format!(
             "{} · {}",
@@ -1251,7 +1251,7 @@ fn show_app_picker(
         icon.set_valign(gtk::Align::Center);
 
         let name = Label::new(Some(&app.name));
-        name.add_css_class("blink-settings-nav-title");
+        name.add_css_class("hark-settings-nav-title");
         name.set_halign(gtk::Align::Start);
         name.set_hexpand(true);
         name.set_xalign(0.0);
@@ -1352,7 +1352,7 @@ fn show_app_picker(
     search.grab_focus();
 }
 
-fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {
+fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> GtkBox {
     let (outer, body) = page_shell(
         "preferences-desktop-display-symbolic",
         "Display",
@@ -1362,12 +1362,12 @@ fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) ->
     body.append(&group_label("Path format"));
 
     let style_card = GtkBox::new(Orientation::Vertical, 0);
-    style_card.add_css_class("blink-settings-card");
+    style_card.add_css_class("hark-settings-card");
 
     let label_style = CheckButton::with_label("Label  ·  Projects:/path");
     let drive_style = CheckButton::with_label("Drive  ·  D:/path");
-    label_style.add_css_class("blink-settings-radio");
-    drive_style.add_css_class("blink-settings-radio");
+    label_style.add_css_class("hark-settings-radio");
+    drive_style.add_css_class("hark-settings-radio");
     drive_style.set_group(Some(&label_style));
     match cfg.index.path_style {
         PathStyle::Label => label_style.set_active(true),
@@ -1395,11 +1395,11 @@ fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) ->
     }
 
     let label_box = GtkBox::new(Orientation::Vertical, 2);
-    label_box.add_css_class("blink-settings-list-row");
+    label_box.add_css_class("hark-settings-list-row");
     label_box.append(&label_style);
 
     let drive_box = GtkBox::new(Orientation::Vertical, 2);
-    drive_box.add_css_class("blink-settings-list-row");
+    drive_box.add_css_class("hark-settings-list-row");
     drive_box.append(&drive_style);
 
     style_card.append(&label_box);
@@ -1410,7 +1410,7 @@ fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) ->
     let hint = Label::new(Some(
         "Label uses friendly mount names. Drive uses letter-style prefixes when available.",
     ));
-    hint.add_css_class("blink-hint");
+    hint.add_css_class("hark-hint");
     hint.set_halign(gtk::Align::Start);
     hint.set_wrap(true);
     body.append(&hint);
@@ -1421,7 +1421,7 @@ fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) ->
 /// Horizontal setting row: title (+ optional subtitle) on the left, control on the right.
 fn setting_row(title: &str, subtitle: Option<&str>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 12);
-    row.add_css_class("blink-settings-list-row");
+    row.add_css_class("hark-settings-list-row");
     row.set_hexpand(true);
 
     let text = GtkBox::new(Orientation::Vertical, 2);
@@ -1430,14 +1430,14 @@ fn setting_row(title: &str, subtitle: Option<&str>) -> GtkBox {
     text.set_valign(gtk::Align::Center);
 
     let t = Label::new(Some(title));
-    t.add_css_class("blink-settings-list-label");
+    t.add_css_class("hark-settings-list-label");
     t.set_halign(gtk::Align::Start);
     t.set_xalign(0.0);
     text.append(&t);
 
     if let Some(sub) = subtitle {
         let s = Label::new(Some(sub));
-        s.add_css_class("blink-settings-list-sub");
+        s.add_css_class("hark-settings-list-sub");
         s.set_halign(gtk::Align::Start);
         s.set_xalign(0.0);
         s.set_wrap(true);
@@ -1454,14 +1454,14 @@ fn check_setting_row(title: &str, subtitle: Option<&str>, active: bool) -> (GtkB
     let cb = CheckButton::new();
     cb.set_active(active);
     cb.set_valign(gtk::Align::Center);
-    cb.add_css_class("blink-settings-check");
+    cb.add_css_class("hark-settings-check");
     row.append(&cb);
     (row, cb)
 }
 
 fn group_label(text: &str) -> Label {
     let l = Label::new(Some(text));
-    l.add_css_class("blink-settings-section");
+    l.add_css_class("hark-settings-section");
     l.set_halign(gtk::Align::Start);
     l.set_xalign(0.0);
     l
@@ -1489,8 +1489,8 @@ fn refill_extra_list(list: &GtkBox, engine: &Arc<Engine>) {
     let roots = engine.config().snapshot().index.extra_roots.clone();
     if roots.is_empty() {
         let empty = Label::new(Some("No extra folders yet"));
-        empty.add_css_class("blink-hint");
-        empty.add_css_class("blink-settings-list-row");
+        empty.add_css_class("hark-hint");
+        empty.add_css_class("hark-settings-list-row");
         empty.set_halign(gtk::Align::Start);
         list.append(&empty);
         return;
@@ -1510,8 +1510,8 @@ fn refill_deep_list(list: &GtkBox, engine: &Arc<Engine>) {
     let roots = engine.config().snapshot().index.deep_roots.clone();
     if roots.is_empty() {
         let empty = Label::new(Some("No deep roots yet — pin a project folder"));
-        empty.add_css_class("blink-hint");
-        empty.add_css_class("blink-settings-list-row");
+        empty.add_css_class("hark-hint");
+        empty.add_css_class("hark-settings-list-row");
         empty.set_halign(gtk::Align::Start);
         list.append(&empty);
         return;
@@ -1538,8 +1538,8 @@ fn refill_exclude_list(list: &GtkBox, engine: &Arc<Engine>) {
     let items = engine.config().snapshot().index.exclude.clone();
     if items.is_empty() {
         let empty = Label::new(Some("No exclusions"));
-        empty.add_css_class("blink-hint");
-        empty.add_css_class("blink-settings-list-row");
+        empty.add_css_class("hark-hint");
+        empty.add_css_class("hark-settings-list-row");
         empty.set_halign(gtk::Align::Start);
         list.append(&empty);
         return;
@@ -1554,15 +1554,15 @@ fn refill_exclude_list(list: &GtkBox, engine: &Arc<Engine>) {
 
 fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 8);
-    row.add_css_class("blink-settings-list-row");
+    row.add_css_class("hark-settings-list-row");
     let lab = Label::new(Some(text));
     lab.set_halign(gtk::Align::Start);
     lab.set_hexpand(true);
     lab.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    lab.add_css_class("blink-settings-list-label");
+    lab.add_css_class("hark-settings-list-label");
     let rm = Button::with_label("×");
-    rm.add_css_class("blink-settings-btn");
-    rm.add_css_class("blink-settings-icon-btn");
+    rm.add_css_class("hark-settings-btn");
+    rm.add_css_class("hark-settings-icon-btn");
     {
         let engine = engine.clone();
         let text = text.to_string();
@@ -1604,8 +1604,8 @@ fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
                             ListKind::Exclude => "No exclusions",
                             ListKind::Deep => "No deep roots yet — pin a project folder",
                         }));
-                        empty.add_css_class("blink-hint");
-                        empty.add_css_class("blink-settings-list-row");
+                        empty.add_css_class("hark-hint");
+                        empty.add_css_class("hark-settings-list-row");
                         empty.set_halign(gtk::Align::Start);
                         box_.append(&empty);
                     }
@@ -1635,7 +1635,7 @@ fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
 fn build_appearance_page(
     engine: &Arc<Engine>,
     theme: &Rc<ThemeManager>,
-    cfg: &crate::config::BlinkConfig,
+    cfg: &crate::config::HarkConfig,
 ) -> GtkBox {
     let (outer, body) = page_shell(
         "preferences-desktop-theme-symbolic",
@@ -1650,7 +1650,7 @@ fn build_appearance_page(
     body.append(&group_label("Panel"));
 
     let panel_card = GtkBox::new(Orientation::Vertical, 0);
-    panel_card.add_css_class("blink-settings-card");
+    panel_card.add_css_class("hark-settings-card");
 
     let compact_active = matches!(ui.layout_mode, LayoutMode::Compact);
     let (layout_row, layout_cb) = check_setting_row(
@@ -1681,14 +1681,14 @@ fn build_appearance_page(
     let opacity_stepper = GtkBox::new(Orientation::Horizontal, 4);
     opacity_stepper.set_valign(gtk::Align::Center);
     let op_dec = Button::with_label("−");
-    op_dec.add_css_class("blink-settings-btn");
-    op_dec.add_css_class("blink-settings-icon-btn");
+    op_dec.add_css_class("hark-settings-btn");
+    op_dec.add_css_class("hark-settings-icon-btn");
     let op_val = Label::new(Some(&format!("{:.0}%", ui.opacity * 100.0)));
-    op_val.add_css_class("blink-settings-stepper-val");
+    op_val.add_css_class("hark-settings-stepper-val");
     op_val.set_width_chars(4);
     let op_inc = Button::with_label("+");
-    op_inc.add_css_class("blink-settings-btn");
-    op_inc.add_css_class("blink-settings-icon-btn");
+    op_inc.add_css_class("hark-settings-btn");
+    op_inc.add_css_class("hark-settings-icon-btn");
     opacity_stepper.append(&op_dec);
     opacity_stepper.append(&op_val);
     opacity_stepper.append(&op_inc);
@@ -1743,14 +1743,14 @@ fn build_appearance_page(
     let radius_row = setting_row("Corner radius", Some(&format!("{}px", ui.radius)));
     let radius_stepper = GtkBox::new(Orientation::Horizontal, 4);
     let r_dec = Button::with_label("−");
-    r_dec.add_css_class("blink-settings-btn");
-    r_dec.add_css_class("blink-settings-icon-btn");
+    r_dec.add_css_class("hark-settings-btn");
+    r_dec.add_css_class("hark-settings-icon-btn");
     let r_val = Label::new(Some(&format!("{}", ui.radius)));
-    r_val.add_css_class("blink-settings-stepper-val");
+    r_val.add_css_class("hark-settings-stepper-val");
     r_val.set_width_chars(3);
     let r_inc = Button::with_label("+");
-    r_inc.add_css_class("blink-settings-btn");
-    r_inc.add_css_class("blink-settings-icon-btn");
+    r_inc.add_css_class("hark-settings-btn");
+    r_inc.add_css_class("hark-settings-icon-btn");
     radius_stepper.append(&r_dec);
     radius_stepper.append(&r_val);
     radius_stepper.append(&r_inc);
@@ -1805,7 +1805,7 @@ fn build_appearance_page(
     body.append(&group_label("Colours"));
 
     let colour_card = GtkBox::new(Orientation::Vertical, 0);
-    colour_card.add_css_class("blink-settings-card");
+    colour_card.add_css_class("hark-settings-card");
 
     let accent_row = setting_row("Accent override", Some("Empty = Caelestia primary"));
     let accent_entry = Entry::builder()
@@ -1813,7 +1813,7 @@ fn build_appearance_page(
         .hexpand(false)
         .width_chars(10)
         .build();
-    accent_entry.add_css_class("blink-settings-entry");
+    accent_entry.add_css_class("hark-settings-entry");
     if let Some(a) = &ui.accent {
         accent_entry.set_text(a);
     }
@@ -1840,9 +1840,9 @@ fn build_appearance_page(
     colour_card.append(&Separator::new(Orientation::Horizontal));
 
     let presets = GtkBox::new(Orientation::Horizontal, 6);
-    presets.add_css_class("blink-settings-list-row");
+    presets.add_css_class("hark-settings-list-row");
     let preset_label = Label::new(Some("Quick accents"));
-    preset_label.add_css_class("blink-settings-row-title");
+    preset_label.add_css_class("hark-settings-row-title");
     preset_label.set_halign(gtk::Align::Start);
     preset_label.set_hexpand(true);
     presets.append(&preset_label);
@@ -1857,8 +1857,8 @@ fn build_appearance_page(
         ("Reset", ""),
     ] {
         let btn = Button::with_label(name);
-        btn.add_css_class("blink-settings-btn");
-        btn.add_css_class("blink-settings-link");
+        btn.add_css_class("hark-settings-btn");
+        btn.add_css_class("hark-settings-link");
         let engine = engine.clone();
         let theme = theme.clone();
         let accent_entry = accent_entry.clone();
@@ -1882,7 +1882,7 @@ fn build_appearance_page(
     body.append(&group_label("Type & icons"));
 
     let type_card = GtkBox::new(Orientation::Vertical, 0);
-    type_card.add_css_class("blink-settings-card");
+    type_card.add_css_class("hark-settings-card");
 
     let font_row = setting_row(
         "Font scale",
@@ -1890,14 +1890,14 @@ fn build_appearance_page(
     );
     let font_stepper = GtkBox::new(Orientation::Horizontal, 4);
     let f_dec = Button::with_label("−");
-    f_dec.add_css_class("blink-settings-btn");
-    f_dec.add_css_class("blink-settings-icon-btn");
+    f_dec.add_css_class("hark-settings-btn");
+    f_dec.add_css_class("hark-settings-icon-btn");
     let f_val = Label::new(Some(&format!("{:.0}%", ui.font_scale * 100.0)));
-    f_val.add_css_class("blink-settings-stepper-val");
+    f_val.add_css_class("hark-settings-stepper-val");
     f_val.set_width_chars(4);
     let f_inc = Button::with_label("+");
-    f_inc.add_css_class("blink-settings-btn");
-    f_inc.add_css_class("blink-settings-icon-btn");
+    f_inc.add_css_class("hark-settings-btn");
+    f_inc.add_css_class("hark-settings-icon-btn");
     font_stepper.append(&f_dec);
     font_stepper.append(&f_val);
     font_stepper.append(&f_inc);
@@ -1951,14 +1951,14 @@ fn build_appearance_page(
     let icon_row = setting_row("Icon size", Some(&format!("{}px", ui.icon_size)));
     let icon_stepper = GtkBox::new(Orientation::Horizontal, 4);
     let i_dec = Button::with_label("−");
-    i_dec.add_css_class("blink-settings-btn");
-    i_dec.add_css_class("blink-settings-icon-btn");
+    i_dec.add_css_class("hark-settings-btn");
+    i_dec.add_css_class("hark-settings-icon-btn");
     let i_val = Label::new(Some(&format!("{}", ui.icon_size)));
-    i_val.add_css_class("blink-settings-stepper-val");
+    i_val.add_css_class("hark-settings-stepper-val");
     i_val.set_width_chars(3);
     let i_inc = Button::with_label("+");
-    i_inc.add_css_class("blink-settings-btn");
-    i_inc.add_css_class("blink-settings-icon-btn");
+    i_inc.add_css_class("hark-settings-btn");
+    i_inc.add_css_class("hark-settings-icon-btn");
     icon_stepper.append(&i_dec);
     icon_stepper.append(&i_val);
     icon_stepper.append(&i_inc);
@@ -2031,13 +2031,13 @@ fn build_appearance_page(
     // Reset
     body.append(&group_label("Reset"));
     let reset_card = GtkBox::new(Orientation::Vertical, 0);
-    reset_card.add_css_class("blink-settings-card");
+    reset_card.add_css_class("hark-settings-card");
     let reset_row = setting_row(
         "Restore defaults",
         Some("Opacity, accent, font, icons, radius, layout"),
     );
     let reset_btn = Button::with_label("Reset appearance");
-    reset_btn.add_css_class("blink-settings-btn");
+    reset_btn.add_css_class("hark-settings-btn");
     {
         let engine = engine.clone();
         let theme = theme.clone();
@@ -2067,7 +2067,7 @@ fn build_appearance_page(
          Accent override only changes the highlight colour. Icon size applies on the next \
          search refresh.",
     ));
-    note.add_css_class("blink-hint");
+    note.add_css_class("hark-hint");
     note.set_halign(gtk::Align::Start);
     note.set_wrap(true);
     body.append(&note);
@@ -2075,7 +2075,7 @@ fn build_appearance_page(
     outer
 }
 
-fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> GtkBox {
+fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> GtkBox {
     let (outer, body) = page_shell(
         "applications-utilities-symbolic",
         "Tools",
@@ -2085,7 +2085,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
     body.append(&group_label("Translation"));
 
     let card = GtkBox::new(Orientation::Vertical, 0);
-    card.add_css_class("blink-settings-card");
+    card.add_css_class("hark-settings-card");
 
     let (en_row, en_cb) = check_setting_row(
         "Enable translation",
@@ -2132,7 +2132,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
         .hexpand(false)
         .width_chars(8)
         .build();
-    target_entry.add_css_class("blink-settings-entry");
+    target_entry.add_css_class("hark-settings-entry");
     target_entry.set_text(&cfg.translate.target_lang);
     target_row.append(&target_entry);
     card.append(&target_row);
@@ -2157,7 +2157,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
         .placeholder_text("https://libretranslate.example")
         .hexpand(true)
         .build();
-    ep_entry.add_css_class("blink-settings-entry");
+    ep_entry.add_css_class("hark-settings-entry");
     ep_entry.set_text(&cfg.translate.endpoint);
     ep_row.append(&ep_entry);
     card.append(&ep_row);
@@ -2180,7 +2180,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
         .hexpand(true)
         .visibility(false)
         .build();
-    key_entry.add_css_class("blink-settings-entry");
+    key_entry.add_css_class("hark-settings-entry");
     if let Some(k) = &cfg.translate.api_key {
         key_entry.set_text(k);
     }
@@ -2208,7 +2208,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::BlinkConfig) -> G
          in (network off the UI thread). Empty endpoint uses free Google/MyMemory. Prefer local \
          LibreTranslate for privacy. Explicit direction: tr <src> <tgt> <text>.",
     ));
-    note.add_css_class("blink-hint");
+    note.add_css_class("hark-hint");
     note.set_halign(gtk::Align::Start);
     note.set_wrap(true);
     body.append(&note);

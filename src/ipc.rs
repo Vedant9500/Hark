@@ -6,7 +6,7 @@ use std::time::Duration;
 
 pub fn socket_path() -> PathBuf {
     if let Some(dir) = dirs::runtime_dir() {
-        return dir.join("blink.sock");
+        return dir.join("hark.sock");
     }
     // No XDG_RUNTIME_DIR (rare on non-Wayland sessions): fail closed into a
     // user-private cache dir instead of the shared temp dir, so other local
@@ -14,9 +14,9 @@ pub fn socket_path() -> PathBuf {
     // this directory with mode 0700.
     dirs::cache_dir()
         .or_else(dirs::home_dir)
-        .map(|d| d.join("blink"))
-        .unwrap_or_else(|| std::env::temp_dir().join("blink"))
-        .join("blink.sock")
+        .map(|d| d.join("hark"))
+        .unwrap_or_else(|| std::env::temp_dir().join("hark"))
+        .join("hark.sock")
 }
 
 /// Fast path for hotkey: tell the daemon to toggle. Returns true if delivered.
@@ -81,7 +81,7 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
     let listener = match bind_socket(&path) {
         Some(l) => l,
         None => {
-            eprintln!("blink: ipc bind failed for {}", path.display());
+            eprintln!("hark: ipc bind failed for {}", path.display());
             return;
         }
     };
@@ -120,7 +120,7 @@ fn bind_socket(path: &std::path::Path) -> Option<UnixListener> {
             if path.exists() {
                 // Live daemon already listening → leave it alone.
                 if UnixStream::connect(path).is_ok() {
-                    eprintln!("blink: ipc already active at {} ({e})", path.display());
+                    eprintln!("hark: ipc already active at {} ({e})", path.display());
                     return None;
                 }
                 // Stale socket (connect fails) — reclaim.
@@ -128,12 +128,12 @@ fn bind_socket(path: &std::path::Path) -> Option<UnixListener> {
                 match UnixListener::bind(path) {
                     Ok(l) => return Some(l),
                     Err(e2) => {
-                        eprintln!("blink: ipc rebind failed: {e2}");
+                        eprintln!("hark: ipc rebind failed: {e2}");
                         return None;
                     }
                 }
             }
-            eprintln!("blink: ipc bind failed: {e}");
+            eprintln!("hark: ipc bind failed: {e}");
             None
         }
     }
@@ -146,7 +146,7 @@ mod ipc_tests {
     #[test]
     fn socket_path_uses_runtime_dir_or_tmp() {
         let p = socket_path();
-        assert!(p.ends_with("blink.sock"));
+        assert!(p.ends_with("hark.sock"));
     }
 
     /// Needs AF_UNIX bind (may be denied in sandboxed CI).
@@ -154,7 +154,7 @@ mod ipc_tests {
     #[ignore = "unix socket bind"]
     fn stale_socket_is_reclaimed() {
         let dir = std::env::temp_dir().join(format!(
-            "blink-ipc-test-{}-{}",
+            "hark-ipc-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -162,7 +162,7 @@ mod ipc_tests {
                 .unwrap_or(0)
         ));
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("blink.sock");
+        let path = dir.join("hark.sock");
         let _ = std::fs::remove_file(&path);
         let reclaimed = bind_socket(&path);
         assert!(reclaimed.is_some(), "should bind clean path");
@@ -177,7 +177,7 @@ mod ipc_tests {
         use std::sync::Arc;
 
         let dir = std::env::temp_dir().join(format!(
-            "blink-ipc-rt-{}-{}",
+            "hark-ipc-rt-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

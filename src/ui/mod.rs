@@ -86,10 +86,10 @@ impl Launcher {
     pub fn new(app: &Application, engine: Arc<Engine>) -> Self {
         let window = ApplicationWindow::builder()
             .application(app)
-            .title("Blink")
+            .title("Hark")
             .decorated(false)
             .resizable(false)
-            .css_classes(["blink-window"])
+            .css_classes(["hark-window"])
             .build();
 
         window.set_hide_on_close(true);
@@ -105,14 +105,14 @@ impl Launcher {
         // Frame hugs the shell. Expanding it leaves a transparent rectangle that
         // Hyprland layer-blur still samples around the rounded card (square halo).
         let frame = GtkBox::new(Orientation::Vertical, 0);
-        frame.add_css_class("blink-frame");
+        frame.add_css_class("hark-frame");
         frame.set_hexpand(false);
         frame.set_vexpand(false);
         frame.set_halign(gtk::Align::Center);
         frame.set_valign(gtk::Align::Start);
 
         let shell = GtkBox::new(Orientation::Vertical, 0);
-        shell.add_css_class("blink-shell");
+        shell.add_css_class("hark-shell");
         shell.set_hexpand(true);
         shell.set_vexpand(false);
         shell.set_halign(gtk::Align::Fill);
@@ -137,27 +137,27 @@ impl Launcher {
         search_view.set_valign(gtk::Align::Start);
 
         let header = GtkBox::new(Orientation::Vertical, 0);
-        header.add_css_class("blink-header");
+        header.add_css_class("hark-header");
         header.set_hexpand(true);
 
         let search = Entry::builder()
             .placeholder_text("Search apps, files, or type math…")
-            .css_classes(["blink-search"])
+            .css_classes(["hark-search"])
             .hexpand(true)
             .build();
         search.set_primary_icon_name(Some("system-search-symbolic"));
         header.append(&search);
 
         let header_sep = gtk::Separator::new(Orientation::Horizontal);
-        header_sep.add_css_class("blink-sep");
+        header_sep.add_css_class("hark-sep");
 
         let body = GtkBox::new(Orientation::Horizontal, 0);
-        body.add_css_class("blink-body");
+        body.add_css_class("hark-body");
         body.set_hexpand(true);
         body.set_vexpand(true);
 
         let list_col = GtkBox::new(Orientation::Vertical, 0);
-        list_col.add_css_class("blink-list-col");
+        list_col.add_css_class("hark-list-col");
         list_col.set_hexpand(true);
         list_col.set_vexpand(true);
 
@@ -170,18 +170,18 @@ impl Launcher {
             .hexpand(true)
             .vexpand(true)
             .build();
-        scroll.add_css_class("blink-scroll");
+        scroll.add_css_class("hark-scroll");
         scroll.set_overlay_scrolling(false);
 
         let list = ListBox::new();
-        list.add_css_class("blink-results");
+        list.add_css_class("hark-results");
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.set_activate_on_single_click(true);
         list.set_vexpand(false);
         scroll.set_child(Some(&list));
 
         let empty = Label::new(Some("Type to search apps, files, math, or conversions"));
-        empty.add_css_class("blink-empty");
+        empty.add_css_class("hark-empty");
         empty.set_halign(gtk::Align::Center);
         empty.set_valign(gtk::Align::Center);
         empty.set_hexpand(true);
@@ -209,11 +209,11 @@ impl Launcher {
         body.append(preview.widget());
 
         let footer_sep = gtk::Separator::new(Orientation::Horizontal);
-        footer_sep.add_css_class("blink-sep");
+        footer_sep.add_css_class("hark-sep");
 
         // Slim footer: Settings (left) · primary Enter (center) · Actions (right)
         let footer = GtkBox::new(Orientation::Horizontal, 0);
-        footer.add_css_class("blink-footer");
+        footer.add_css_class("hark-footer");
         footer.set_hexpand(true);
 
         let settings_chip = action_chip_button("Settings", "Ctrl ,");
@@ -223,13 +223,13 @@ impl Launcher {
         let left_div = footer_divider();
 
         let primary = GtkBox::new(Orientation::Horizontal, 8);
-        primary.add_css_class("blink-footer-primary");
+        primary.add_css_class("hark-footer-primary");
         primary.set_halign(gtk::Align::Start);
         primary.set_hexpand(true);
         primary.set_valign(gtk::Align::Center);
 
         let footer_action = Label::new(Some("Open"));
-        footer_action.add_css_class("blink-footer-action");
+        footer_action.add_css_class("hark-footer-action");
         footer_action.set_halign(gtk::Align::Start);
 
         let enter_key = keycap_label("↵");
@@ -239,7 +239,7 @@ impl Launcher {
         let actions_chip = action_chip_button("Actions", "Ctrl K");
         actions_chip.set_halign(gtk::Align::End);
         actions_chip.set_valign(gtk::Align::Center);
-        actions_chip.add_css_class("blink-footer-actions");
+        actions_chip.add_css_class("hark-footer-actions");
 
         let action_panel = ActionPanel::new(&actions_chip);
 
@@ -1638,14 +1638,14 @@ fn apply_body_chrome(
     // Keep a hairline above the footer when body is hidden (compact bar look).
     footer_sep.set_visible(true);
     if show_body {
-        body.remove_css_class("blink-body-collapsed");
+        body.remove_css_class("hark-body-collapsed");
         body.set_vexpand(true);
         if let Some(s) = scroll {
             s.set_min_content_height(120);
             s.set_vexpand(true);
         }
     } else {
-        body.add_css_class("blink-body-collapsed");
+        body.add_css_class("hark-body-collapsed");
         body.set_vexpand(false);
         if let Some(s) = scroll {
             s.set_min_content_height(0);
@@ -2132,7 +2132,7 @@ fn setup_window_chrome(window: &ApplicationWindow) {
             window.set_margin(Edge::Bottom, 0);
             window.set_margin(Edge::Left, 0);
             window.set_margin(Edge::Right, 0);
-            window.set_namespace(Some("blink"));
+            window.set_namespace(Some("hark"));
             return;
         }
     }

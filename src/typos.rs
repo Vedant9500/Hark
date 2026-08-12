@@ -477,7 +477,7 @@ fn typo_path() -> PathBuf {
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/typos.json")
+        .join("hark/typos.json")
 }
 
 /// Score floor used when injecting an alias hit that wasn't already in results.
@@ -494,7 +494,7 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "blink-typos-{}-{}-{}.json",
+            "hark-typos-{}-{}-{}.json",
             std::process::id(),
             n,
             now_secs()

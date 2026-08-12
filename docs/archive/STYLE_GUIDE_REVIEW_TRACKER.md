@@ -1,6 +1,6 @@
 # Performance & Effective Rust Review Tracker (Temporary)
 
-Temporary tracking file for a 5-part review of the Blink codebase against:
+Temporary tracking file for a 5-part review of the Hark codebase against:
 
 1. **[The Rust Performance Book](https://nnethercote.github.io/perf-book/)** — latency, allocations, I/O, caching
 2. **[Effective Rust](https://www.effective-rust.com/)** — types, panics, shared state, over-optimization, tooling
@@ -29,7 +29,7 @@ except where the Performance Book’s **build configuration** chapter applies (`
 
 - Release profile already sets `lto = true`, `codegen-units = 1`, `opt-level = 3`, `strip = true`,
   `panic = "abort"` — strong defaults per the build-configuration chapter; re-verify during Part 1.
-- Optional `bench` feature + `src/bench.rs` micro-bench CLI (`blink --bench`) — exercise under
+- Optional `bench` feature + `src/bench.rs` micro-bench CLI (`hark --bench`) — exercise under
   the benchmarking chapter rather than only Criterion (crate has no Criterion harness today).
 - Hot paths to weight more heavily: search/index (`providers/files/*`), result ranking
   (`engine.rs`), app launch path, typo correction, UI debounce / row rebuilds.
@@ -116,7 +116,7 @@ micro-bench CLI. Highest leverage after Files search for end-to-end query latenc
 **Orchestration is in good shape; no Part-5-scale hot-path leaks.** After the Files provider
 work, Core is mostly a careful merge layer: early outs for calc/translate/force-files, apps-before-
 files ranking, async deep only when needed, Arc config, debounced usage I/O, and a real
-`blink --bench` harness.
+`hark --bench` harness.
 
 There is **no hard P1** confined to this part. Remaining issues are moderate: per-open FS walks
 for deep-root auto-promote, lock `.unwrap()` / poison policy, pretty JSON for typos (vs compact
@@ -155,7 +155,7 @@ means poison → process death. Poison only follows a prior panic under the lock
 
 | Store | Locks |
 |-------|--------|
-| `ConfigStore` | `RwLock<Arc<BlinkConfig>>` |
+| `ConfigStore` | `RwLock<Arc<HarkConfig>>` |
 | `UsageStore` | `RwLock` + `Mutex` (last_save) |
 | `TypoStore` | `RwLock` + `Mutex` |
 
@@ -237,7 +237,7 @@ stack buffers / byte paths for ASCII aliases.
 | Config Arc swap; skip save when unchanged | `config.rs` | **B5**, **B12** |
 | `with()` for borrow without full clone | `ConfigStore` | **E8** |
 | Scoped-query memo lives in Files (engine reuses) | cross-part | **B14** |
-| `blink --bench` isolated provider probes + p95 | `bench.rs` | **B3** |
+| `hark --bench` isolated provider probes + p95 | `bench.rs` | **B3** |
 
 #### Checklist snapshot (Part 1)
 
@@ -269,10 +269,10 @@ stack buffers / byte paths for ASCII aliases.
 
 ```bash
 cargo build --release --features "layer-shell,bench"
-./target/release/blink --bench
+./target/release/hark --bench
 
 # Empty-open / open-file latency if chasing P2s
-# samply record ./target/release/blink --daemon
+# samply record ./target/release/hark --daemon
 ```
 
 | Experiment | Success signal |
@@ -346,7 +346,7 @@ Preview/settings/theme are **Part 3** — not fully scored here even where `mod.
 
 Keystroke path: debounce → `engine.search` → `ResultRowPool::apply` (≤25 binds) → optional
 async deep/translate. Widget work is bounded; search cost is still dominated by providers
-(Files/apps). Do not rewrite the shell without `blink --bench` + typing latency numbers (**E20**).
+(Files/apps). Do not rewrite the shell without `hark --bench` + typing latency numbers (**E20**).
 
 ##### P2 — icon resolve can hit `IconTheme::has_icon` on cache miss (**B5**, **B12**)
 
@@ -460,7 +460,7 @@ No performance action.
 
 ```bash
 cargo build --release --features "layer-shell,bench"
-# Typing: samply/perf on blink daemon while hammering the search entry
+# Typing: samply/perf on hark daemon while hammering the search entry
 # Compare: cold icon set vs warm; drag-start of image file vs folder
 ```
 
@@ -928,7 +928,7 @@ Top-K is only 25, so result construction is smaller than the score loop, but the
 3. Optionally keep icon as `Option<&'static str>` or `Cow<'static, str>` on `SearchResult`
    (cross-cutting; Part 1/engine may need to agree).
 
-**Measure first** with `blink --bench` / heaptrack on a full free-text query against a full index.
+**Measure first** with `hark --bench` / heaptrack on a full free-text query against a full index.
 
 ##### P1 — hot-set rebuild clones entire index path map (**B5**, **B6**, **B4**)
 
@@ -1119,10 +1119,10 @@ or store `title_lower` if you touch this code; not worth a dedicated change (**E
 
 ```bash
 cargo build --release --features "layer-shell,bench"
-./target/release/blink --bench   # file / search cases if present
+./target/release/hark --bench   # file / search cases if present
 
 # Allocation focus on free-text against a warm full index
-# heaptrack ./target/release/blink …
+# heaptrack ./target/release/hark …
 # or dhat / samply for CPU
 ```
 
@@ -1182,6 +1182,6 @@ cargo test --features "layer-shell,bench"
 
 # Performance-oriented
 cargo build --release --features "layer-shell,bench"
-./target/release/blink --bench
+./target/release/hark --bench
 ```
 )

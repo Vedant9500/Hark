@@ -2,7 +2,7 @@
 # Pack a clean, shareable source tree (no GitHub / no git clone needed).
 #
 # Creates:
-#   dist/blink-<ver>-source.tar.gz   ~hundreds of KB (not GB)
+#   dist/hark-<ver>-source.tar.gz   ~hundreds of KB (not GB)
 #
 # Excludes: target/, dist/, .git/, personal scratch, build artifacts.
 #
@@ -17,7 +17,7 @@ cd "$ROOT"
 VERSION="$(
   sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1
 )"
-PKG_NAME="blink-${VERSION}-source"
+PKG_NAME="hark-${VERSION}-source"
 DIST="$ROOT/dist"
 OUT_DIR="${1:-$DIST}"
 STAGE="$(mktemp -d)"
@@ -49,7 +49,7 @@ tar -C "$ROOT" \
   --exclude='./.env' \
   --exclude='./.env.*' \
   --exclude='./config.local.toml' \
-  --exclude='./blink.local.toml' \
+  --exclude='./hark.local.toml' \
   --exclude='./packaging/aur/pkg' \
   --exclude='./packaging/aur/src' \
   --exclude='./coverage' \
@@ -69,7 +69,7 @@ tar -C "$ROOT" \
 
 # Friend-facing build instructions (no GitHub assumed)
 cat > "$STAGE/$PKG_NAME/BUILD_FROM_SOURCE.txt" <<EOF
-Blink ${VERSION} — complete source package
+Hark ${VERSION} — complete source package
 ==========================================
 
 This archive is the full source code. No git / GitHub required.
@@ -96,29 +96,29 @@ Fedora:
 
   # or manually:
   cargo build --release --features layer-shell
-  # binary: target/release/blink
+  # binary: target/release/hark
 
 3) Run
 ------
   # preload (recommended)
-  blink --daemon &
+  hark --daemon &
 
   # toggle UI (bind this to a hotkey, e.g. Alt+A)
-  blink
+  hark
 
 Hyprland example (hyprland.conf):
-  exec-once = blink --daemon
-  bind = ALT, A, exec, blink
+  exec-once = hark --daemon
+  bind = ALT, A, exec, hark
 
 4) Optional: make a binary package for someone else
 ---------------------------------------------------
   ./scripts/package-release.sh
-  # share dist/blink-*-linux.tar.gz (they do NOT need Rust)
+  # share dist/hark-*-linux.tar.gz (they do NOT need Rust)
 
 Uninstall (user install):
-  rm -f ~/.local/bin/blink
-  rm -f ~/.local/share/applications/blink.desktop
-  rm -f ~/.local/share/icons/hicolor/scalable/apps/blink.svg
+  rm -f ~/.local/bin/hark
+  rm -f ~/.local/share/applications/hark.desktop
+  rm -f ~/.local/share/icons/hicolor/scalable/apps/hark.svg
 EOF
 
 # Make scripts executable inside the archive

@@ -414,7 +414,7 @@ fn is_high_value_path(path_lower: &str) -> bool {
                 "documents/",
                 "downloads/",
                 "desktop/",
-                "blink/",
+                "hark/",
                 ".config/",
             ] {
                 if rest.starts_with(p) {
@@ -550,14 +550,14 @@ fn cache_path() -> PathBuf {
     dirs::cache_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/file-index.json")
+        .join("hark/file-index.json")
 }
 
 fn meta_path() -> PathBuf {
     dirs::cache_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/file-index.meta")
+        .join("hark/file-index.meta")
 }
 
 fn now_secs() -> u64 {

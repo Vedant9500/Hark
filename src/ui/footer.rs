@@ -25,7 +25,7 @@ pub(crate) fn update_footer(
 
 pub(crate) fn keycap_label(text: &str) -> Label {
     let l = Label::new(Some(text));
-    l.add_css_class("blink-keycap");
+    l.add_css_class("hark-keycap");
     l
 }
 
@@ -44,18 +44,18 @@ pub(crate) fn keycaps(keys: &str) -> GtkBox {
 
 pub(crate) fn footer_divider() -> Label {
     let l = Label::new(Some("│"));
-    l.add_css_class("blink-footer-div");
+    l.add_css_class("hark-footer-div");
     l
 }
 
 #[allow(dead_code)]
 pub(crate) fn action_chip(label: &str, keys: &str) -> GtkBox {
     let box_ = GtkBox::new(Orientation::Horizontal, 6);
-    box_.add_css_class("blink-action-chip");
+    box_.add_css_class("hark-action-chip");
     box_.set_valign(gtk::Align::Center);
 
     let name = Label::new(Some(label));
-    name.add_css_class("blink-action-label");
+    name.add_css_class("hark-action-label");
 
     box_.append(&name);
     box_.append(&keycaps(keys));
@@ -67,13 +67,13 @@ pub(crate) fn action_chip_button(label: &str, keys: &str) -> Button {
     box_.set_valign(gtk::Align::Center);
 
     let name = Label::new(Some(label));
-    name.add_css_class("blink-action-label");
+    name.add_css_class("hark-action-label");
     box_.append(&name);
     box_.append(&keycaps(keys));
 
     let btn = Button::new();
-    btn.add_css_class("blink-action-chip");
-    btn.add_css_class("blink-action-btn");
+    btn.add_css_class("hark-action-chip");
+    btn.add_css_class("hark-action-btn");
     btn.set_has_frame(false);
     btn.set_child(Some(&box_));
     btn

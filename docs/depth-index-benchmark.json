@@ -1,5 +1,5 @@
 {
-  "title": "Blink index depth benchmark",
+  "title": "Hark index depth benchmark",
   "date": "2026-07-14",
   "machine": {
     "host_mem_kb": 15523144,
@@ -9,11 +9,11 @@
   },
   "method": {
     "binary": "release + features layer-shell",
-    "command": "blink --bench",
+    "command": "hark --bench",
     "procedure": [
       "Set config index.max_depth to N",
-      "Delete ~/.cache/blink/file-index.json (+ meta)",
-      "Run blink --bench (cold load + blocking rebuild section)",
+      "Delete ~/.cache/hark/file-index.json (+ meta)",
+      "Run hark --bench (cold load + blocking rebuild section)",
       "Record items, rebuild_ms, cache_bytes, search medians"
     ],
     "config_note": "Earlier max_depth>3 was incorrectly clamped to 2 in ConfigStore::load; fixed to allow 1..=6 before depth-4 run"

@@ -4,7 +4,7 @@
 //! Telegram, Nautilus, browsers, etc. receive a file — not pixels.
 //!
 //! Critical Wayland/layer-shell details:
-//! - suppress Blink's auto-hide-on-focus-loss while a drag is active
+//! - suppress Hark's auto-hide-on-focus-loss while a drag is active
 //! - release exclusive keyboard grab during drag so drop targets can focus
 //! - offer COPY|MOVE|ASK (Hyprland often prefers MOVE; we never delete)
 
@@ -21,7 +21,7 @@ use std::rc::Rc;
 /// Shared drag session flags used by the launcher window.
 #[derive(Clone)]
 pub struct DragSession {
-    /// Suppress auto-hide while true (focus leaves Blink during drop).
+    /// Suppress auto-hide while true (focus leaves Hark during drop).
     pub ignore_focus_loss: Rc<Cell<bool>>,
     /// True between drag-begin and drag-end/cancel — skip list rebuilds.
     pub active: Rc<Cell<bool>>,
@@ -178,7 +178,7 @@ fn begin_session(session: &DragSession) {
     session.active.set(true);
     session.ignore_focus_loss.set(true);
     // Exclusive keyboard mode can starve drop targets under layer-shell.
-    // OnDemand keeps Blink usable for Escape but lets other surfaces focus.
+    // OnDemand keeps Hark usable for Escape but lets other surfaces focus.
     set_layer_keyboard_ondemand(session);
 }
 
@@ -210,7 +210,7 @@ fn end_session(session: &DragSession) {
             return;
         };
         if app.active_window().is_some() {
-            // Still focused on Blink — keep open.
+            // Still focused on Hark — keep open.
             return;
         }
         // Focus is elsewhere after the drop: hide like normal focus-loss.

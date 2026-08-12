@@ -1,4 +1,4 @@
-//! Blink launcher library.
+//! Hark launcher library.
 //!
 //! Exposing the application logic as a lib target allows integration tests,
 //! benchmarks and fuzz harnesses to reuse `Engine` and the providers without

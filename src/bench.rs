@@ -1,11 +1,11 @@
-//! Micro-bench helpers (`blink --bench`). Compiled only with `--features bench`.
+//! Micro-bench helpers (`hark --bench`). Compiled only with `--features bench`.
 
 use crate::engine::Engine;
 
 pub fn run_bench() {
     use std::time::{Duration, Instant};
 
-    println!("blink --bench");
+    println!("hark --bench");
     println!("warming engine (apps + file index)…");
 
     let mem_before = proc_mem_self();
@@ -75,7 +75,7 @@ pub fn run_bench() {
         rebuild_ms, p2.count, cache_b2, p2.capped
     );
 
-    // App query: prefer a name likely present (chrome/firefox/blink). Fallback "a".
+    // App query: prefer a name likely present (chrome/firefox/hark). Fallback "a".
     let app_q = pick_bench_app_query(&engine);
     let queries = [
         ("math", "10 + 20"),
@@ -187,7 +187,7 @@ pub fn run_bench() {
     // Live daemon (if separate process is running)
     if let Some(d) = daemon_stats() {
         println!();
-        println!("=== resources (running blink --daemon) ===");
+        println!("=== resources (running hark --daemon) ===");
         println!("pid:           {}", d.pid);
         println!("rss_kb:        {}", d.rss_kb);
         println!("hwm_kb:        {}", d.hwm_kb);
@@ -198,11 +198,11 @@ pub fn run_bench() {
         println!("etime:         {}", d.etime);
     } else {
         println!();
-        println!("=== resources (running blink --daemon) ===");
+        println!("=== resources (running hark --daemon) ===");
         println!("(no daemon process found)");
     }
 
-    // GPU (NVIDIA if present; blink is CPU/GTK — usually idle)
+    // GPU (NVIDIA if present; hark is CPU/GTK — usually idle)
     println!();
     println!("=== gpu ===");
     match gpu_stats() {
@@ -212,7 +212,7 @@ pub fn run_bench() {
             println!("util_%:        {}", g.util_pct);
             println!("mem_used_mb:   {}", g.mem_used_mb);
             println!("mem_total_mb:  {}", g.mem_total_mb);
-            println!("note:          blink is CPU/GTK; GPU util is system-wide sample");
+            println!("note:          hark is CPU/GTK; GPU util is system-wide sample");
         }
         None => println!("(no nvidia-smi / GPU stats)"),
     }
@@ -241,9 +241,7 @@ pub fn run_bench() {
 /// Choose a short app query that actually hits installed desktops (bench only).
 fn pick_bench_app_query(engine: &Engine) -> String {
     // Prefer classic baselines, then anything installed, else a letter.
-    for cand in [
-        "fire", "chrom", "chrome", "blink", "term", "code", "discord",
-    ] {
+    for cand in ["fire", "chrom", "chrome", "hark", "term", "code", "discord"] {
         let hits = engine.search_apps_only(cand);
         if !hits.is_empty() {
             return cand.to_string();
@@ -389,7 +387,7 @@ fn daemon_stats() -> Option<DaemonSnap> {
     let out = Command::new("ps")
         .args([
             "-C",
-            "blink",
+            "hark",
             "-o",
             "pid=,rss=,%cpu=,%mem=,etime=",
             "--no-headers",
@@ -480,6 +478,6 @@ fn host_mem() -> Option<HostSnap> {
 
 fn index_cache_bytes() -> Option<u64> {
     let home = dirs::home_dir()?;
-    let p = home.join(".cache/blink/file-index.json");
+    let p = home.join(".cache/hark/file-index.json");
     std::fs::metadata(p).ok().map(|m| m.len())
 }

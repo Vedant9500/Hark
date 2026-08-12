@@ -446,7 +446,7 @@ fn spawn_detached_argv(argv: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    // Prefer `setsid -f program args...` so the child survives blink exit without a shell.
+    // Prefer `setsid -f program args...` so the child survives hark exit without a shell.
     let mut cmd = Command::new("setsid");
     cmd.arg("-f")
         .args(argv)
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn parses_keywords_and_matches_desktop_id() {
-        let dir = std::env::temp_dir().join(format!("blink-app-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hark-app-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sublime_text.desktop");

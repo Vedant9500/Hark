@@ -175,7 +175,7 @@ mod tests {
     fn detects_path_glob_queries() {
         assert!(is_path_glob_query("*.md"));
         assert!(is_path_glob_query(".rs"));
-        assert!(is_path_glob_query("blink/docs/*.md"));
+        assert!(is_path_glob_query("hark/docs/*.md"));
         assert!(is_path_glob_query("glassbox/src/"));
         assert!(is_path_glob_query("foo/bar"));
         assert!(is_path_glob_query("~/dev/*.rs"));
@@ -240,8 +240,8 @@ mod tests {
         let g = parse_glob_query(".png").unwrap();
         assert_eq!(g.name_pat.as_deref(), Some("*.png"));
 
-        let g = parse_glob_query("blink/docs/*.md").unwrap();
-        assert_eq!(g.segments, vec!["blink", "docs"]);
+        let g = parse_glob_query("hark/docs/*.md").unwrap();
+        assert_eq!(g.segments, vec!["hark", "docs"]);
         assert_eq!(g.name_pat.as_deref(), Some("*.md"));
 
         let g = parse_glob_query("glassbox/src/").unwrap();
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(g.name_pat.as_deref(), Some("*.md"));
         assert!(g.recursive);
 
-        let g = parse_glob_query("blink/docs/*.md").unwrap();
+        let g = parse_glob_query("hark/docs/*.md").unwrap();
         assert!(!g.recursive);
     }
 
@@ -283,7 +283,7 @@ mod tests {
                 true,
                 2,
             ),
-            make_indexed(PathBuf::from("/home/u/blink"), "blink".into(), true, 1),
+            make_indexed(PathBuf::from("/home/u/hark"), "hark".into(), true, 1),
             make_indexed(
                 PathBuf::from("/home/u/glassbox/docs/optimization.md"),
                 "optimization.md".into(),
@@ -366,17 +366,17 @@ mod tests {
         assert!(glob_match("a?c", "abc"));
         assert!(!glob_match("a?c", "ac"));
 
-        // /home/u/blink/docs/x — "blink" @ 8..13, "docs" @ 14..18
+        // /home/u/hark/docs/x — "hark" @ 8..12, "docs" @ 13..17
         assert_eq!(
-            find_path_segment("/home/u/blink/docs/x", "blink", 0),
-            Some(13)
+            find_path_segment("/home/u/hark/docs/x", "hark", 0),
+            Some(12)
         );
         assert_eq!(
-            find_path_segment("/home/u/blink/docs/x", "docs", 13),
-            Some(18)
+            find_path_segment("/home/u/hark/docs/x", "docs", 13),
+            Some(17)
         );
         // substring of component must not match
-        assert!(find_path_segment("/home/u/blinky/docs", "blink", 0).is_none());
+        assert!(find_path_segment("/home/u/harky/docs", "hark", 0).is_none());
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn live_deep_finds_nested_and_skips_junk() {
-        let base = std::env::temp_dir().join(format!("blink-deep-ut-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("hark-deep-ut-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let deep = base.join("proj").join("src").join("ui").join("widgets");
         fs::create_dir_all(&deep).unwrap();
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn shared_existing_set_skips_duplicate_walks() {
-        let base = std::env::temp_dir().join(format!("blink-deep-seen-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("hark-deep-seen-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("proj").join("src")).unwrap();
         fs::write(base.join("proj").join("src").join("optimization.md"), "hi").unwrap();

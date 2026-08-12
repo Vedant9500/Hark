@@ -1,7 +1,7 @@
 //! In-window Open With picker (layer-shell safe).
 //!
 //! External GTK/portal Open With dialogs often fail under exclusive keyboard
-//! layer-shell, so we list GIO-compatible apps in a Blink popover instead.
+//! layer-shell, so we list GIO-compatible apps in a Hark popover instead.
 
 use gio::prelude::*;
 use gtk::prelude::*;
@@ -27,7 +27,7 @@ pub fn show_open_with_picker(
     ignore_focus_loss: Rc<Cell<bool>>,
 ) {
     if !path.exists() {
-        eprintln!("blink: open with: path missing: {}", path.display());
+        eprintln!("hark: open with: path missing: {}", path.display());
         return;
     }
 
@@ -43,18 +43,18 @@ pub fn show_open_with_picker(
     popover.set_position(PositionType::Top);
     popover.set_autohide(true);
     popover.set_has_arrow(false);
-    popover.add_css_class("blink-action-panel");
-    popover.add_css_class("blink-open-with");
+    popover.add_css_class("hark-action-panel");
+    popover.add_css_class("hark-open-with");
 
     let outer = GtkBox::new(Orientation::Vertical, 4);
-    outer.add_css_class("blink-action-panel-inner");
+    outer.add_css_class("hark-action-panel-inner");
     outer.set_margin_top(6);
     outer.set_margin_bottom(6);
     outer.set_margin_start(6);
     outer.set_margin_end(6);
 
     let header = Label::new(Some("Open With"));
-    header.add_css_class("blink-action-panel-header");
+    header.add_css_class("hark-action-panel-header");
     header.set_halign(Align::Start);
     header.set_margin_start(6);
 
@@ -63,7 +63,7 @@ pub fn show_open_with_picker(
         path.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
         type_label
     )));
-    sub.add_css_class("blink-action-panel-shortcut");
+    sub.add_css_class("hark-action-panel-shortcut");
     sub.set_halign(Align::Start);
     sub.set_margin_start(6);
     sub.set_margin_bottom(4);
@@ -79,7 +79,7 @@ pub fn show_open_with_picker(
         .build();
 
     let list = ListBox::new();
-    list.add_css_class("blink-action-panel-list");
+    list.add_css_class("hark-action-panel-list");
     list.set_selection_mode(gtk::SelectionMode::Single);
     list.set_activate_on_single_click(true);
 
@@ -119,7 +119,7 @@ pub fn show_open_with_picker(
                     }
                     Err(err) => {
                         firing.set(false);
-                        eprintln!("blink: open with launch failed: {}", err.message());
+                        eprintln!("hark: open with launch failed: {}", err.message());
                     }
                 }
             } else {
@@ -130,7 +130,7 @@ pub fn show_open_with_picker(
 
     if apps.is_empty() {
         let row = ListBoxRow::new();
-        row.add_css_class("blink-action-panel-row");
+        row.add_css_class("hark-action-panel-row");
         row.set_sensitive(false);
         let line = GtkBox::new(Orientation::Horizontal, 10);
         line.set_margin_top(8);
@@ -139,7 +139,7 @@ pub fn show_open_with_picker(
         line.set_margin_end(8);
         line.set_can_target(false);
         let label = Label::new(Some("No compatible apps found"));
-        label.add_css_class("blink-action-panel-label");
+        label.add_css_class("hark-action-panel-label");
         label.set_can_target(false);
         line.append(&label);
         row.set_child(Some(&line));
@@ -147,7 +147,7 @@ pub fn show_open_with_picker(
     } else {
         for app in &apps {
             let row = ListBoxRow::new();
-            row.add_css_class("blink-action-panel-row");
+            row.add_css_class("hark-action-panel-row");
             row.set_activatable(true);
 
             let line = GtkBox::new(Orientation::Horizontal, 10);
@@ -172,7 +172,7 @@ pub fn show_open_with_picker(
             texts.set_can_target(false);
 
             let name = Label::new(Some(&app.name()));
-            name.add_css_class("blink-action-panel-label");
+            name.add_css_class("hark-action-panel-label");
             name.set_halign(Align::Start);
             name.set_xalign(0.0);
             name.set_can_target(false);
@@ -180,7 +180,7 @@ pub fn show_open_with_picker(
 
             if let Some(id) = app.id() {
                 let id_l = Label::new(Some(id.as_str()));
-                id_l.add_css_class("blink-action-panel-shortcut");
+                id_l.add_css_class("hark-action-panel-shortcut");
                 id_l.set_halign(Align::Start);
                 id_l.set_xalign(0.0);
                 id_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -220,7 +220,7 @@ pub fn show_open_with_picker(
     // Always offer xdg-open / system default as last resort.
     {
         let row = ListBoxRow::new();
-        row.add_css_class("blink-action-panel-row");
+        row.add_css_class("hark-action-panel-row");
         row.set_activatable(true);
         row.set_widget_name("__system_default__");
 
@@ -237,7 +237,7 @@ pub fn show_open_with_picker(
         line.append(&icon);
 
         let name = Label::new(Some("System default (xdg-open)"));
-        name.add_css_class("blink-action-panel-label");
+        name.add_css_class("hark-action-panel-label");
         name.set_halign(Align::Start);
         name.set_hexpand(true);
         name.set_can_target(false);

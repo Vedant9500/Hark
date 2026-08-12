@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build shareable Blink release artifacts under dist/.
+# Build shareable Hark release artifacts under dist/.
 #
 # Outputs:
-#   dist/blink-<ver>-x86_64-linux.tar.gz   portable package + install.sh
+#   dist/hark-<ver>-x86_64-linux.tar.gz   portable package + install.sh
 #   dist/install.sh                        one-line online installer
 #   dist/SHA256SUMS
 #   dist/*.deb                             if cargo-deb is installed
 #
 # Usage:
 #   ./scripts/package-release.sh
-#   BLINK_GITHUB_REPO=you/blink ./scripts/package-release.sh
+#   HARK_GITHUB_REPO=you/hark ./scripts/package-release.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,10 +24,10 @@ case "$ARCH" in
   aarch64|arm64) ARCH=aarch64 ;;
 esac
 OS=linux
-PKG_NAME="blink-${VERSION}-${ARCH}-${OS}"
+PKG_NAME="hark-${VERSION}-${ARCH}-${OS}"
 DIST="$ROOT/dist"
 STAGE="$DIST/stage/$PKG_NAME"
-GITHUB_REPO="${BLINK_GITHUB_REPO:-}"
+GITHUB_REPO="${HARK_GITHUB_REPO:-}"
 
 if [[ -z "$GITHUB_REPO" ]]; then
   # Try git remote
@@ -40,10 +40,10 @@ if [[ -z "$GITHUB_REPO" ]]; then
   fi
 fi
 if [[ -z "$GITHUB_REPO" || "$GITHUB_REPO" == *"github.com"* ]]; then
-  GITHUB_REPO="deshmukhvedant95/blink"
+  GITHUB_REPO="Vedant9500/Blink"
 fi
 
-echo "==> Packaging Blink v${VERSION} (${ARCH}-${OS})"
+echo "==> Packaging Hark v${VERSION} (${ARCH}-${OS})"
 echo "    GitHub repo: ${GITHUB_REPO}"
 
 rm -rf "$DIST/stage"
@@ -54,36 +54,36 @@ FEATURES=()
 if pkg-config --exists gtk4-layer-shell-0 2>/dev/null \
   || pacman -Q gtk4-layer-shell &>/dev/null \
   || dpkg -s libgtk4-layer-shell0 &>/dev/null 2>&1 \
-  || [[ "${BLINK_FORCE_LAYER_SHELL:-}" == "1" ]]; then
+  || [[ "${HARK_FORCE_LAYER_SHELL:-}" == "1" ]]; then
   FEATURES=(--features layer-shell)
   echo "==> Enabling layer-shell feature"
 else
   echo "==> layer-shell not found at build time — binary will use window mode"
-  echo "    Install gtk4-layer-shell for Hyprland overlay, or set BLINK_FORCE_LAYER_SHELL=1"
+  echo "    Install gtk4-layer-shell for Hyprland overlay, or set HARK_FORCE_LAYER_SHELL=1"
 fi
 
 echo "==> cargo build --release --locked ${FEATURES[*]:-}"
 # --locked: release artifacts must reproduce exactly from the committed Cargo.lock.
 cargo build --release --locked "${FEATURES[@]}"
 
-BIN="$ROOT/target/release/blink"
+BIN="$ROOT/target/release/hark"
 if [[ ! -x "$BIN" ]]; then
   echo "error: missing $BIN" >&2
   exit 1
 fi
 
 # Stage package contents
-install -Dm755 "$BIN" "$STAGE/blink"
+install -Dm755 "$BIN" "$STAGE/hark"
 install -Dm755 "$ROOT/packaging/install-user.sh" "$STAGE/install.sh"
 install -Dm755 "$ROOT/packaging/uninstall-user.sh" "$STAGE/uninstall.sh"
-install -Dm644 "$ROOT/packaging/blink.desktop" "$STAGE/blink.desktop"
-install -Dm644 "$ROOT/assets/blink.svg" "$STAGE/blink.svg"
+install -Dm644 "$ROOT/packaging/hark.desktop" "$STAGE/hark.desktop"
+install -Dm644 "$ROOT/assets/hark.svg" "$STAGE/hark.svg"
 install -Dm644 "$ROOT/LICENSE" "$STAGE/LICENSE"
 install -Dm644 "$ROOT/README.md" "$STAGE/README.md"
 
 # Short package README
 cat > "$STAGE/INSTALL.txt" <<EOF
-Blink ${VERSION} — portable Linux package
+Hark ${VERSION} — portable Linux package
 ========================================
 
 Quick install (no root):
@@ -101,8 +101,8 @@ Requirements:
   - Recommended for Hyprland: gtk4-layer-shell
 
 Then:
-  blink --daemon &
-  # bind a hotkey to: blink
+  hark --daemon &
+  # bind a hotkey to: hark
 EOF
 
 TARBALL="$DIST/${PKG_NAME}.tar.gz"
@@ -113,7 +113,7 @@ tar -C "$DIST/stage" -czf "$TARBALL" "$PKG_NAME"
 ONLINE_INSTALLER="$DIST/install.sh"
 cat > "$ONLINE_INSTALLER" <<EOF
 #!/usr/bin/env bash
-# Blink online installer — downloads the latest release and installs user-local.
+# Hark online installer — downloads the latest release and installs user-local.
 # Usage:
 #   curl -fsSL https://github.com/${GITHUB_REPO}/releases/latest/download/install.sh | bash
 #   curl -fsSL ... | bash -s -- --autostart
@@ -131,7 +131,7 @@ case "\$ARCH_RAW" in
     ;;
 esac
 
-ASSET="blink-\${VERSION}-\${ARCH}-linux.tar.gz"
+ASSET="hark-\${VERSION}-\${ARCH}-linux.tar.gz"
 # Prefer exact version asset; fall back to latest redirect layout
 BASE="https://github.com/\${REPO}/releases"
 URL_VERSIONED="\${BASE}/download/v\${VERSION}/\${ASSET}"
@@ -141,7 +141,7 @@ TMP="\$(mktemp -d)"
 cleanup() { rm -rf "\$TMP"; }
 trap cleanup EXIT
 
-echo "Downloading Blink…"
+echo "Downloading Hark…"
 if curl -fsSL "\$URL_VERSIONED" -o "\$TMP/pkg.tar.gz"; then
   :
 elif curl -fsSL "\$URL_LATEST" -o "\$TMP/pkg.tar.gz"; then
@@ -155,7 +155,7 @@ else
 fi
 
 tar -xzf "\$TMP/pkg.tar.gz" -C "\$TMP"
-DIR="\$(find "\$TMP" -maxdepth 1 -type d -name 'blink-*' | head -1)"
+DIR="\$(find "\$TMP" -maxdepth 1 -type d -name 'hark-*' | head -1)"
 if [[ -z "\$DIR" || ! -x "\$DIR/install.sh" ]]; then
   echo "error: unexpected package layout" >&2
   exit 1

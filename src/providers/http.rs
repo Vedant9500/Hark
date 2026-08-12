@@ -17,7 +17,7 @@ fn agent() -> &'static ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(CONNECT)
             .timeout(TOTAL)
-            .user_agent("blink-launcher/0.1")
+            .user_agent("hark-launcher/0.1")
             .build()
     })
 }

@@ -1,4 +1,4 @@
-# Blink — performance reference
+# Hark — performance reference
 
 **Last updated:** 2026-07-17  
 **Machine (reference):** Linux / Hyprland · 16 CPUs · ~15 GB RAM  
@@ -37,7 +37,7 @@ Older depth-2 campaign (~1.8k items, 2026-07-14): see JSON + table below.
 
 ```bash
 cargo build --release --features "layer-shell,bench"
-./target/release/blink --bench
+./target/release/hark --bench
 ```
 
 Daemon-only install (no micro-bench in binary):
@@ -94,9 +94,9 @@ Older builds clamped `max_depth > 3` to 2. Current clamp is **1..=6**.
 
 ```bash
 # For each depth in 2 3 4:
-# 1. Set index.max_depth in ~/.config/blink/config.json
-# 2. rm ~/.cache/blink/file-index.json ~/.cache/blink/file-index.meta
-# 3. cargo build --release --features "layer-shell,bench" && ./target/release/blink --bench
+# 1. Set index.max_depth in ~/.config/hark/config.json
+# 2. rm ~/.cache/hark/file-index.json ~/.cache/hark/file-index.meta
+# 3. cargo build --release --features "layer-shell,bench" && ./target/release/hark --bench
 # 4. Restore max_depth=2
 ```
 
@@ -121,7 +121,7 @@ Update the JSON + table when roots or machine change.
 
 | Item | Value |
 |------|--------|
-| Path | `~/.cache/blink/file-index.json` |
+| Path | `~/.cache/hark/file-index.json` |
 | Meta | `file-index.meta` → `version ts fingerprint` |
 | Version | **6** |
 | Schema | `{ "version", "fingerprint", "items": [ { "p", "d", "n" } ] }` |

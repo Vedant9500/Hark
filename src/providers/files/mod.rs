@@ -413,7 +413,7 @@ pub fn icon_for_path(path: &Path, is_dir: bool) -> &'static str {
     }
 }
 
-/// Open `path`, honoring Blink per-category overrides when provided.
+/// Open `path`, honoring Hark per-category overrides when provided.
 /// Pass `None` / empty overrides to fall back to `xdg-open`.
 pub fn open_path_with(
     path: &Path,
@@ -513,7 +513,7 @@ pub fn reveal_in_file_manager(path: &Path) {
     } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
         parent.to_path_buf()
     } else {
-        eprintln!("blink: reveal: path missing: {}", path.display());
+        eprintln!("hark: reveal: path missing: {}", path.display());
         return;
     };
 
@@ -554,7 +554,7 @@ fn reveal_via_file_manager1(path: &Path) -> bool {
     let bus = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
         Ok(b) => b,
         Err(err) => {
-            eprintln!("blink: reveal: session bus: {}", err.message());
+            eprintln!("hark: reveal: session bus: {}", err.message());
             return false;
         }
     };
@@ -573,7 +573,7 @@ fn reveal_via_file_manager1(path: &Path) -> bool {
     match result {
         Ok(_) => true,
         Err(err) => {
-            eprintln!("blink: reveal: FileManager1.ShowItems: {}", err.message());
+            eprintln!("hark: reveal: FileManager1.ShowItems: {}", err.message());
             false
         }
     }
@@ -616,7 +616,7 @@ fn spawn_detached(bin: &str, args: &[&str]) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // Detach so the file manager outlives blink's short-lived helper spawns.
+    // Detach so the file manager outlives hark's short-lived helper spawns.
     let quoted: Vec<String> = std::iter::once(bin.to_string())
         .chain(args.iter().map(|a| shell_quote(Path::new(a))))
         .collect();
@@ -630,7 +630,7 @@ fn spawn_detached(bin: &str, args: &[&str]) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     if sh.spawn().is_err() && cmd.spawn().is_err() {
-        eprintln!("blink: could not spawn {bin}");
+        eprintln!("hark: could not spawn {bin}");
     }
 }
 

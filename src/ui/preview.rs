@@ -116,7 +116,7 @@ pub struct PreviewPanel {
 impl PreviewPanel {
     pub fn new(drag_session: DragSession) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
-        root.add_css_class("blink-preview");
+        root.add_css_class("hark-preview");
         root.set_size_request(PREVIEW_WIDTH, -1);
         root.set_width_request(PREVIEW_WIDTH);
         root.set_hexpand(false);
@@ -126,11 +126,11 @@ impl PreviewPanel {
         root.set_visible(false);
 
         let sep = gtk::Separator::new(Orientation::Vertical);
-        sep.add_css_class("blink-preview-sep");
+        sep.add_css_class("hark-preview-sep");
         sep.set_visible(false);
 
         let stack = Stack::new();
-        stack.add_css_class("blink-preview-stack");
+        stack.add_css_class("hark-preview-stack");
         stack.set_hexpand(true);
         stack.set_vexpand(true);
         stack.set_transition_type(gtk::StackTransitionType::Crossfade);
@@ -138,23 +138,23 @@ impl PreviewPanel {
 
         // Generic icon + metadata (video / audio)
         let icon_view = GtkBox::new(Orientation::Vertical, 10);
-        icon_view.add_css_class("blink-preview-body");
+        icon_view.add_css_class("hark-preview-body");
         icon_view.set_hexpand(true);
         icon_view.set_vexpand(true);
         icon_view.set_halign(Align::Fill);
         icon_view.set_valign(Align::Center);
 
         let icon = Image::from_icon_name("text-x-generic");
-        icon.add_css_class("blink-preview-icon");
+        icon.add_css_class("hark-preview-icon");
         icon.set_pixel_size(72);
         icon.set_halign(Align::Center);
 
         let icon_type = Label::new(None);
-        icon_type.add_css_class("blink-preview-badge");
+        icon_type.add_css_class("hark-preview-badge");
         icon_type.set_halign(Align::Center);
 
         let icon_title = Label::new(None);
-        icon_title.add_css_class("blink-preview-title");
+        icon_title.add_css_class("hark-preview-title");
         icon_title.set_halign(Align::Center);
         icon_title.set_wrap(true);
         icon_title.set_max_width_chars(28);
@@ -163,7 +163,7 @@ impl PreviewPanel {
         icon_title.set_lines(2);
 
         let icon_sub = Label::new(None);
-        icon_sub.add_css_class("blink-preview-sub");
+        icon_sub.add_css_class("hark-preview-sub");
         icon_sub.set_halign(Align::Center);
         icon_sub.set_wrap(true);
         icon_sub.set_max_width_chars(30);
@@ -171,7 +171,7 @@ impl PreviewPanel {
         icon_sub.set_justify(gtk::Justification::Center);
 
         let icon_meta = Label::new(None);
-        icon_meta.add_css_class("blink-preview-meta");
+        icon_meta.add_css_class("hark-preview-meta");
         icon_meta.set_halign(Align::Center);
         icon_meta.set_wrap(true);
         icon_meta.set_justify(gtk::Justification::Center);
@@ -185,12 +185,12 @@ impl PreviewPanel {
 
         // Image preview
         let image_view = GtkBox::new(Orientation::Vertical, 8);
-        image_view.add_css_class("blink-preview-body");
+        image_view.add_css_class("hark-preview-body");
         image_view.set_hexpand(true);
         image_view.set_vexpand(true);
 
         let picture = Picture::new();
-        picture.add_css_class("blink-preview-picture");
+        picture.add_css_class("hark-preview-picture");
         picture.set_content_fit(ContentFit::Contain);
         picture.set_can_shrink(true);
         picture.set_hexpand(true);
@@ -201,24 +201,24 @@ impl PreviewPanel {
         picture.set_size_request(IMAGE_FRAME_WIDTH, IMAGE_FRAME_HEIGHT);
 
         let image_title = Label::new(None);
-        image_title.add_css_class("blink-preview-title");
+        image_title.add_css_class("hark-preview-title");
         image_title.set_halign(Align::Start);
         image_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         image_title.set_xalign(0.0);
 
         let image_dims = Label::new(None);
-        image_dims.add_css_class("blink-preview-meta");
+        image_dims.add_css_class("hark-preview-meta");
         image_dims.set_halign(Align::Start);
         image_dims.set_xalign(0.0);
 
         let image_meta = Label::new(None);
-        image_meta.add_css_class("blink-preview-meta");
+        image_meta.add_css_class("hark-preview-meta");
         image_meta.set_halign(Align::Start);
         image_meta.set_wrap(true);
         image_meta.set_xalign(0.0);
 
         let meta_block = GtkBox::new(Orientation::Vertical, 2);
-        meta_block.add_css_class("blink-preview-meta-block");
+        meta_block.add_css_class("hark-preview-meta-block");
         meta_block.append(&image_title);
         meta_block.append(&image_dims);
         meta_block.append(&image_meta);
@@ -767,7 +767,7 @@ fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels
 
 /// First video frame via `ffmpeg` (optional — fails soft if missing).
 fn decode_video_frame(path: &Path) -> Option<DecodedPixels> {
-    let tmp_dir = std::env::temp_dir().join("blink-preview");
+    let tmp_dir = std::env::temp_dir().join("hark-preview");
     let _ = std::fs::create_dir_all(&tmp_dir);
     let token = format!(
         "v-{}-{}",
@@ -825,7 +825,7 @@ fn run_ffmpeg_frame(path: &Path, out: &Path, ss: &str) -> bool {
 
 /// PDF page 1 via `pdftoppm` (poppler-utils). Soft-fail if missing.
 fn decode_pdf_page(path: &Path) -> Option<DecodedPixels> {
-    let tmp_dir = std::env::temp_dir().join("blink-preview");
+    let tmp_dir = std::env::temp_dir().join("hark-preview");
     let _ = std::fs::create_dir_all(&tmp_dir);
     let token = format!(
         "p-{}-{}",

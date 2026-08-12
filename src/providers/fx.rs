@@ -268,7 +268,7 @@ fn cache_path() -> PathBuf {
     dirs::cache_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/fx-rates.json")
+        .join("hark/fx-rates.json")
 }
 
 fn load_disk() -> Option<RatesCache> {

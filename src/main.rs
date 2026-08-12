@@ -1,20 +1,20 @@
-use blink::engine::Engine;
-use blink::ipc;
-use blink::ui;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::Application;
+use hark::engine::Engine;
+use hark::ipc;
+use hark::ui;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-const APP_ID: &str = "dev.blink.launcher";
+const APP_ID: &str = "dev.hark.launcher";
 
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let daemon = args.iter().any(|a| a == "--daemon");
     let bench = args.iter().any(|a| a == "--bench");
-    // Headless one-shot: `blink --search "optimization.md in blink"`
+    // Headless one-shot: `hark --search "optimization.md in hark"`
     let search_q = args
         .iter()
         .position(|a| a == "--search")
@@ -27,13 +27,13 @@ fn main() {
     if bench {
         #[cfg(feature = "bench")]
         {
-            blink::bench::run_bench();
+            hark::bench::run_bench();
             return;
         }
         #[cfg(not(feature = "bench"))]
         {
             eprintln!(
-                "blink: --bench requires a build with `--features bench`\n\
+                "hark: --bench requires a build with `--features bench`\n\
                  example: cargo build --release --features \"layer-shell,bench\""
             );
             std::process::exit(2);
@@ -83,7 +83,7 @@ fn main() {
         });
     }
 
-    // IPC from lightweight `blink` invocations → main loop toggle.
+    // IPC from lightweight `hark` invocations → main loop toggle.
     {
         let state = state.clone();
         let pending_toggle = pending_toggle.clone();
@@ -115,11 +115,11 @@ fn run_search_once(query: &str) {
 
     let q = query.trim();
     if q.is_empty() {
-        eprintln!("usage: blink --search \"query\"");
+        eprintln!("usage: hark --search \"query\"");
         std::process::exit(2);
     }
 
-    println!("blink --search {q:?}");
+    println!("hark --search {q:?}");
     let engine = Engine::new_headless();
     engine.spawn_warm();
     let deadline = Instant::now() + Duration::from_secs(30);

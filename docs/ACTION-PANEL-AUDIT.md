@@ -1,4 +1,4 @@
-# Blink — Action Panel audit
+# Hark — Action Panel audit
 
 **Status:** Phase 1–2 implemented · Phase 3+ pending  
 **Last updated:** 2026-07-21 (Phase 2)  
@@ -22,7 +22,7 @@ Target UX (from product notes): bottom-right becomes **Actions / Options** for t
 - [x] Survey Raycast action model (primary Enter + `⌘K` panel + pinned shortcuts)
 - [x] Survey Windows-oriented actions (run as admin, uninstall) vs Linux reality
 - [x] Map Linux tools available on this host (`xdg-open`, `gio`, `pkexec`, `wl-copy`, Dolphin, `hyprctl`)
-- [x] Inventory Blink’s current `Action` / footer / preview surface
+- [x] Inventory Hark’s current `Action` / footer / preview surface
 - [x] Prioritize P0–P3 recommend / defer / skip
 - [ ] User sign-off on Phase 1 scope (optional)
 
@@ -68,7 +68,7 @@ Target UX (from product notes): bottom-right becomes **Actions / Options** for t
 
 ## Raycast model (reference)
 
-| Layer | macOS Raycast | Blink today | Blink target |
+| Layer | macOS Raycast | Hark today | Hark target |
 |-------|---------------|-------------|--------------|
 | Primary | `↵` | Enter + footer primary label | Keep |
 | Secondary panel | `⌘K` / Actions button | Missing | `Ctrl+K` + Actions chip |
@@ -79,7 +79,7 @@ Raycast is **not** primarily a Windows admin menu. Core value is: Open, Open Wit
 
 ---
 
-## Blink baseline (as of 2026-07-21)
+## Hark baseline (as of 2026-07-21)
 
 ### `Action` enum
 

@@ -1,4 +1,4 @@
-# Blink — TODO / product backlog
+# Hark — TODO / product backlog
 
 **Last updated:** 2026-08-11
 
@@ -14,7 +14,7 @@ Open product work and known gaps, grouped by area. Shipped items are archived in
 |----------|------|-------|
 | P2 | Per-extension open overrides | Beyond coarse categories (e.g. `.svg` vs `.png`); only if category defaults feel too blunt |
 | P2 | One-shot “Open with…” on results | Context or secondary action to pick once without changing the default |
-| P2 | Detect system MIME default for display | Show “Loupe (system)” vs “Eye of GNOME (Blink)” so the user knows what’s active |
+| P2 | Detect system MIME default for display | Show “Loupe (system)” vs “Eye of GNOME (Hark)” so the user knows what’s active |
 | P3 | System app control | From `feature.txt`: remove apps, check for updates |
 | P3 | Richer per-result options menu | From `feature.txt`: uninstall / open app location / run-as-admin style options on the selected item, moving the settings entry elsewhere |
 
@@ -37,9 +37,9 @@ Location/locale-aware defaults so short queries assume the user's region (e.g. a
 | P2 | Location-aware date/locale formatting | Date/number formatting (DD-MM vs MM-DD, ₹/₹ separator, 24h vs 12h) follows region |
 | P3 | Solid geo detection + settings override | Detect once (system locale + `geoclue`) and cache; explicit override in settings so the UX is deterministic |
 
-## Raycast feature parity — gaps blink currently lacks
+## Raycast feature parity — gaps hark currently lacks
 
-Researched against the Raycast manual (core + power + AI features). Blink already covers: fuzzy app/file search, globs & scoped search, calc/units/FX/timezone/battery math, translate, media preview, drag-and-drop, settings, action panel, theming (Caelestia). Below are the Raycast capabilities with **no blink equivalent** yet.
+Researched against the Raycast manual (core + power + AI features). Hark already covers: fuzzy app/file search, globs & scoped search, calc/units/FX/timezone/battery math, translate, media preview, drag-and-drop, settings, action panel, theming (Caelestia). Below are the Raycast capabilities with **no hark equivalent** yet.
 
 | Priority | Item | Notes |
 |----------|------|-------|
@@ -51,16 +51,16 @@ Researched against the Raycast manual (core + power + AI features). Blink alread
 | P2 | **System commands** | One-shot system actions: lock, sleep, restart, logout, volume up/down/mute, toggle light/dark, empty trash, show desktop, quit all apps, dismiss notifications |
 | P2 | **Emoji / symbol picker** | Search emoji by name/meaning, paste into active input, custom keywords, skin tone, copy unicode, grid/pin favorites |
 | P2 | **Script commands** | Bring-your-own Bash/Python/Node scripts as searchable commands or hotkey-bound; add a script directory |
-| P2 | **Calculator extras: color conversion** | Type/paste a color (`#FF6B35`, `rgb`, `hsl`, `oklch`) → visual preview + copy in any format (blink math is number-only today) |
+| P2 | **Calculator extras: color conversion** | Type/paste a color (`#FF6B35`, `rgb`, `hsl`, `oklch`) → visual preview + copy in any format (hark math is number-only today) |
 | P2 | **Favorites / pinning** | Pin any command/app/item to top of root search; reorder |
-| P2 | **Aliases & per-command hotkeys** | Assign short keywords (`gc` → Chrome) and global hotkeys to commands; blink only has a few fixed keys |
+| P2 | **Aliases & per-command hotkeys** | Assign short keywords (`gc` → Chrome) and global hotkeys to commands; hark only has a few fixed keys |
 | P3 | **Notes** | Lightweight markdown notes + search, accessible via hotkey (big feature, novel app inside app) |
 | P3 | **Focus / distraction blocking** | Block or allow-list apps/websites for a timed session; categories |
-| P3 | **URL handling** | Type a URL / domain → detect and offer open-in-browser (blink force-prefixes files only) |
+| P3 | **URL handling** | Type a URL / domain → detect and offer open-in-browser (hark force-prefixes files only) |
 | P3 | **Calendar events** | Upcoming events today at top of empty search; search calendar/schedule |
 | P3 | **Contacts** | Search contacts and act on them |
 | P3 | **Cloud sync / account** | Sync settings, snippets, quicklinks, notes across devices / teams |
-| P3 | **Deeplinks** | `blink://command?...` links for shared commands / automation |
+| P3 | **Deeplinks** | `hark://command?...` links for shared commands / automation |
 | P3 | **Hyper key / modifier chaining** | Use a single key (caps/ctrl) as a modifier across commands |
 | P3 | **Hotkeys & aliases for *calculators* (today's calc results)** | Pin a fav math/unit query; broader alias system overlaps the row above |
 
@@ -71,12 +71,12 @@ Researched against the Raycast manual (core + power + AI features). Blink alread
 | P3 | **AI chat / Quick AI** | Natural-language assistant from root search |
 | P3 | **AI commands** | Turn prompts into one-press commands; selected-text actions |
 | P3 | **Dictation** | Speech-to-text anywhere, cleaned up + pasted |
-| P3 | **MCP support** | Connect local MCP servers as tools — greatest leverage; blink already targets a launcher niche that pairs well with agent tooling |
+| P3 | **MCP support** | Connect local MCP servers as tools — greatest leverage; hark already targets a launcher niche that pairs well with agent tooling |
 | P3 | **Extensibility platform** | Official extension/secondary-command API — the single biggest differentiator; without it, most `P1–P3` rows above must be hand-built into the binary |
 
 ## Calculation results — modern card layout migration
 
-Unifies legacy text rows (`conversion: None` via `result_calc`) onto the Raycast-style `.blink-conv-card` (`conversion: Some`). Already on card: math expressions, unit/currency/timezone conversion, clock time ranges, translate.
+Unifies legacy text rows (`conversion: None` via `result_calc`) onto the Raycast-style `.hark-conv-card` (`conversion: Some`). Already on card: math expressions, unit/currency/timezone conversion, clock time ranges, translate.
 
 | Priority | Item | Notes |
 |----------|------|-------|

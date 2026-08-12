@@ -161,13 +161,13 @@ impl PooledRow {
 
         // ── standard row ──────────────────────────────────────────────
         let std_root = GtkBox::new(Orientation::Horizontal, 10);
-        std_root.add_css_class("blink-row-inner");
+        std_root.add_css_class("hark-row-inner");
         std_root.set_margin_start(2);
         std_root.set_margin_end(2);
         std_root.set_vexpand(false);
 
         let icon = Image::from_icon_name("text-x-generic");
-        icon.add_css_class("blink-row-icon");
+        icon.add_css_class("hark-row-icon");
         icon.set_pixel_size(26);
         icon.set_valign(gtk::Align::Center);
 
@@ -176,7 +176,7 @@ impl PooledRow {
         text.set_valign(gtk::Align::Center);
 
         let title = Label::new(None);
-        title.add_css_class("blink-title");
+        title.add_css_class("hark-title");
         title.set_halign(gtk::Align::Start);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title.set_xalign(0.0);
@@ -184,7 +184,7 @@ impl PooledRow {
         title.set_single_line_mode(true);
 
         let subtitle = Label::new(None);
-        subtitle.add_css_class("blink-subtitle");
+        subtitle.add_css_class("hark-subtitle");
         subtitle.set_halign(gtk::Align::Start);
         subtitle.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         subtitle.set_xalign(0.0);
@@ -195,7 +195,7 @@ impl PooledRow {
         text.append(&subtitle);
 
         let badge = Label::new(None);
-        badge.add_css_class("blink-badge");
+        badge.add_css_class("hark-badge");
         badge.set_valign(gtk::Align::Center);
 
         std_root.append(&icon);
@@ -204,22 +204,22 @@ impl PooledRow {
 
         // ── conversion card ───────────────────────────────────────────
         let conv_root = GtkBox::new(Orientation::Vertical, 6);
-        conv_root.add_css_class("blink-conv-card");
+        conv_root.add_css_class("hark-conv-card");
         conv_root.set_hexpand(true);
         conv_root.set_vexpand(false);
 
         let conv_header = Label::new(None);
-        conv_header.add_css_class("blink-conv-header");
+        conv_header.add_css_class("hark-conv-header");
         conv_header.set_halign(gtk::Align::Start);
         conv_root.append(&conv_header);
 
         let panels = GtkBox::new(Orientation::Horizontal, 0);
-        panels.add_css_class("blink-conv-panels");
+        panels.add_css_class("hark-conv-panels");
         panels.set_hexpand(true);
 
         let (left, conv_left_title, conv_left_badge) = conv_panel_widgets(true);
         let arrow = Label::new(Some("→"));
-        arrow.add_css_class("blink-conv-arrow");
+        arrow.add_css_class("hark-conv-arrow");
         arrow.set_valign(gtk::Align::Center);
         arrow.set_halign(gtk::Align::Center);
         let (right, conv_right_title, conv_right_badge) = conv_panel_widgets(false);
@@ -259,7 +259,7 @@ impl PooledRow {
             self.row.set_child(Some(&self.std_root));
             self.showing_conv = false;
         }
-        self.row.remove_css_class("blink-conv-row");
+        self.row.remove_css_class("hark-conv-row");
     }
 
     fn set_mode_conv(&mut self) {
@@ -267,7 +267,7 @@ impl PooledRow {
             self.row.set_child(Some(&self.conv_root));
             self.showing_conv = true;
         }
-        self.row.add_css_class("blink-conv-row");
+        self.row.add_css_class("hark-conv-row");
     }
 
     fn bind(&mut self, item: &SearchResult, icon_size: i32, symbolic_icons: bool) {
@@ -312,23 +312,23 @@ impl PooledRow {
 
 fn conv_panel_widgets(is_left: bool) -> (GtkBox, Label, Label) {
     let col = GtkBox::new(Orientation::Vertical, 8);
-    col.add_css_class("blink-conv-panel");
+    col.add_css_class("hark-conv-panel");
     if is_left {
-        col.add_css_class("blink-conv-left");
+        col.add_css_class("hark-conv-left");
     } else {
-        col.add_css_class("blink-conv-right");
+        col.add_css_class("hark-conv-right");
     }
     col.set_hexpand(true);
     col.set_halign(gtk::Align::Fill);
 
     let t = Label::new(None);
-    t.add_css_class("blink-conv-title");
+    t.add_css_class("hark-conv-title");
     t.set_halign(gtk::Align::Start);
     t.set_wrap(true);
     t.set_xalign(0.0);
 
     let b = Label::new(None);
-    b.add_css_class("blink-conv-badge");
+    b.add_css_class("hark-conv-badge");
     b.set_halign(gtk::Align::Start);
 
     col.append(&t);

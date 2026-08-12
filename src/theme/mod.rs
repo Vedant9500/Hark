@@ -165,7 +165,7 @@ impl ThemeManager {
         else {
             // Fallback when FileMonitor fails: apply once now. Do **not** poll every
             // few seconds — that keeps the CPU awake for battery life. User can
-            // restart Blink or toggle the panel to pick up a new scheme.json.
+            // restart Hark or toggle the panel to pick up a new scheme.json.
             self.apply();
             return;
         };

@@ -17,7 +17,7 @@ permissions:
 jobs:
   build-linux:
     name: Build Linux packages
-    # ubuntu-22.04 ships GTK 4.6, but blink requires GTK >= 4.12 (v4_12 feature).
+    # ubuntu-22.04 ships GTK 4.6, but hark requires GTK >= 4.12 (v4_12 feature).
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -48,7 +48,7 @@ jobs:
 
       - name: Package release
         env:
-          BLINK_GITHUB_REPO: ${{ github.repository }}
+          HARK_GITHUB_REPO: ${{ github.repository }}
         run: |
           chmod +x scripts/package-release.sh packaging/install-user.sh packaging/uninstall-user.sh
           ./scripts/package-release.sh
@@ -56,7 +56,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: blink-linux
+          name: hark-linux
           path: dist/*
 
       - name: Create / update GitHub Release

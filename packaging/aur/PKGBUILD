@@ -1,6 +1,6 @@
 # Maintainer: Vedant Deshmukh <deshmukhvedant95@gmail.com>
 # shellcheck disable=SC2034
-pkgname=blink-launcher
+pkgname=hark
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
@@ -12,20 +12,18 @@ optdepends=(
   'gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors'
 )
 makedepends=('cargo' 'pkgconf')
-provides=('blink')
-conflicts=('blink')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Blink/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 options=('!lto') # Cargo sets LTO in profile.release
 
 prepare() {
-  cd "blink-$pkgver"
+  cd "Blink-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
 }
 
 build() {
-  cd "blink-$pkgver"
+  cd "Blink-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   local features=()
@@ -36,16 +34,16 @@ build() {
 }
 
 check() {
-  cd "blink-$pkgver"
+  cd "Blink-$pkgver"
   cargo test --frozen --features layer-shell || \
     cargo test --frozen
 }
 
 package() {
-  cd "blink-$pkgver"
-  install -Dm755 "target/release/blink" "$pkgdir/usr/bin/blink"
-  install -Dm644 "packaging/blink.desktop" "$pkgdir/usr/share/applications/blink.desktop"
-  install -Dm644 "assets/blink.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/blink.svg"
+  cd "Blink-$pkgver"
+  install -Dm755 "target/release/hark" "$pkgdir/usr/bin/hark"
+  install -Dm644 "packaging/hark.desktop" "$pkgdir/usr/share/applications/hark.desktop"
+  install -Dm644 "assets/hark.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/hark.svg"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

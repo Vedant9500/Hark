@@ -50,7 +50,7 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
 
     format!(
         r#"
-window.blink-window {{
+window.hark-window {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -61,7 +61,7 @@ window.blink-window {{
 }}
 
 /* Frame is flush with the window — no square transparent "padding". */
-window.blink-window .blink-frame {{
+window.hark-window .hark-frame {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -71,17 +71,17 @@ window.blink-window .blink-frame {{
 }}
 
 /* Kill default Adwaita fills that paint square under the rounded card. */
-window.blink-window > *,
-window.blink-window .blink-frame,
-window.blink-window .blink-frame > *,
-window.blink-window .blink-shell > *,
-window.blink-window .blink-shell stack,
-window.blink-window .blink-shell stack > * {{
+window.hark-window > *,
+window.hark-window .hark-frame,
+window.hark-window .hark-frame > *,
+window.hark-window .hark-shell > *,
+window.hark-window .hark-shell stack,
+window.hark-window .hark-shell stack > * {{
   background-image: none;
 }}
 
 /* Panel shell — single rounded card */
-window.blink-window .blink-shell {{
+window.hark-window .hark-shell {{
   background-color: {shell_bg};
   background-image: none;
   border: 1px solid {border};
@@ -96,8 +96,8 @@ window.blink-window .blink-shell {{
 }}
 
 /* Stack / pages must stay transparent so only the shell paints the card. */
-window.blink-window .blink-shell > stack,
-window.blink-window .blink-shell > stack > * {{
+window.hark-window .hark-shell > stack,
+window.hark-window .hark-shell > stack > * {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -108,12 +108,12 @@ window.blink-window .blink-shell > stack > * {{
 }}
 
 /* --- Header / search (Raycast: flush top, no boxed field) --- */
-window.blink-window .blink-header {{
+window.hark-window .hark-header {{
   padding: 14px 16px 12px 16px;
   background-color: transparent;
 }}
 
-window.blink-window .blink-search {{
+window.hark-window .hark-search {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -128,20 +128,20 @@ window.blink-window .blink-search {{
   min-height: 28px;
 }}
 
-window.blink-window .blink-search:focus {{
+window.hark-window .hark-search:focus {{
   border: none;
   outline: none;
   box-shadow: none;
   background-color: transparent;
 }}
 
-window.blink-window .blink-search placeholder {{
+window.hark-window .hark-search placeholder {{
   color: {hint};
   opacity: 0.75;
 }}
 
 /* Separators between search / body / footer */
-window.blink-window .blink-sep {{
+window.hark-window .hark-sep {{
   background-color: {border_soft};
   min-height: 1px;
   margin: 0;
@@ -149,58 +149,58 @@ window.blink-window .blink-sep {{
 }}
 
 /* --- Results body --- */
-window.blink-window .blink-body {{
+window.hark-window .hark-body {{
   padding: 6px 8px;
   background-color: transparent;
   min-height: 120px;
 }}
 
 /* Compact idle: body is hidden; kill min-height so shell hugs search+footer */
-window.blink-window .blink-body.blink-body-collapsed {{
+window.hark-window .hark-body.hark-body-collapsed {{
   min-height: 0;
   padding: 0;
 }}
 
-window.blink-window .blink-list-col {{
+window.hark-window .hark-list-col {{
   min-width: 0;
   padding: 0;
 }}
 
 /* --- Right-side media / detail preview --- */
-window.blink-window .blink-preview-sep {{
+window.hark-window .hark-preview-sep {{
   background-color: {border_soft};
   min-width: 1px;
   margin: 4px 0;
   opacity: 0.9;
 }}
 
-window.blink-window .blink-preview {{
+window.hark-window .hark-preview {{
   min-width: 280px;
   padding: 10px 12px 12px 12px;
   background-color: transparent;
 }}
 
-window.blink-window .blink-preview-stack {{
+window.hark-window .hark-preview-stack {{
   background-color: transparent;
 }}
 
-window.blink-window .blink-preview-body {{
+window.hark-window .hark-preview-body {{
   padding: 4px 2px;
 }}
 
-window.blink-window .blink-preview-empty {{
+window.hark-window .hark-preview-empty {{
   color: {empty};
   font-size: {empty_fs};
   opacity: 0.7;
   line-height: 1.4;
 }}
 
-window.blink-window .blink-preview-icon {{
+window.hark-window .hark-preview-icon {{
   margin-bottom: 4px;
   opacity: 0.95;
 }}
 
-window.blink-window .blink-preview-badge {{
+window.hark-window .hark-preview-badge {{
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -212,30 +212,30 @@ window.blink-window .blink-preview-badge {{
   margin-bottom: 2px;
 }}
 
-window.blink-window .blink-preview-title {{
+window.hark-window .hark-preview-title {{
   font-size: {preview_title_fs};
   font-weight: 600;
   color: {on_surface};
 }}
 
-window.blink-window .blink-preview-sub {{
+window.hark-window .hark-preview-sub {{
   font-size: {preview_meta_fs};
   color: {subtitle};
   opacity: 0.9;
 }}
 
-window.blink-window .blink-preview-meta {{
+window.hark-window .hark-preview-meta {{
   font-size: {preview_meta_fs};
   color: {hint};
   opacity: 0.85;
   line-height: 1.35;
 }}
 
-window.blink-window .blink-preview-meta-block {{
+window.hark-window .hark-preview-meta-block {{
   padding: 4px 2px 0 2px;
 }}
 
-window.blink-window .blink-preview-picture {{
+window.hark-window .hark-preview-picture {{
   border-radius: 10px;
   background-color: {hover_bg};
   /* 4:3 frame (248×186 inside 280px panel) */
@@ -243,14 +243,14 @@ window.blink-window .blink-preview-picture {{
   min-height: 186px;
 }}
 
-window.blink-window .blink-row-icon {{
+window.hark-window .hark-row-icon {{
   margin-right: 2px;
   opacity: 0.95;
   min-width: {icon_size}px;
   min-height: {icon_size}px;
 }}
 
-window.blink-window .blink-scroll {{
+window.hark-window .hark-scroll {{
   background-color: transparent;
   border: none;
   box-shadow: none;
@@ -258,7 +258,7 @@ window.blink-window .blink-scroll {{
   margin: 0;
 }}
 
-window.blink-window .blink-results {{
+window.hark-window .hark-results {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -268,7 +268,7 @@ window.blink-window .blink-results {{
   padding: 0;
 }}
 
-window.blink-window .blink-results > row {{
+window.hark-window .hark-results > row {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -281,24 +281,24 @@ window.blink-window .blink-results > row {{
   min-height: 48px;
 }}
 
-window.blink-window .blink-row-inner {{
+window.hark-window .hark-row-inner {{
   border-radius: {row_radius}px;
   padding: 8px 10px;
   background-color: transparent;
 }}
 
-window.blink-window .blink-results > row:hover {{
+window.hark-window .hark-results > row:hover {{
   background-color: {hover_bg};
 }}
 
-window.blink-window .blink-results > row:selected,
-window.blink-window .blink-results > row:selected:hover {{
+window.hark-window .hark-results > row:selected,
+window.hark-window .hark-results > row:selected:hover {{
   background-color: {selected_bg};
   border: none;
   outline: none;
 }}
 
-window.blink-window .blink-title {{
+window.hark-window .hark-title {{
   color: {on_surface};
   font-size: {title_fs};
   font-weight: 600;
@@ -308,7 +308,7 @@ window.blink-window .blink-title {{
   padding-bottom: 1px;
 }}
 
-window.blink-window .blink-subtitle {{
+window.hark-window .hark-subtitle {{
   color: {subtitle};
   font-size: {subtitle_fs};
   opacity: 0.9;
@@ -317,7 +317,7 @@ window.blink-window .blink-subtitle {{
   padding-bottom: 1px;
 }}
 
-window.blink-window .blink-badge {{
+window.hark-window .hark-badge {{
   background-color: transparent;
   color: {hint};
   border-radius: 0;
@@ -327,27 +327,27 @@ window.blink-window .blink-badge {{
   opacity: 0.85;
 }}
 
-window.blink-window .blink-badge.calc,
-window.blink-window .blink-badge.file,
-window.blink-window .blink-badge.folder {{
+window.hark-window .hark-badge.calc,
+window.hark-window .hark-badge.file,
+window.hark-window .hark-badge.folder {{
   background-color: transparent;
   color: {hint};
 }}
 
 /* --- Raycast-style conversion card --- */
-window.blink-window .blink-results > row.blink-conv-row {{
+window.hark-window .hark-results > row.hark-conv-row {{
   margin: 4px 0 8px 0;
   border-radius: 12px;
   min-height: 0;
   padding: 0;
 }}
 
-window.blink-window .blink-results > row.blink-conv-row:selected,
-window.blink-window .blink-results > row.blink-conv-row:selected:hover {{
+window.hark-window .hark-results > row.hark-conv-row:selected,
+window.hark-window .hark-results > row.hark-conv-row:selected:hover {{
   background-color: transparent;
 }}
 
-window.blink-window .blink-conv-card {{
+window.hark-window .hark-conv-card {{
   background-color: {hover_bg};
   border: 1px solid {border_soft};
   border-radius: 12px;
@@ -355,13 +355,13 @@ window.blink-window .blink-conv-card {{
   margin: 0 2px;
 }}
 
-window.blink-window .blink-results > row.blink-conv-row:selected .blink-conv-card,
-window.blink-window .blink-results > row.blink-conv-row:hover .blink-conv-card {{
+window.hark-window .hark-results > row.hark-conv-row:selected .hark-conv-card,
+window.hark-window .hark-results > row.hark-conv-row:hover .hark-conv-card {{
   background-color: {selected_bg};
   border-color: {border};
 }}
 
-window.blink-window .blink-conv-header {{
+window.hark-window .hark-conv-header {{
   color: {hint};
   font-size: 11px;
   font-weight: 600;
@@ -369,17 +369,17 @@ window.blink-window .blink-conv-header {{
   margin-bottom: 2px;
 }}
 
-window.blink-window .blink-conv-panels {{
+window.hark-window .hark-conv-panels {{
   min-height: 72px;
   padding: 4px 0;
 }}
 
-window.blink-window .blink-conv-panel {{
+window.hark-window .hark-conv-panel {{
   padding: 8px 12px;
   min-width: 120px;
 }}
 
-window.blink-window .blink-conv-arrow {{
+window.hark-window .hark-conv-arrow {{
   color: {hint};
   font-size: 22px;
   font-weight: 500;
@@ -388,14 +388,14 @@ window.blink-window .blink-conv-arrow {{
   min-width: 36px;
 }}
 
-window.blink-window .blink-conv-title {{
+window.hark-window .hark-conv-title {{
   color: {on_surface};
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.2px;
 }}
 
-window.blink-window .blink-conv-badge {{
+window.hark-window .hark-conv-badge {{
   background-color: {conv_badge_bg};
   color: {hint};
   border-radius: 8px;
@@ -406,35 +406,35 @@ window.blink-window .blink-conv-badge {{
 }}
 
 /* --- Footer (Raycast action bar) --- */
-window.blink-window .blink-footer {{
+window.hark-window .hark-footer {{
   padding: 7px 12px;
   background-color: transparent;
   min-height: 34px;
 }}
 
-window.blink-window .blink-footer-primary {{
+window.hark-window .hark-footer-primary {{
   padding: 0 2px;
 }}
 
-window.blink-window .blink-footer-action {{
+window.hark-window .hark-footer-action {{
   color: {on_surface};
   font-size: 12px;
   font-weight: 500;
   opacity: 0.90;
 }}
 
-window.blink-window .blink-footer-actions {{
+window.hark-window .hark-footer-actions {{
   padding: 0;
 }}
 
-window.blink-window .blink-footer-div {{
+window.hark-window .hark-footer-div {{
   color: {hint};
   font-size: 11px;
   opacity: 0.28;
   padding: 0 6px;
 }}
 
-window.blink-window .blink-keycap {{
+window.hark-window .hark-keycap {{
   background-color: {hover_bg};
   color: {on_surface};
   border: 1px solid {border_soft};
@@ -447,13 +447,13 @@ window.blink-window .blink-keycap {{
   letter-spacing: 0.01em;
 }}
 
-window.blink-window .blink-action-chip {{
+window.hark-window .hark-action-chip {{
   background-color: transparent;
   border-radius: 6px;
   padding: 2px 4px;
 }}
 
-window.blink-window .blink-action-btn {{
+window.hark-window .hark-action-btn {{
   background-color: transparent;
   border: none;
   box-shadow: none;
@@ -461,11 +461,11 @@ window.blink-window .blink-action-btn {{
   border-radius: 6px;
 }}
 
-window.blink-window .blink-action-btn:hover {{
+window.hark-window .hark-action-btn:hover {{
   background-color: {hover_bg};
 }}
 
-window.blink-window .blink-action-label {{
+window.hark-window .hark-action-label {{
   color: {on_surface};
   font-size: 12px;
   font-weight: 500;
@@ -474,7 +474,7 @@ window.blink-window .blink-action-label {{
 
 /* --- Action panel (Ctrl+K) / Open With --- */
 /* Only paint `contents` — painting the popover + contents creates a double card. */
-popover.blink-action-panel {{
+popover.hark-action-panel {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -484,7 +484,7 @@ popover.blink-action-panel {{
   opacity: 1;
 }}
 
-popover.blink-action-panel > arrow {{
+popover.hark-action-panel > arrow {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -496,8 +496,8 @@ popover.blink-action-panel > arrow {{
   opacity: 0;
 }}
 
-popover.blink-action-panel > contents,
-.blink-action-panel contents {{
+popover.hark-action-panel > contents,
+.hark-action-panel contents {{
   background-color: {popover_bg};
   background-image: none;
   border: 1px solid {border};
@@ -509,22 +509,22 @@ popover.blink-action-panel > contents,
 }}
 
 /* Open With sits over previews — denser single fill */
-popover.blink-open-with > contents {{
+popover.hark-open-with > contents {{
   background-color: {popover_bg_solid};
   border: 1px solid {border};
 }}
 
-.blink-action-panel-inner {{
+.hark-action-panel-inner {{
   min-width: 280px;
   background-color: transparent;
   background-image: none;
 }}
 
-popover.blink-action-panel scrolledwindow,
-popover.blink-action-panel list,
-popover.blink-action-panel viewport,
-popover.blink-action-panel overshoot,
-popover.blink-action-panel undershoot {{
+popover.hark-action-panel scrolledwindow,
+popover.hark-action-panel list,
+popover.hark-action-panel viewport,
+popover.hark-action-panel overshoot,
+popover.hark-action-panel undershoot {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -532,23 +532,23 @@ popover.blink-action-panel undershoot {{
 }}
 
 /* Stronger text contrast in floating menus */
-popover.blink-action-panel .blink-action-panel-label {{
+popover.hark-action-panel .hark-action-panel-label {{
   color: {on_surface};
   opacity: 1;
   font-weight: 600;
 }}
 
-popover.blink-action-panel .blink-action-panel-shortcut {{
+popover.hark-action-panel .hark-action-panel-shortcut {{
   color: {hint};
   opacity: 0.85;
 }}
 
-popover.blink-action-panel .blink-action-panel-header {{
+popover.hark-action-panel .hark-action-panel-header {{
   color: {on_surface};
   opacity: 0.9;
 }}
 
-.blink-action-panel-header {{
+.hark-action-panel-header {{
   color: {hint};
   font-size: 11px;
   font-weight: 600;
@@ -557,14 +557,14 @@ popover.blink-action-panel .blink-action-panel-header {{
   padding: 2px 4px 4px 4px;
 }}
 
-.blink-action-panel-list {{
+.hark-action-panel-list {{
   background-color: transparent;
   border: none;
 }}
 
 /* ListBox rows (legacy) + Button rows (current panel). */
-.blink-action-panel-list > row,
-button.blink-action-panel-row {{
+.hark-action-panel-list > row,
+button.hark-action-panel-row {{
   background-color: transparent;
   background-image: none;
   border-radius: 8px;
@@ -576,44 +576,44 @@ button.blink-action-panel-row {{
   min-height: 0;
 }}
 
-.blink-action-panel-list > row:hover,
-button.blink-action-panel-row:hover {{
+.hark-action-panel-list > row:hover,
+button.hark-action-panel-row:hover {{
   background-color: {hover_bg};
 }}
 
-.blink-action-panel-list > row:selected,
-.blink-action-panel-list > row:selected:hover,
-button.blink-action-panel-row.selected,
-button.blink-action-panel-row.selected:hover,
-button.blink-action-panel-row:focus {{
+.hark-action-panel-list > row:selected,
+.hark-action-panel-list > row:selected:hover,
+button.hark-action-panel-row.selected,
+button.hark-action-panel-row.selected:hover,
+button.hark-action-panel-row:focus {{
   background-color: {selected_bg};
   border: 1px solid {border};
 }}
 
-.blink-action-panel-label {{
+.hark-action-panel-label {{
   color: {on_surface};
   font-size: 13px;
   font-weight: 500;
 }}
 
-.blink-action-panel-label.destructive {{
+.hark-action-panel-label.destructive {{
   color: #f7768e;
 }}
 
-.blink-action-panel-row.destructive:selected .blink-action-panel-label,
-button.blink-action-panel-row.destructive.selected .blink-action-panel-label,
-button.blink-action-panel-row.destructive:focus .blink-action-panel-label {{
+.hark-action-panel-row.destructive:selected .hark-action-panel-label,
+button.hark-action-panel-row.destructive.selected .hark-action-panel-label,
+button.hark-action-panel-row.destructive:focus .hark-action-panel-label {{
   color: #f7768e;
 }}
 
-.blink-action-panel-shortcut {{
+.hark-action-panel-shortcut {{
   color: {hint};
   font-size: 11px;
   font-weight: 500;
   opacity: 0.65;
 }}
 
-window.blink-window .blink-hint {{
+window.hark-window .hark-hint {{
   color: {hint};
   font-size: 11px;
   font-weight: 500;
@@ -622,14 +622,14 @@ window.blink-window .blink-hint {{
   margin: 0;
 }}
 
-window.blink-window .blink-empty {{
+window.hark-window .hark-empty {{
   color: {empty};
   font-size: 13px;
   padding: 36px 16px;
   opacity: 0.75;
 }}
 
-window.blink-window scrolledwindow {{
+window.hark-window scrolledwindow {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -638,18 +638,18 @@ window.blink-window scrolledwindow {{
   margin: 0;
 }}
 
-window.blink-window scrolledwindow viewport,
-window.blink-window scrolledwindow overshoot,
-window.blink-window scrolledwindow undershoot,
-window.blink-window scrolledwindow junction {{
+window.hark-window scrolledwindow viewport,
+window.hark-window scrolledwindow overshoot,
+window.hark-window scrolledwindow undershoot,
+window.hark-window scrolledwindow junction {{
   background-color: transparent;
   background-image: none;
   border: none;
   box-shadow: none;
 }}
 
-window.blink-window scrollbar,
-window.blink-window scrollbar * {{
+window.hark-window scrollbar,
+window.hark-window scrollbar * {{
   opacity: 0;
   min-width: 0;
   min-height: 0;
@@ -661,23 +661,23 @@ window.blink-window scrollbar * {{
 }}
 
 /* --- Settings panel (Vicinae / Raycast dual pane) --- */
-window.blink-window .blink-settings {{
+window.hark-window .hark-settings {{
   background-color: transparent;
   min-width: 720px;
   min-height: 400px;
 }}
 
-window.blink-window .blink-settings-split {{
+window.hark-window .hark-settings-split {{
   background-color: transparent;
   min-height: 380px;
 }}
 
-window.blink-window .blink-settings-nav-col {{
+window.hark-window .hark-settings-nav-col {{
   background-color: transparent;
   min-width: 200px;
 }}
 
-window.blink-window .blink-settings-search {{
+window.hark-window .hark-settings-search {{
   background-color: {hover_bg};
   color: {on_surface};
   border: 1px solid {border_soft};
@@ -690,24 +690,24 @@ window.blink-window .blink-settings-search {{
   box-shadow: none;
 }}
 
-window.blink-window .blink-settings-search:focus {{
+window.hark-window .hark-settings-search:focus {{
   border-color: {border};
   background-color: {search_bg};
   outline: none;
   box-shadow: none;
 }}
 
-window.blink-window .blink-settings-search placeholder {{
+window.hark-window .hark-settings-search placeholder {{
   color: {hint};
   opacity: 0.7;
 }}
 
-window.blink-window .blink-settings-nav-scroll {{
+window.hark-window .hark-settings-nav-scroll {{
   background-color: transparent;
   min-width: 196px;
 }}
 
-window.blink-window .blink-settings-nav {{
+window.hark-window .hark-settings-nav {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -715,7 +715,7 @@ window.blink-window .blink-settings-nav {{
   padding: 2px 8px 8px 8px;
 }}
 
-window.blink-window .blink-settings-nav-row {{
+window.hark-window .hark-settings-nav-row {{
   background-color: transparent;
   background-image: none;
   border: none;
@@ -726,91 +726,91 @@ window.blink-window .blink-settings-nav-row {{
   box-shadow: none;
 }}
 
-window.blink-window .blink-settings-nav-row:hover {{
+window.hark-window .hark-settings-nav-row:hover {{
   background-color: {hover_bg};
 }}
 
-window.blink-window .blink-settings-nav-row:selected,
-window.blink-window .blink-settings-nav-row:selected:hover {{
+window.hark-window .hark-settings-nav-row:selected,
+window.hark-window .hark-settings-nav-row:selected:hover {{
   background-color: {selected_bg};
 }}
 
-window.blink-window .blink-settings-nav-item {{
+window.hark-window .hark-settings-nav-item {{
   background: transparent;
 }}
 
-window.blink-window .blink-settings-nav-icon {{
+window.hark-window .hark-settings-nav-icon {{
   color: {hint};
   opacity: 0.9;
 }}
 
-window.blink-window .blink-settings-nav-row:selected .blink-settings-nav-icon {{
+window.hark-window .hark-settings-nav-row:selected .hark-settings-nav-icon {{
   color: {primary};
   opacity: 1;
 }}
 
-window.blink-window .blink-settings-nav-title {{
+window.hark-window .hark-settings-nav-title {{
   color: {on_surface};
   font-size: 13px;
   font-weight: 500;
 }}
 
-window.blink-window .blink-settings-nav-row:selected .blink-settings-nav-title {{
+window.hark-window .hark-settings-nav-row:selected .hark-settings-nav-title {{
   font-weight: 600;
 }}
 
-window.blink-window .blink-settings-nav-footer {{
+window.hark-window .hark-settings-nav-footer {{
   background: transparent;
 }}
 
-window.blink-window .blink-settings-nav-footer-label {{
+window.hark-window .hark-settings-nav-footer-label {{
   color: {hint};
   font-size: 11px;
   opacity: 0.8;
 }}
 
-window.blink-window .blink-settings-done {{
+window.hark-window .hark-settings-done {{
   font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
   min-height: 0;
 }}
 
-window.blink-window .blink-settings-content-stack {{
+window.hark-window .hark-settings-content-stack {{
   background-color: transparent;
   min-width: 480px;
 }}
 
-window.blink-window .blink-settings-page {{
+window.hark-window .hark-settings-page {{
   background-color: transparent;
 }}
 
-window.blink-window .blink-settings-page-header {{
+window.hark-window .hark-settings-page-header {{
   background: transparent;
 }}
 
-window.blink-window .blink-settings-page-icon {{
+window.hark-window .hark-settings-page-icon {{
   color: {primary};
   opacity: 0.95;
 }}
 
-window.blink-window .blink-settings-body {{
+window.hark-window .hark-settings-body {{
   background-color: transparent;
 }}
 
-window.blink-window .blink-settings-page-title {{
+window.hark-window .hark-settings-page-title {{
   color: {on_surface};
   font-size: 15px;
   font-weight: 650;
 }}
 
-window.blink-window .blink-settings-page-sub {{
+window.hark-window .hark-settings-page-sub {{
   color: {hint};
   font-size: 12px;
   opacity: 0.88;
 }}
 
-window.blink-window .blink-settings-section {{
+window.hark-window .hark-settings-section {{
   color: {primary};
   font-size: 11px;
   font-weight: 650;
@@ -820,53 +820,53 @@ window.blink-window .blink-settings-section {{
   opacity: 0.95;
 }}
 
-window.blink-window .blink-settings-card {{
+window.hark-window .hark-settings-card {{
   background-color: {hover_bg};
   border: 1px solid {border_soft};
   border-radius: 12px;
   padding: 0;
 }}
 
-window.blink-window .blink-settings-card > separator {{
+window.hark-window .hark-settings-card > separator {{
   background-color: {border_soft};
   min-height: 1px;
   margin: 0;
   opacity: 0.7;
 }}
 
-window.blink-window .blink-settings-list {{
+window.hark-window .hark-settings-list {{
   min-height: 40px;
 }}
 
-window.blink-window .blink-settings-list-row {{
+window.hark-window .hark-settings-list-row {{
   padding: 10px 14px;
   min-height: 0;
 }}
 
-window.blink-window .blink-settings-list-label {{
+window.hark-window .hark-settings-list-label {{
   color: {on_surface};
   font-size: 13px;
   font-weight: 500;
 }}
 
-window.blink-window .blink-settings-list-sub {{
+window.hark-window .hark-settings-list-sub {{
   color: {hint};
   font-size: 11.5px;
   opacity: 0.88;
 }}
 
-window.blink-window .blink-settings-card-footer {{
+window.hark-window .hark-settings-card-footer {{
   padding: 8px 14px 10px 14px;
 }}
 
-window.blink-window .blink-settings-stepper-val {{
+window.hark-window .hark-settings-stepper-val {{
   color: {on_surface};
   font-size: 13px;
   font-weight: 600;
   min-width: 20px;
 }}
 
-window.blink-window .blink-settings-entry {{
+window.hark-window .hark-settings-entry {{
   background-color: {search_bg};
   color: {on_surface};
   border: 1px solid {border_soft};
@@ -875,7 +875,7 @@ window.blink-window .blink-settings-entry {{
   min-height: 28px;
 }}
 
-window.blink-window .blink-settings-btn {{
+window.hark-window .hark-settings-btn {{
   background-color: {hover_bg};
   color: {on_surface};
   border-radius: 8px;
@@ -884,18 +884,18 @@ window.blink-window .blink-settings-btn {{
   font-size: 12.5px;
 }}
 
-window.blink-window .blink-settings-btn:hover {{
+window.hark-window .hark-settings-btn:hover {{
   background-color: {selected_bg};
   border-color: {border};
 }}
 
-window.blink-window .blink-settings-icon-btn {{
+window.hark-window .hark-settings-icon-btn {{
   min-width: 28px;
   padding: 2px 8px;
   font-size: 14px;
 }}
 
-window.blink-window .blink-settings-primary {{
+window.hark-window .hark-settings-primary {{
   background-color: {selected_bg};
   color: {on_surface};
   font-weight: 600;
@@ -903,7 +903,7 @@ window.blink-window .blink-settings-primary {{
   border: 1px solid {border};
 }}
 
-window.blink-window .blink-settings-link {{
+window.hark-window .hark-settings-link {{
   color: {hint};
   font-size: 11px;
   background: none;
@@ -911,22 +911,22 @@ window.blink-window .blink-settings-link {{
   padding: 0 6px;
 }}
 
-window.blink-window .blink-settings-link:hover {{
+window.hark-window .hark-settings-link:hover {{
   color: {primary};
 }}
 
-window.blink-window .blink-settings-check,
-window.blink-window .blink-settings-radio {{
+window.hark-window .hark-settings-check,
+window.hark-window .hark-settings-radio {{
   color: {on_surface};
   margin: 0;
 }}
 
-window.blink-window checkbutton {{
+window.hark-window checkbutton {{
   color: {on_surface};
   margin: 0;
 }}
 
-window.blink-window checkbutton label {{
+window.hark-window checkbutton label {{
   color: {on_surface};
   font-size: 13px;
 }}

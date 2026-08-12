@@ -1,5 +1,5 @@
 [package]
-name = "blink"
+name = "hark"
 version = "0.1.0"
 edition = "2021"
 # Lowest Rust version the dependency tree supports (gtk4/glib 0.20 require 1.70).
@@ -15,17 +15,17 @@ keywords = ["launcher", "wayland", "hyprland", "gtk4", "raycast"]
 categories = ["gui"]
 
 [lib]
-name = "blink"
+name = "hark"
 path = "src/lib.rs"
 
 [[bin]]
-name = "blink"
+name = "hark"
 path = "src/main.rs"
 
 [features]
 default = []
 layer-shell = ["dep:gtk4-layer-shell"]
-# Micro-bench CLI (`blink --bench`). Off by default to keep the daemon binary lean.
+# Micro-bench CLI (`hark --bench`). Off by default to keep the daemon binary lean.
 bench = []
 
 [dependencies]
@@ -55,19 +55,19 @@ panic = "abort"
 
 # Optional: `cargo install cargo-deb && cargo deb --release --features layer-shell`
 [package.metadata.deb]
-name = "blink"
+name = "hark"
 maintainer = "Vedant Deshmukh <deshmukhvedant95@gmail.com>"
 copyright = "2026 Vedant Deshmukh"
 license-file = ["LICENSE", "0"]
 section = "utils"
 priority = "optional"
 extended-description = """\
-Blink is a Raycast-style launcher for Linux, built for Hyprland/Wayland.
+Hark is a Raycast-style launcher for Linux, built for Hyprland/Wayland.
 Search apps, files, do math and unit conversions from a single overlay."""
 depends = "$auto"
 assets = [
-  ["target/release/blink", "usr/bin/", "755"],
-  ["packaging/blink.desktop", "usr/share/applications/", "644"],
-  ["assets/blink.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-  ["README.md", "usr/share/doc/blink/", "644"],
+  ["target/release/hark", "usr/bin/", "755"],
+  ["packaging/hark.desktop", "usr/share/applications/", "644"],
+  ["assets/hark.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+  ["README.md", "usr/share/doc/hark/", "644"],
 ]

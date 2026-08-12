@@ -57,27 +57,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
-name = "blink"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "chrono",
- "chrono-tz",
- "dirs",
- "fuzzy-matcher",
- "gio",
- "glib",
- "gtk4",
- "gtk4-layer-shell",
- "once_cell",
- "regex",
- "serde",
- "serde_json",
- "ureq",
- "walkdir",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,6 +650,27 @@ dependencies = [
  "libc",
  "pango-sys",
  "system-deps",
+]
+
+[[package]]
+name = "hark"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "chrono",
+ "chrono-tz",
+ "dirs",
+ "fuzzy-matcher",
+ "gio",
+ "glib",
+ "gtk4",
+ "gtk4-layer-shell",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "ureq",
+ "walkdir",
 ]
 
 [[package]]

@@ -933,7 +933,7 @@ fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/translate")
+        .join("hark/translate")
 }
 
 fn cache_path(key: &str) -> PathBuf {

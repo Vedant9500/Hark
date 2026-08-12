@@ -1,6 +1,6 @@
-# Blink Codebase Audit Report
+# Hark Codebase Audit Report
 
-**Project:** `blink` v0.1.0 — Raycast-style launcher for Linux (Hyprland/Wayland)  
+**Project:** `hark` v0.1.0 — Raycast-style launcher for Linux (Hyprland/Wayland)  
 **Scope:** Entire repository (`src/`, packaging, CI, docs, config)  
 **Date:** 2026-07-25  
 **Method:** 15+ mandatory analysis passes with source verification  
@@ -11,7 +11,7 @@
 
 ## Executive Summary & Repository Health Score
 
-Blink is a mature, performance-conscious launcher with a clear architecture: a resident daemon (`--daemon`), Unix-socket IPC toggle, multi-provider search (`apps` / `files` / `calc` / `translate`), and a GTK4 overlay UI with async deep search and network translation.
+Hark is a mature, performance-conscious launcher with a clear architecture: a resident daemon (`--daemon`), Unix-socket IPC toggle, multi-provider search (`apps` / `files` / `calc` / `translate`), and a GTK4 overlay UI with async deep search and network translation.
 
 **Strengths**
 
@@ -95,7 +95,7 @@ pub fn launch_app(exec: &str, terminal: bool) {
 }
 ```
 
-**Impact:** A malicious or compromised `.desktop` file (user-local `~/.local/share/applications`, flatpak exports, etc.) can execute arbitrary commands when selected in Blink. This is the primary launch path (`Engine::execute` → `LaunchApp`).
+**Impact:** A malicious or compromised `.desktop` file (user-local `~/.local/share/applications`, flatpak exports, etc.) can execute arbitrary commands when selected in Hark. This is the primary launch path (`Engine::execute` → `LaunchApp`).
 
 **Contrast:** `open_terminal_at` / `spawn_detached` in `src/providers/files/mod.rs` correctly use `shell_quote`.
 
@@ -118,7 +118,7 @@ pub fn launch_app(exec: &str, terminal: bool) {
 -        exec.to_string()
 -    };
 -
--    // Detach fully so the app survives after blink hides.
+-    // Detach fully so the app survives after hark hides.
 -    let mut cmd = Command::new("sh");
 -    cmd.arg("-c")
 -        .arg(format!(
@@ -431,7 +431,7 @@ Observations:
 2. Store precomputed `id` as `Arc<str>` in `SearchResult` if clone volume remains high after profiling.
 3. Split `search.rs` into `plan.rs` / `deep.rs` / `glob.rs` / `rank.rs` for compiler + human locality (may help LLVM optimize less megafunctions).
 
-**Benchmark hook already exists:** `blink --bench` with `--features bench` — re-run after changes; compare to `docs/bench/hot-path-*.txt`.
+**Benchmark hook already exists:** `hark --bench` with `--features bench` — re-run after changes; compare to `docs/bench/hot-path-*.txt`.
 
 ### P2. Live-cache key normalization is case-sensitive for prefixes
 
@@ -529,11 +529,11 @@ Large homes with deep pins can hit the cap silently (`capped` flag). UI surfaces
 
 ```toml
 [lib]
-name = "blink"
+name = "hark"
 path = "src/lib.rs"
 
 [[bin]]
-name = "blink"
+name = "hark"
 path = "src/main.rs"
 ```
 
@@ -804,7 +804,7 @@ cargo test --features layer-shell
 
 ## Appendix C — Pass completeness affirmation
 
-This audit executed **17 distinct passes** (15 required + 2 adversarial/supply-chain). Findings were re-checked against the current tree under `/home/vedant/blink` on 2026-07-25. The task is complete only with this report written to `AUDIT_REPORT.md` at the repository root.
+This audit executed **17 distinct passes** (15 required + 2 adversarial/supply-chain). Findings were re-checked against the current tree under `/home/vedant/hark` on 2026-07-25. The task is complete only with this report written to `AUDIT_REPORT.md` at the repository root.
 
 ---
 

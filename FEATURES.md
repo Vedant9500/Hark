@@ -1,6 +1,6 @@
-# Blink — Complete Feature List
+# Hark — Complete Feature List
 
-**Blink** is a Raycast-style launcher for Linux, built for **Hyprland / Wayland**, using **GTK4** (optional `gtk4-layer-shell` overlay).
+**Hark** is a Raycast-style launcher for Linux, built for **Hyprland / Wayland**, using **GTK4** (optional `gtk4-layer-shell` overlay).
 
 | | |
 |--|--|
@@ -14,14 +14,14 @@
 
 | Feature | Details |
 |--------|---------|
-| **Resident daemon** | `blink --daemon` keeps the process warm so the hotkey path avoids a cold GTK startup |
-| **Instant toggle** | A second `blink` process talks to the daemon over a Unix socket (`$XDG_RUNTIME_DIR/blink.sock`) |
+| **Resident daemon** | `hark --daemon` keeps the process warm so the hotkey path avoids a cold GTK startup |
+| **Instant toggle** | A second `hark` process talks to the daemon over a Unix socket (`$XDG_RUNTIME_DIR/hark.sock`) |
 | **Layer-shell overlay** | Optional feature: exclusive keyboard grab, centered near the top of the focused Hyprland monitor via `hyprctl` |
 | **Fallback window mode** | Modal window when layer-shell is unsupported |
 | **Auto-hide on focus loss** | Closes shortly after losing focus (suppressed during drag-and-drop) |
 | **Empty state** | Frecency “recent” items, then fills remaining slots with apps |
 | **Merged ranking** | Apps + files + calc + settings command; score-first, kind as tie-break; top **25** results |
-| **Usage / frecency** | Boosts apps and files you open often; stored in `~/.local/state/blink/usage.json` |
+| **Usage / frecency** | Boosts apps and files you open often; stored in `~/.local/state/hark/usage.json` |
 | **Footer action chips** | Context-aware labels: Copy Result / Open · Drag / Actions (see §2) |
 
 ---
@@ -35,7 +35,7 @@
 | `Ctrl+C` | Copy calc/conversion result and hide |
 | `Ctrl+K` / footer **Actions** chip | Open the actions panel (Open With, copy path, reveal, trash, app location) |
 | `Ctrl+Alt+Enter` | Open terminal at folder (or parent of file) |
-| `Ctrl+,` | Open Blink Settings |
+| `Ctrl+,` | Open Hark Settings |
 | `Esc` | Close launcher (or leave settings) |
 | Settings: `↑`/`↓` / `j`/`k` / `Home`/`End` | Cycle settings categories |
 
@@ -73,7 +73,7 @@
 | **Roots** | Home, external mounts (NTFS / exFAT / vfat via `findmnt`), extra folders |
 | **Depth** | Configurable 1–6 (default **2**); deep roots always walked to depth **6** |
 | **Cap** | **100,000** indexed paths |
-| **Disk cache** | `~/.cache/blink/file-index.json` (TTL 30 min, fingerprint invalidation) |
+| **Disk cache** | `~/.cache/hark/file-index.json` (TTL 30 min, fingerprint invalidation) |
 | **Excludes** | Defaults include `.git`, `node_modules`, `target`, caches, Trash, browser/Steam junk, and more; private-key names always skipped |
 | **Ranking** | Strong path matches demote weak app fuzzy hits |
 | **Async live deep search** | Budgeted walk when the index is weak; live cache keeps retypes instant |
@@ -82,7 +82,7 @@
 
 ### Actions
 
-- Open with system handler (`xdg-open`) or a Blink per-category default app from Settings
+- Open with system handler (`xdg-open`) or a Hark per-category default app from Settings
 - Open a terminal at the path
 - Drag file/folder (and apps) into other apps (Telegram, Nautilus, browsers, etc.)
 - Actions panel: Copy path, reveal in file manager, move to trash
@@ -145,14 +145,14 @@ Examples:
 
 ## 6. Commands & settings
 
-- Type `settings` / `preferences` / `index` / `config` → **Blink Settings**
+- Type `settings` / `preferences` / `index` / `config` → **Hark Settings**
 
 ### Settings categories
 
 1. **Indexing** — home toggle, mounts, depth, rebuild now, status
 2. **Extra folders** — custom search roots
 3. **Exclusions** — names always skipped
-4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Blink-only, does not change system MIME
+4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Hark-only, does not change system MIME
 5. **Display** — path style: **Label** vs **Drive** (`~/…` / `Windows C:…` style)
 6. **Appearance** — opacity, accent colour, font scale, icon size/style, corner radius
 7. **Tools** — translate master switch; typo aliases management
@@ -160,7 +160,7 @@ Examples:
 Also:
 
 - Deep-root management (pin / unpin)
-- Config file: `~/.config/blink/config.json`
+- Config file: `~/.config/hark/config.json`
 
 ---
 
@@ -209,10 +209,10 @@ Also:
 
 | CLI | Purpose |
 |-----|---------|
-| `blink --daemon` | Resident process |
-| `blink` | Toggle (or start if no daemon) |
-| `blink --search "q"` | Headless search debug (index + optional deep) |
-| `blink --bench` | Latency (median / p95), index rebuild, RSS / CPU (build with `--features bench`) |
+| `hark --daemon` | Resident process |
+| `hark` | Toggle (or start if no daemon) |
+| `hark --search "q"` | Headless search debug (index + optional deep) |
+| `hark --bench` | Latency (median / p95), index rebuild, RSS / CPU (build with `--features bench`) |
 
 Other internals:
 
@@ -249,11 +249,11 @@ Also ships:
 ## 12. Hyprland integration
 
 ```conf
-exec-once = blink --daemon
-bind = ALT, A, exec, blink
+exec-once = hark --daemon
+bind = ALT, A, exec, hark
 ```
 
-Layer-shell namespace: `blink`  
+Layer-shell namespace: `hark`  
 Positions near ~20% from the top of the focused monitor.
 
 ---
@@ -287,7 +287,7 @@ Tracked in [todo.md](todo.md). Not fully shipped yet:
 
 Shipped recently:
 
-- Default apps per file type in Settings (`open_with` categories → desktop id; Blink-only, not system MIME)
+- Default apps per file type in Settings (`open_with` categories → desktop id; Hark-only, not system MIME)
 - Translate-on-paste with auto language detection
 - Action panel (`Ctrl+K`) with copy path, reveal, trash, open-with
 
@@ -295,4 +295,4 @@ Shipped recently:
 
 ## One-line summary
 
-**Blink is a fast, daemonized Hyprland launcher that fuzzy-searches apps and files (with globs, scoped paths, and deep live walks), does Raycast-style math / units / currency / timezone / battery conversions, translates text online, previews media, supports file drag-and-drop, and has a built-in settings panel for indexing and default open apps — all in a themed GTK4 overlay.**
+**Hark is a fast, daemonized Hyprland launcher that fuzzy-searches apps and files (with globs, scoped paths, and deep live walks), does Raycast-style math / units / currency / timezone / battery conversions, translates text online, previews media, supports file drag-and-drop, and has a built-in settings panel for indexing and default open apps — all in a themed GTK4 overlay.**

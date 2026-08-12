@@ -148,7 +148,7 @@ impl Engine {
         });
     }
 
-    /// Blocking rebuild for `blink --bench` only (not used by UI).
+    /// Blocking rebuild for `hark --bench` only (not used by UI).
     #[cfg(feature = "bench")]
     pub fn bench_force_reindex_blocking(&self) {
         self.files.force_rebuild();
@@ -159,7 +159,7 @@ impl Engine {
         crate::providers::files::cache_bytes_on_disk()
     }
 
-    /// Loaded desktop app count (for `blink --bench` readiness).
+    /// Loaded desktop app count (for `hark --bench` readiness).
     #[cfg(feature = "bench")]
     pub fn apps_len(&self) -> usize {
         self.apps.len()
@@ -211,7 +211,7 @@ impl Engine {
         {
             results.push(SearchResult {
                 id: "cmd:settings".into(),
-                title: "Blink Settings".into(),
+                title: "Hark Settings".into(),
                 subtitle: "Indexing · mounts · excludes".into(),
                 kind: ResultKind::Command,
                 score: 20_000,
@@ -374,7 +374,7 @@ impl Engine {
                 match crate::providers::apps::launch_app(exec, *terminal) {
                     Ok(()) => ExecuteOutcome::Launched,
                     Err(err) => {
-                        eprintln!("blink: launch failed: {err}");
+                        eprintln!("hark: launch failed: {err}");
                         ExecuteOutcome::Failed
                     }
                 }
@@ -386,7 +386,7 @@ impl Engine {
                 match crate::providers::files::open_path_with(path, Some(&cfg.open_with)) {
                     Ok(()) => ExecuteOutcome::Launched,
                     Err(err) => {
-                        eprintln!("blink: open failed: {err}");
+                        eprintln!("hark: open failed: {err}");
                         ExecuteOutcome::Failed
                     }
                 }
@@ -394,14 +394,14 @@ impl Engine {
             Action::OpenTerminal(path) => match crate::providers::files::open_terminal_at(path) {
                 Ok(()) => ExecuteOutcome::Launched,
                 Err(err) => {
-                    eprintln!("blink: open terminal failed: {err}");
+                    eprintln!("hark: open terminal failed: {err}");
                     ExecuteOutcome::Failed
                 }
             },
             Action::Copy(text) => match copy_to_clipboard(text) {
                 Ok(()) => ExecuteOutcome::Launched,
                 Err(err) => {
-                    eprintln!("blink: copy failed: {err}");
+                    eprintln!("hark: copy failed: {err}");
                     ExecuteOutcome::Failed
                 }
             },
@@ -418,7 +418,7 @@ impl Engine {
                     ExecuteOutcome::Refresh
                 }
                 Err(err) => {
-                    eprintln!("blink: trash failed: {err}");
+                    eprintln!("hark: trash failed: {err}");
                     ExecuteOutcome::Failed
                 }
             },
@@ -565,7 +565,7 @@ impl Engine {
         }
     }
 
-    /// Isolated provider search (for `blink --bench` only).
+    /// Isolated provider search (for `hark --bench` only).
     #[cfg(feature = "bench")]
     pub fn search_apps_only(&self, query: &str) -> Vec<SearchResult> {
         self.apps.search(query)
@@ -676,7 +676,7 @@ impl Engine {
         }
     }
 
-    /// Isolated provider search (for `blink --bench` only).
+    /// Isolated provider search (for `hark --bench` only).
     #[cfg(feature = "bench")]
     pub fn search_calc_only(&self, query: &str) -> Vec<SearchResult> {
         self.calc.search(query)
@@ -858,7 +858,7 @@ mod deep_root_tests {
     #[test]
     fn allows_project_subdir() {
         if let Some(home) = dirs::home_dir() {
-            let project = home.join("blink");
+            let project = home.join("hark");
             assert!(!is_forbidden_deep_root(&project));
         }
     }
@@ -965,7 +965,7 @@ mod force_files_tests {
 #[cfg(test)]
 mod engine_search_tests {
     use super::*;
-    use crate::config::{BlinkConfig, ConfigStore};
+    use crate::config::{ConfigStore, HarkConfig};
     use crate::providers::apps::AppProvider;
     use crate::providers::files::FileProvider;
     use crate::providers::{Action, ResultKind};
@@ -985,13 +985,13 @@ mod engine_search_tests {
     fn tmp_config_dir() -> PathBuf {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("blink-engine-test-{}-{}", std::process::id(), n));
+            std::env::temp_dir().join(format!("hark-engine-test-{}-{}", std::process::id(), n));
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
 
-    fn base_config() -> BlinkConfig {
-        let mut cfg = BlinkConfig::default();
+    fn base_config() -> HarkConfig {
+        let mut cfg = HarkConfig::default();
         // Translate is on by default; disable for deterministic ranking.
         cfg.translate.enabled = false;
         cfg.index.include_home = false;

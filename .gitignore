@@ -55,7 +55,7 @@ todo.txt
 
 # Optional local override configs
 /config.local.toml
-/blink.local.toml
+/hark.local.toml
 
 # Test / coverage artifacts
 /coverage/

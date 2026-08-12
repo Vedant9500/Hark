@@ -1,10 +1,10 @@
-# Blink — Release & AUR publishing roadmap
+# Hark — Release & AUR publishing roadmap
 
 > **Status:** research / planning only. This is a **roadmap**, not a list of finished
 > tasks. Each section is designed to be executed as its own session; tick items as
 > they land. Last reviewed: 2026-08-11.
 
-Goal: clean up and optimize the codebase, then publish **`blink-launcher` to the AUR**.
+Goal: clean up and optimize the codebase, then publish **`hark` to the AUR**.
 (The npm idea was dropped — a native GTK4 Rust app doesn't belong on npm. AUR is the
 target.)
 
@@ -130,7 +130,7 @@ Prereqs (outside the repo, one-time):
           User aur
           IdentityFile ~/.ssh/id_aur
       ```
-- [ ] Pre-check: search the AUR for existing `blink` packages — do not submit a
+- [ ] Pre-check: search the AUR for existing `hark` packages — do not submit a
       duplicate; if one exists (left by someone else), adopt or disambiguate the name.
 
 Publishing workflow (either AUR git directly, or `aurpublish` helper which auto-gen
@@ -138,11 +138,11 @@ Publishing workflow (either AUR git directly, or `aurpublish` helper which auto-
 
 ```
 # direct AUR repo (pkgname is the AUR package name)
-git clone ssh://aur@aur.archlinux.org/blink-launcher.git
+git clone ssh://aur@aur.archlinux.org/hark.git
 cp packaging/aur/PKGBUILD .
 makepkg --printsrcinfo > .SRCINFO
 git add PKGBUILD .SRCINFO
-git commit -m "initial: blink-launcher v0.1.0"
+git commit -m "initial: hark v0.1.0"
 git push origin master    # AUR only accepts pushes to master
 ```
 - [ ] The AUR git repo uses **`master`** (not `main`) — rename your branch if needed.
@@ -159,11 +159,12 @@ git push origin master    # AUR only accepts pushes to master
 
 ## Design decisions / open questions
 
-- **Package name:** repo is `blink`, AUR name is `blink-launcher` (naming clash
-  avoidance). Confirm this is intentional and not confusing for users searching "blink".
+- **Package name:** `hark` (unique on AUR as of 2026-08-12). Renamed from `blink`
+  (collision: AUR `blink` = SIP client, plus `blink1*`, `blink-emulator`, …). `hark` —
+  "pay attention / summons"; short, Unix-flavoured, meaningful.
 - **crates.io:** `Cargo.toml` has `version = "0.1.0"` and a clean LICENSE/README but the
   crate is a **binary app**, so `cargo publish` to crates.io is optional. AUR is the
-  distribution channel; crates.io only matters if you want `cargo install blink`. Not a
+  distribution channel; crates.io only matters if you want `cargo install hark`. Not a
   blocker — flag it in case you want it later.
 - **`release.yml`:** already builds `.deb` + tarball on `v*` tags — that's the release
   artifact source the AUR `source=` expects. Make sure the tag it reads matches the

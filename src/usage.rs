@@ -69,7 +69,7 @@ impl UsageStore {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("blink-usage-empty-{}-{}", std::process::id(), n));
+            std::env::temp_dir().join(format!("hark-usage-empty-{}-{}", std::process::id(), n));
         let _ = std::fs::create_dir_all(&dir);
         Self {
             inner: RwLock::new(UsageFile::default()),
@@ -230,7 +230,7 @@ fn usage_path() -> PathBuf {
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("blink/usage.json")
+        .join("hark/usage.json")
 }
 
 #[cfg(test)]
@@ -242,7 +242,7 @@ mod usage_tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "blink-usage-{}-{}-{}",
+            "hark-usage-{}-{}-{}",
             std::process::id(),
             n,
             now_secs()

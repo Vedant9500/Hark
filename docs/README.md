@@ -1,4 +1,4 @@
-# Blink docs
+# Hark docs
 
 ## Start here
 
@@ -17,7 +17,7 @@
 
 | Path | What |
 |------|------|
-| **[bench/](./bench/)** | Before/after `blink --bench` logs (hot-path, etc.) |
+| **[bench/](./bench/)** | Before/after `hark --bench` logs (hot-path, etc.) |
 | **[depth-index-benchmark.json](./depth-index-benchmark.json)** | Raw depth 2/3/4 campaign (2026-07-14) |
 | **[archive/](./archive/)** | Full historical optimization tracker (pre-cleanup) |
 
