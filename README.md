@@ -1,143 +1,103 @@
-# Hark
+<p align="center">
+  <img width="96" src="assets/hark.svg" alt="Hark logo" />
+</p>
 
-Raycast-style launcher for Linux, built for **Hyprland / Wayland**.
+<h1 align="center"><b>Hark</b></h1>
+<h4 align="center">A fast, native command palette for Linux</h4>
 
-## Features (v0.1)
+<p align="center">
+  <a href="https://github.com/Vedant9500/Hark/releases"><img src="https://img.shields.io/github/v/release/Vedant9500/Hark?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/Vedant9500/Hark/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License"></a>
+  <a href="https://github.com/Vedant9500/Hark"><img src="https://img.shields.io/github/languages/top/Vedant9500/Hark?style=flat-square" alt="Language"></a>
+</p>
 
-| Feature | Usage |
-|--------|--------|
-| **App search** | Type app name — fuzzy match `.desktop` entries |
-| **File / folder search** | Type ≥2 chars, or `f query`, or path like `~/Doc` |
-| **Math** | `2+2`, `sqrt(144)`, `5k + 2m`, `1.5 million`, `15% of 80`, `tip 20% on 45` |
-| **Unit conversion** | `100 km to mi`, `32 f to c`, `1 gb to mb` |
-| **Bases** | `0xFF`, `0b1010` |
-| **Timezones** | `15:00 here to tokyo`, `15:00 in london to here`, `now in new york` |
-| **Time range** | `7:26 - 9:32`, `7:26am to 9:32pm`, `22:00 - 6:30` (overnight) |
-| **Currency / FX** | Live rates (Frankfurter/ECB, cached) — `100 usd to eur`, `$100 in inr` |
-| **Battery / power** | `battery`, `power`, `charging`, `on ac` — live sysfs status |
-| **Online translate** | `tr Hola`, `tr en es Hello`, `译 你好`, or auto-paste foreign script |
-| **Typo learning** | Learns from launches + rewrites (`wats` → WhatsApp); manage in Settings → Typo aliases |
-| **Settings / theme** | `Ctrl+,` — appearance (themes, icons) + tools/overrides |
+<img alt="Hark screenshot" src="assets/screenshots/hero.png" />
 
-**Keys:** `↑/↓` navigate · `Tab` autocomplete · `Enter` open/copy · `Ctrl+C` copy calc · `Esc` close · `Ctrl+K` secondary actions (clipboard, reveal, copy path, Open With…, preview) · `Ctrl+,` Settings
+**Hark** (pronounced _"hark"_, from the archaic _hark!_ — pay attention, come) is a
+resident-daemon launcher for Linux built with GTK4. One keystroke summons an overlay
+that searches your apps, files, math, conversions, and more — before you finish typing.
 
-## Install (share with friends)
+Out of the box, Hark is:
 
-Linux doesn’t have one universal “APK / MSI”. Hark ships the closest equivalents:
+- **app search** — fuzzy-match `.desktop` entries
+- **file / folder search** — type a name, a `f query`, or a path like `~/Doc`
+- **calculator** — `2+2`, `sqrt(144)`, `5k + 2m`, `15% of 80`, `tip 20% on 45`
+- **unit conversion** — `100 km to mi`, `32 f to c`, `1 gb to mb`
+- **currency / FX** — live rates (Frankfurter/ECB, cached), `100 usd to eur`
+- **timezones & time ranges** — `15:00 here to tokyo`, `7:26 - 9:32`
+- **battery / power status** — `battery`, `power`, `charging`
+- **online translation** — `tr Hola`, `tr en es Hello`, or paste foreign script
+- **typo learning** — learns from your launches (`wats` → WhatsApp)
+- **media preview, drag-and-drop, Open With, themes**
 
-| What | Who it’s for | How |
-|------|----------------|-----|
-| **One-line installer** | Anyone with curl | Downloads latest release + installs under `~/.local` |
-| **Portable `.tar.gz`** | Offline / USB share | Extract → `./install.sh` |
-| **AUR `PKGBUILD`** | Arch / Endeavour / Cachy | `makepkg -si` (or AUR helper once published) |
-| **`.deb`** | Debian / Ubuntu | Optional via `cargo-deb` |
-| **From source** | Developers | `./scripts/install.sh` |
+## Installation
 
-### One-line (after you publish a GitHub Release)
+### AUR
+
+```bash
+paru -S hark      # or your AUR helper of choice
+```
+
+### One-line installer
 
 ```bash
 curl -fsSL https://github.com/Vedant9500/Hark/releases/latest/download/install.sh | bash
 
-# optional: also enable login autostart of the daemon
+# optionally enable login autostart of the daemon
 curl -fsSL https://github.com/Vedant9500/Hark/releases/latest/download/install.sh | bash -s -- --autostart
 ```
 
-### Portable binary package (no GitHub needed)
+### Portable `.tar.gz`
 
-Friend does **not** need Rust — just GTK4.
+For machines without Rust or an AUR helper — only GTK4 is needed:
 
 ```bash
-# you build once:
-./scripts/package-release.sh
-# share: dist/hark-0.1.0-x86_64-linux.tar.gz
-
-# friend installs:
 tar xzf hark-0.1.0-x86_64-linux.tar.gz
 ./hark-0.1.0-x86_64-linux/install.sh
 ```
 
-### Complete source package (no GitHub / no git clone)
-
-Share the full code so they can build/modify it themselves:
+### From source
 
 ```bash
-# you run:
-./scripts/package-source.sh
-# share: dist/hark-0.1.0-source.tar.gz   (small — excludes target/)
-
-# friend:
-tar xzf hark-0.1.0-source.tar.gz
-cd hark-0.1.0-source
-# read BUILD_FROM_SOURCE.txt
-./scripts/install.sh          # build + install + restart daemon
-# ./scripts/install.sh --no-restart
-# ./scripts/install.sh --restart-only
-```
-
-Do **not** zip the whole project folder by hand — `target/` alone is multi‑GB of junk.
-### Uninstall (user install)
-
-```bash
-# from the extracted package, or:
-~/.local/…  # or re-run the package’s uninstall.sh
-```
-
-`packaging/uninstall-user.sh` removes the binary, desktop entry, icon, and autostart file.
-
-### Requirements (runtime)
-
-- Linux x86_64 (or aarch64 when you build for it)
-- **GTK 4** (`gtk4` / `libgtk-4-1`)
-- **Recommended on Hyprland:** `gtk4-layer-shell` for true overlay mode
-
-```bash
-# Arch
-sudo pacman -S gtk4 gtk4-layer-shell
-
-# Debian / Ubuntu (names vary by version)
-sudo apt install libgtk-4-1
-# layer-shell package name may be libgtk4-layer-shell0
-```
-
-## Build from source
-
-```bash
-# optional but recommended on Hyprland
+# dependencies (Arch)
 sudo pacman -S gtk4 gtk4-layer-shell
 
 ./scripts/install.sh
-# or:
+# or
 cargo build --release --features layer-shell
 ```
 
-### Make a shareable release yourself
+### Requirements
 
-```bash
-# builds binary + dist/hark-*-linux.tar.gz + dist/install.sh + SHA256SUMS
-./scripts/package-release.sh
+- Linux x86_64
+- GTK 4 (`gtk4` / `libgtk-4-1`)
+- Recommended on Hyprland: `gtk4-layer-shell` for true overlay mode
 
-# optional .deb (Ubuntu/Debian friends)
-cargo install cargo-deb
-cargo deb --release --features layer-shell
-```
+## Usage
 
-Tag + push to let GitHub Actions attach artifacts to a Release:
+Hark runs as a **resident daemon** so the hotkey path avoids cold GTK startup. By
+default **Alt+A** summons the overlay.
 
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+| Keys | Action |
+|------|--------|
+| `Alt+A` | Toggle overlay (if bound) |
+| `↑` / `↓` | Navigate results |
+| `Tab` | Autocomplete |
+| `Enter` | Open / copy |
+| `Ctrl+K` | Secondary actions (Open With, copy path, reveal, trash) |
+| `Ctrl+Alt+Enter` | Open terminal at folder |
+| `Ctrl+C` | Copy calc / conversion result |
+| `Ctrl+,` | Settings |
+| `Esc` | Close |
 
-## Hyprland
-
-Hark runs as a **resident daemon** (started on login). **Alt+A** toggles the window instantly.
+### Hyprland
 
 ```lua
--- execs.lua  (preload, no window)
+-- execs.lua (preload, no window)
 hl.exec_cmd("hark --daemon")
 
--- keybinds.lua  (toggle via single-instance activate)
-hl.bind(vars.kbHark, hl.dsp.exec_cmd("hark"))  -- kbHark = ALT + A
+-- keybinds.lua (toggle)
+hl.bind(vars.kbHark, hl.dsp.exec_cmd("hark"))
 ```
 
 Or in `hyprland.conf`:
@@ -147,20 +107,13 @@ exec-once = hark --daemon
 bind = ALT, A, exec, hark
 ```
 
-## Prefixes
+## Documentation
 
-- `f <query>` / `file <query>` — files only  
-- `~/…` or `/…` — path browser  
-- math/conversion queries float to the top automatically  
+- [docs/](docs/) — index of metrics, bench logs, and archive
+- [docs/performance.md](docs/performance.md) — latency snapshot, bench how-to
+- [docs/TRANSLATE.md](docs/TRANSLATE.md) — translate languages, aliases, auto-detect
+- [packaging/](packaging/) — desktop entry, user installer, AUR `PKGBUILD`
 
-## Docs
+## License
 
-- **[docs/performance.md](docs/performance.md)** — latency snapshot, index depth chart, cache/binary, how to bench  
-- **[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md)** — short optimization tracker (done / open)  
-- **[docs/TRANSLATE.md](docs/TRANSLATE.md)** — translate: languages, aliases, auto-detect scripts  
-- **[docs/](docs/)** — index of metrics, bench logs, and archive  
-- **[packaging/](packaging/)** — desktop entry, user installer, AUR `PKGBUILD`
-
-```bash
-hark --bench   # needs: cargo build --release --features "layer-shell,bench"
-```
+MIT
