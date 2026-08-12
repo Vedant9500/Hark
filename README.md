@@ -11,7 +11,7 @@
   <a href="https://github.com/Vedant9500/Hark"><img src="https://img.shields.io/github/languages/top/Vedant9500/Hark?style=flat-square" alt="Language"></a>
 </p>
 
-<img alt="Hark screenshot" src="assets/screenshots/hero.png" />
+<img alt="Hark screenshot" src="assets/screenshots/lightmode.png" />
 
 **Hark** (pronounced _"hark"_, from the archaic _hark!_ — pay attention, come) is a
 resident-daemon launcher for Linux built with GTK4. One keystroke summons an overlay

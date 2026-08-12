@@ -3,6 +3,10 @@
 **/*.rs.bk
 Cargo.toml.orig
 
+# Local-only: seeded usage db for README screenshots
+assets/screenshots/seed-usage.json
+scripts/seed-screenshots.sh
+
 # Debug / profiling
 *.pdb
 perf.data
