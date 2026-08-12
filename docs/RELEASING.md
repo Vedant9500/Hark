@@ -59,21 +59,21 @@ Currently **7 clippy warnings** surface with `--all-features` (CI only gates
 
 ### 1.4 Reproducibility checks
 
-- [ ] Keep `Cargo.lock` committed (already tracked — good; Rust apps, not libs, should
-      commit it). CI should assert with `cargo fetch --locked`.
-- [ ] Decide release tooling. Recommended: **`cargo-release`** for version bump + tag,
-      and **`cargo-dist`** for the GitHub Release binary artifacts. `cargo-dist`
-      generates the release workflow so you stop hand-writing platform matrices.
-  - Or keep the existing `./scripts/package-release.sh` + `release.yml` if that's working
-    and you don't want the churn. Minimum: tag `v*` builds a release.
+- [x] Keep `Cargo.lock` committed (already tracked — good; Rust apps, not libs, should
+      commit it). CI asserts with `cargo fetch --locked`; release build also uses
+      `cargo build --release --locked`.
+- [x] Decide release tooling. **Decision: keep existing** `./scripts/package-release.sh`
+      + `release.yml` — already builds tarball + installer + SHA256SUMS + optional .deb
+      on `v*` tags, wired to GitHub Releases. `cargo-dist`/`cargo-release` churn not worth
+      it for single-platform Linux binary. Minimum satisfied: tag `v*` builds a release.
 
 ### 1.5 Verify before calling it done
 
-- [ ] `cargo fmt --check` — clean.
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` — clean.
-- [ ] `cargo test --all-features` — green.
-- [ ] `cargo audit` / `cargo deny` — clean or documented acceptances.
-- [ ] CI is green on `main` and gates everything above on PR.
+- [x] `cargo fmt --check` — clean.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` — clean.
+- [x] `cargo test --all-features` — green (128 tests).
+- [x] `cargo audit` / `cargo deny` — clean (event-listener bumped; deny all four checks ok).
+- [x] CI is green on `main` and gates everything above on PR.
 
 ---
 

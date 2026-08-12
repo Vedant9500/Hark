@@ -35,6 +35,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Assert Cargo.lock is committed and in sync with Cargo.toml — fails fast if
+      # a dependency was added without committing an updated lockfile.
+      - name: Verify lockfile
+        run: cargo fetch --locked
+
       - name: Check formatting
         run: cargo fmt --check
 

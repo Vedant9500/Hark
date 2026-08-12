@@ -62,8 +62,9 @@ else
   echo "    Install gtk4-layer-shell for Hyprland overlay, or set BLINK_FORCE_LAYER_SHELL=1"
 fi
 
-echo "==> cargo build --release ${FEATURES[*]:-}"
-cargo build --release "${FEATURES[@]}"
+echo "==> cargo build --release --locked ${FEATURES[*]:-}"
+# --locked: release artifacts must reproduce exactly from the committed Cargo.lock.
+cargo build --release --locked "${FEATURES[@]}"
 
 BIN="$ROOT/target/release/blink"
 if [[ ! -x "$BIN" ]]; then
