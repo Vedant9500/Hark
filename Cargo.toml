@@ -9,8 +9,8 @@ description = "Raycast-style launcher for Linux (Hyprland/Wayland)"
 license = "MIT"
 readme = "README.md"
 authors = ["Vedant Deshmukh <deshmukhvedant95@gmail.com>"]
-repository = "https://github.com/deshmukhvedant95/blink"
-homepage = "https://github.com/deshmukhvedant95/blink"
+repository = "https://github.com/Vedant9500/Blink"
+homepage = "https://github.com/Vedant9500/Blink"
 keywords = ["launcher", "wayland", "hyprland", "gtk4", "raycast"]
 categories = ["gui"]
 

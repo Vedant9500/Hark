@@ -4,8 +4,8 @@ pkgname=blink-launcher
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
-arch=('x86_64' 'aarch64')
-url="https://github.com/deshmukhvedant95/blink"
+arch=('x86_64')
+url="https://github.com/Vedant9500/Blink"
 license=('MIT')
 depends=('gtk4' 'glib2')
 optdepends=(
@@ -14,7 +14,7 @@ optdepends=(
 makedepends=('cargo' 'pkgconf')
 provides=('blink')
 conflicts=('blink')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/deshmukhvedant95/blink/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Blink/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 options=('!lto') # Cargo sets LTO in profile.release
 
@@ -37,8 +37,8 @@ build() {
 
 check() {
   cd "blink-$pkgver"
-  cargo test --frozen --release --features layer-shell || \
-    cargo test --frozen --release
+  cargo test --frozen --features layer-shell || \
+    cargo test --frozen
 }
 
 package() {
