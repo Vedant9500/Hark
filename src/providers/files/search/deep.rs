@@ -717,7 +717,7 @@ pub(super) fn live_deep_under_roots(
                 .strip_prefix(root)
                 .map(|p| p.components().count() as u16)
                 .unwrap_or(0);
-            let item = make_indexed(path.to_path_buf(), name.to_string(), is_dir, depth);
+            let item = make_indexed(path.to_path_buf(), name.to_string(), is_dir, depth, false);
             // Build a synthetic GlobQuery-compatible score, then penalize live.
             let mut score = score_live_hit(&item, segments, name_pat, dir_scope);
             score = score.saturating_sub(DEEP_SCORE_PENALTY);

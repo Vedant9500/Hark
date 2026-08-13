@@ -86,7 +86,7 @@ impl FileProvider {
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_string();
-            index.push(index::make_indexed(path.clone(), name, *is_dir, 2));
+            index.push(index::make_indexed(path.clone(), name, *is_dir, 2, false));
         }
         index.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
         *self.state.index.write().unwrap_or_else(|p| p.into_inner()) = index;

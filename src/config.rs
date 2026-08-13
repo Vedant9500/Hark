@@ -61,10 +61,26 @@ pub fn is_forbidden_deep_root(path: &Path) -> bool {
         if p == home {
             return true;
         }
+        // Parent of home (`/home`, `/Users`, …) — deep-pinning it is `$HOME`
+        // by another name.
+        if let Some(parent) = home.parent() {
+            if p == parent {
+                return true;
+            }
+        }
     }
+    // Mount roots themselves are never deep-pinned — pin a subfolder instead.
+    // Derived from this machine's real mount table, not a hardcoded prefix list.
+    if discover_mounts()
+        .iter()
+        .any(|m| p == m.target || m.target.canonicalize().map(|t| p == t).unwrap_or(false))
+    {
+        return true;
+    }
+    // System-wide trees that exist on every machine.
     matches!(
         p.to_string_lossy().as_ref(),
-        "/home" | "/Users" | "/var" | "/usr" | "/opt" | "/mnt" | "/media"
+        "/var" | "/usr" | "/opt" | "/etc" | "/proc" | "/sys" | "/dev" | "/run" | "/tmp"
     )
 }
 
@@ -840,45 +856,176 @@ fn backup_invalid_config(path: &Path) -> Option<PathBuf> {
     fs::copy(path, &backup).ok().map(|_| backup)
 }
 
+/// Filesystems that are not real on-disk user data (pseudo / overlay / volatile).
+/// Everything else — NTFS, ext4, btrfs, exfat, f2fs, xfs, zfs, … — is indexable.
+fn is_pseudo_fs(fstype: &str) -> bool {
+    matches!(
+        fstype,
+        "proc"
+            | "sysfs"
+            | "devpts"
+            | "tmpfs"
+            | "devtmpfs"
+            | "devfs"
+            | "ramfs"
+            | "debugfs"
+            | "tracefs"
+            | "fusectl"
+            | "securityfs"
+            | "mqueue"
+            | "binfmt_misc"
+            | "autofs"
+            | "configfs"
+            | "pstore"
+            | "hugetlbfs"
+            | "efivarfs"
+            | "rpc_pipefs"
+            | "nsfs"
+            | "bpffs"
+            | "cgroup"
+            | "cgroup2"
+            | "overlay"
+            | "squashfs"
+            | "fuse.portal"
+    )
+}
+
+/// Loop devices (snaps, container images, disk images) and bind mounts are never
+/// user volumes.
+fn is_loop_or_virtual_source(device: &str) -> bool {
+    let d = device.trim();
+    d.starts_with("/dev/loop")
+        || d.starts_with("/dev/ram")
+        || d.starts_with("/dev/zram")
+        || d == "none"
+        || d.is_empty()
+}
+
+/// Physical block device source: `sdX`, `nvmeXnY`, `mmcblkX`, optical, or a
+/// `UUID=`/`LABEL=`/`PARTUUID=`-style source from findmnt.
+fn is_block_source(device: &str) -> bool {
+    let d = device.trim();
+    d.starts_with("/dev/sd")
+        || d.starts_with("/dev/nvme")
+        || d.starts_with("/dev/mmcblk")
+        || d.starts_with("/dev/hd")
+        || d.starts_with("/dev/vd")
+        || d.starts_with("/dev/xvd")
+        || d.starts_with("/dev/sr")
+        || d.starts_with("UUID=")
+        || d.starts_with("PARTUUID=")
+        || d.starts_with("LABEL=")
+}
+
+/// Conventional user-data mount points (`/mnt`, `/media`, `/run/media`). Any
+/// real filesystem mounted here is treated as a volume — including binds.
+fn is_user_data_target(p: &Path) -> bool {
+    p.starts_with("/mnt") || p.starts_with("/media") || p.starts_with("/run/media")
+}
+
+/// The container dirs themselves, never mount targets worth indexing.
+fn is_container_target(p: &Path) -> bool {
+    matches!(
+        p.to_string_lossy().as_ref(),
+        "/mnt" | "/media" | "/run/media"
+    )
+}
+
+/// System trees that are never user volumes (block-backed or not).
+fn is_system_target(p: &Path) -> bool {
+    let t = p.to_string_lossy();
+    if t == "/" {
+        return true;
+    }
+    [
+        "/boot",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/run",
+        "/var",
+        "/usr",
+        "/opt",
+        "/etc",
+        "/home",
+        "/root",
+        "/tmp",
+        "/snap",
+        "/efi",
+        "/boot/efi",
+    ]
+    .iter()
+    .any(|prefix| t == *prefix || t.starts_with(&format!("{prefix}/")))
+}
+
 pub fn discover_mounts() -> Vec<MountInfo> {
     let mut mounts = Vec::new();
 
-    // findmnt -J preferred
-    if let Ok(out) = Command::new("findmnt")
-        .args(["-J", "-t", "ntfs,ntfs3,fuseblk,exfat,vfat"])
-        .output()
-    {
-        if out.status.success() {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                if let Some(arr) = v.get("filesystems").and_then(|x| x.as_array()) {
-                    collect_findmnt(arr, &mut mounts);
+    // Primary: the kernel mount table. No fstype filter — a Linux data drive
+    // (ext4/btrfs/xfs) is just as valid as a Windows NTFS volume. Loop, snap,
+    // pseudo and system mounts are filtered out structurally instead.
+    if let Ok(contents) = fs::read_to_string("/proc/self/mounts") {
+        for line in contents.lines() {
+            let mut cols = line.split_whitespace();
+            let (Some(device), Some(target), Some(fstype)) =
+                (cols.next(), cols.next(), cols.next())
+            else {
+                continue;
+            };
+            // Mount points escape spaces/octals as \040 — restore them.
+            let target = PathBuf::from(target.replace("\\040", " "));
+            if is_pseudo_fs(fstype)
+                || is_container_target(&target)
+                || should_skip_mount_target(&target.to_string_lossy())
+            {
+                continue;
+            }
+            // Non-conventional mount points must be a physical block device
+            // outside the system tree to be treated as a volume.
+            if !is_user_data_target(&target)
+                && (is_loop_or_virtual_source(device)
+                    || !is_block_source(device)
+                    || is_system_target(&target))
+            {
+                continue;
+            }
+            mounts.push(mount_from_path(&target));
+        }
+    } else {
+        // No /proc/self/mounts (non-Linux): ask findmnt without a type filter.
+        if let Ok(out) = Command::new("findmnt").arg("-J").output() {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(arr) = v.get("filesystems").and_then(|x| x.as_array()) {
+                        collect_findmnt(arr, &mut mounts);
+                    }
                 }
             }
         }
     }
 
-    if mounts.is_empty() {
-        // Fallback: scan common roots
-        for base in ["/mnt", "/media", "/run/media"] {
-            let base = PathBuf::from(base);
-            if let Ok(rd) = fs::read_dir(&base) {
-                for e in rd.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        // /run/media/user/LABEL
-                        if base.ends_with("media") {
-                            if let Ok(rd2) = fs::read_dir(&p) {
-                                for e2 in rd2.flatten() {
-                                    let p2 = e2.path();
-                                    if p2.is_dir() {
-                                        mounts.push(mount_from_path(&p2));
-                                    }
-                                }
+    // Always scan conventional roots too — catches manual/bind mounts the kernel
+    // table lists in an unrecognised form, and stays useful without findmnt.
+    for base in ["/mnt", "/media", "/run/media"] {
+        let base = PathBuf::from(base);
+        if let Ok(rd) = fs::read_dir(&base) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_dir() || should_skip_mount_target(&p.to_string_lossy()) {
+                    continue;
+                }
+                // /run/media/<user>/<LABEL> nests one level deeper.
+                if base.ends_with("media") {
+                    if let Ok(rd2) = fs::read_dir(&p) {
+                        for e2 in rd2.flatten() {
+                            let p2 = e2.path();
+                            if p2.is_dir() && !should_skip_mount_target(&p2.to_string_lossy()) {
+                                mounts.push(mount_from_path(&p2));
                             }
-                        } else {
-                            mounts.push(mount_from_path(&p));
                         }
                     }
+                } else {
+                    mounts.push(mount_from_path(&p));
                 }
             }
         }
@@ -905,15 +1052,15 @@ fn should_skip_mount_target(target: &str) -> bool {
 
 fn collect_findmnt(arr: &[serde_json::Value], out: &mut Vec<MountInfo>) {
     for fs in arr {
+        let fstype = fs.get("fstype").and_then(|t| t.as_str()).unwrap_or("");
+        let source = fs.get("source").and_then(|s| s.as_str()).unwrap_or("");
         if let Some(target) = fs.get("target").and_then(|t| t.as_str()) {
-            if target.starts_with("/mnt")
-                || target.starts_with("/media")
-                || target.starts_with("/run/media")
+            if is_user_data_target(Path::new(target))
+                && !is_pseudo_fs(fstype)
+                && !is_loop_or_virtual_source(source)
+                && !is_container_target(Path::new(target))
+                && !should_skip_mount_target(target)
             {
-                // Skip EFI partitions and bare /boot (never indexable launcher roots).
-                if should_skip_mount_target(target) {
-                    continue;
-                }
                 let label = fs
                     .get("label")
                     .and_then(|l| l.as_str())
@@ -1201,6 +1348,50 @@ mod config_store_tests {
         assert!(!should_skip_mount_target("/mnt/windows_d"));
         assert!(!should_skip_mount_target("/media/alice/Data"));
         assert!(!should_skip_mount_target("/run/media/alice/USB"));
+    }
+
+    #[test]
+    fn mount_filters_classify_any_fstype() {
+        // Any real filesystem is indexable — no Windows-only fstype hardcode.
+        assert!(!is_pseudo_fs("ext4"));
+        assert!(!is_pseudo_fs("btrfs"));
+        assert!(!is_pseudo_fs("xfs"));
+        assert!(!is_pseudo_fs("ntfs3"));
+        assert!(!is_pseudo_fs("exfat"));
+        assert!(is_pseudo_fs("proc"));
+        assert!(is_pseudo_fs("overlay"));
+        assert!(is_pseudo_fs("squashfs"));
+        assert!(is_pseudo_fs("tmpfs"));
+
+        assert!(is_loop_or_virtual_source("/dev/loop0"));
+        assert!(is_loop_or_virtual_source("none"));
+        assert!(!is_loop_or_virtual_source("/dev/nvme0n1p4"));
+        assert!(!is_loop_or_virtual_source("/dev/sda1"));
+
+        assert!(is_block_source("/dev/nvme0n1p8"));
+        assert!(is_block_source("/dev/sda1"));
+        assert!(is_block_source("/dev/mmcblk0p2"));
+        assert!(is_block_source("UUID=abcd-1234"));
+        assert!(!is_block_source("/dev/loop0"));
+        assert!(!is_block_source("tmpfs"));
+
+        assert!(is_user_data_target(Path::new("/mnt/data")));
+        assert!(is_user_data_target(Path::new("/media/alice/Data")));
+        assert!(is_user_data_target(Path::new("/run/media/vedant/Games")));
+        assert!(!is_user_data_target(Path::new("/home/vedant")));
+
+        assert!(is_container_target(Path::new("/mnt")));
+        assert!(is_container_target(Path::new("/media")));
+        assert!(is_container_target(Path::new("/run/media")));
+        assert!(!is_container_target(Path::new("/mnt/data")));
+
+        assert!(is_system_target(Path::new("/")));
+        assert!(is_system_target(Path::new("/boot")));
+        assert!(is_system_target(Path::new("/usr/local")));
+        assert!(is_system_target(Path::new("/home")));
+        assert!(is_system_target(Path::new("/run/user/1000/gvfs")));
+        assert!(is_system_target(Path::new("/run/media/vedant/Games")));
+        assert!(!is_system_target(Path::new("/mnt/data")));
     }
 
     #[test]

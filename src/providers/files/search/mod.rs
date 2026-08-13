@@ -224,6 +224,7 @@ mod tests {
             "glassbox".into(),
             true,
             1,
+            false,
         )];
         assert!(parse_scoped_query("readme in glassbox", None).is_none());
         let sq = parse_scoped_query("readme in glassbox", Some(&index)).unwrap();
@@ -276,19 +277,22 @@ mod tests {
                 "glassbox".into(),
                 true,
                 1,
+                false,
             ),
             make_indexed(
                 PathBuf::from("/home/u/glassbox/docs"),
                 "docs".into(),
                 true,
                 2,
+                false,
             ),
-            make_indexed(PathBuf::from("/home/u/hark"), "hark".into(), true, 1),
+            make_indexed(PathBuf::from("/home/u/hark"), "hark".into(), true, 1, false),
             make_indexed(
                 PathBuf::from("/home/u/glassbox/docs/optimization.md"),
                 "optimization.md".into(),
                 false,
                 3,
+                false,
             ),
         ];
         let style = PathStyle::Label;
@@ -411,7 +415,13 @@ mod tests {
         fs::write(junk.join("optimization.md"), "nope").unwrap();
 
         // Index only has the shallow project folder (as depth-2 index would).
-        let index = vec![make_indexed(base.join("proj"), "proj".into(), true, 1)];
+        let index = vec![make_indexed(
+            base.join("proj"),
+            "proj".into(),
+            true,
+            1,
+            false,
+        )];
         let style = PathStyle::Label;
         let mounts: Vec<MountInfo> = vec![];
         let excludes = ExcludeSet::from_list(&[]);

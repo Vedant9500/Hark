@@ -14,7 +14,7 @@ pub const MAX_INDEX: usize = 100_000;
 /// Re-walk roots at most this often when fingerprint is unchanged.
 pub const INDEX_TTL_SECS: u64 = 30 * 60;
 /// Bump when on-disk cache layout changes.
-pub(crate) const CACHE_VERSION: u32 = 6;
+pub(crate) const CACHE_VERSION: u32 = 7;
 
 /// In-memory search entry (derived fields filled on load/build).
 #[derive(Debug, Clone)]
@@ -39,6 +39,9 @@ struct CacheEntry {
     is_dir: bool,
     #[serde(rename = "n")]
     depth: u16,
+    /// Under a discovered mount root (old caches default to false).
+    #[serde(rename = "m", default)]
+    mnt: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,6 +265,17 @@ impl IndexState {
         let mut items = Vec::with_capacity(4096);
         let mut seen = std::collections::HashSet::new();
 
+        // Enabled mount roots, used to tag entries as mounted (ranking + pretty
+        // display), derived from discovery — not a hardcoded `/mnt/` prefix.
+        let mnt_targets: Vec<PathBuf> = mounts
+            .iter()
+            .filter(|m| {
+                let key = m.target.to_string_lossy().to_string();
+                cfg.index.include_mounts.get(&key).copied().unwrap_or(true)
+            })
+            .map(|m| m.target.clone())
+            .collect();
+
         // Explicit params avoid overlapping borrows with `items.len()` checks.
         let walk_root = |root: &PathBuf,
                          depth: usize,
@@ -288,7 +302,8 @@ impl IndexState {
                 if should_skip_entry(&path, &excludes) {
                     continue;
                 }
-                if let Some(item) = index_entry(&path, root) {
+                let is_mnt = mnt_targets.iter().any(|t| path.starts_with(t));
+                if let Some(item) = index_entry(&path, root, is_mnt) {
                     items.push(item);
                     if items.len() >= MAX_INDEX {
                         self.capped.store(true, Ordering::Relaxed);
@@ -323,7 +338,7 @@ impl IndexState {
     }
 }
 
-fn index_entry(path: &Path, root: &Path) -> Option<IndexedPath> {
+fn index_entry(path: &Path, root: &Path, mnt: bool) -> Option<IndexedPath> {
     let meta = fs::symlink_metadata(path).ok()?;
     let is_dir = meta.is_dir();
     let name = path.file_name()?.to_str()?.to_string();
@@ -334,14 +349,19 @@ fn index_entry(path: &Path, root: &Path) -> Option<IndexedPath> {
         .strip_prefix(root)
         .map(|p| p.components().count() as u16)
         .unwrap_or(path.components().count() as u16);
-    Some(make_indexed(path.to_path_buf(), name, is_dir, depth))
+    Some(make_indexed(path.to_path_buf(), name, is_dir, depth, mnt))
 }
 
-pub(crate) fn make_indexed(path: PathBuf, name: String, is_dir: bool, depth: u16) -> IndexedPath {
+pub(crate) fn make_indexed(
+    path: PathBuf,
+    name: String,
+    is_dir: bool,
+    depth: u16,
+    mnt: bool,
+) -> IndexedPath {
     let path_lower = path.to_string_lossy().to_lowercase();
     let low_value = is_low_value_path(&path_lower);
-    let high_value = is_high_value_path(&path_lower);
-    let is_mnt = path_lower.starts_with("/mnt/");
+    let high_value = is_high_value_path(&path_lower, mnt, depth);
     IndexedPath {
         name_lower: name.to_lowercase(),
         name,
@@ -351,7 +371,7 @@ pub(crate) fn make_indexed(path: PathBuf, name: String, is_dir: bool, depth: u16
         depth,
         low_value,
         high_value,
-        is_mnt,
+        is_mnt: mnt,
     }
 }
 
@@ -361,7 +381,7 @@ fn from_cache_entry(e: CacheEntry) -> Option<IndexedPath> {
     if name.is_empty() {
         return None;
     }
-    Some(make_indexed(path, name, e.is_dir, e.depth))
+    Some(make_indexed(path, name, e.is_dir, e.depth, e.mnt))
 }
 
 fn is_low_value_path(path_lower: &str) -> bool {
@@ -400,7 +420,7 @@ fn home_prefix_lower() -> Option<&'static str> {
     .as_deref()
 }
 
-fn is_high_value_path(path_lower: &str) -> bool {
+fn is_high_value_path(path_lower: &str, mnt: bool, depth: u16) -> bool {
     if let Some(home_prefix) = home_prefix_lower() {
         if let Some(rest) = path_lower.strip_prefix(home_prefix) {
             if rest.matches('/').count() <= 1 {
@@ -423,11 +443,9 @@ fn is_high_value_path(path_lower: &str) -> bool {
             }
         }
     }
-    if path_lower.starts_with("/mnt/") {
-        let rest = path_lower.trim_start_matches("/mnt/");
-        if rest.matches('/').count() <= 2 {
-            return true;
-        }
+    // Shallow entries on any mounted volume are high-value (`D:/`-style tops).
+    if mnt && depth <= 2 {
+        return true;
     }
     false
 }
@@ -446,6 +464,12 @@ pub(crate) fn should_skip_entry(path: &Path, excludes: &ExcludeSet) -> bool {
     }
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
         if is_encoded_session_name(name) {
+            return true;
+        }
+        // Machine-generated / transient entries — sensor dumps, download
+        // fragments, counter-indexed frames, date-named recording dirs.
+        // Human-authored files (finance.csv, shopping.csv, changelog.md) pass.
+        if is_generated_filename(name) || is_generated_dirname(name) {
             return true;
         }
         if name == ".env"
@@ -532,6 +556,161 @@ pub(crate) fn is_encoded_session_name(name: &str) -> bool {
     name.starts_with("--") && name.ends_with("--") && name.len() > 4
 }
 
+/// Dir names that are almost always tool bulk output — prune the whole subtree.
+/// (Sensor/ML/recording dumps: `artifacts`, `recordings`, `runs`, …)
+const GENERATED_DIR_NAMES: &[&str] = &[
+    "artifacts",
+    "outputs",
+    "runs",
+    "checkpoints",
+    "recordings",
+    "frames",
+    "dumps",
+    "snapshots",
+    "cache",
+    "caches",
+    "tmp",
+    "temp",
+    "backups",
+    "trash",
+    ".trash-1000",
+    "captures",
+    "sessions",
+];
+
+/// Filename words that mark a timestamped file as machine-generated, not
+/// human-authored. Matched on whole-word boundaries so `changelog.md` (contains
+/// "log") survives while `log_20260813.txt` is pruned.
+const GENERATED_KEYWORDS: &[&str] = &[
+    "test",
+    "tmp",
+    "temp",
+    "snap",
+    "snapshot",
+    "frame",
+    "capture",
+    "record",
+    "recording",
+    "session",
+    "run",
+    "output",
+    "log",
+    "img",
+    "image",
+    "photo",
+    "screen",
+    "screenshot",
+    "backup",
+    "dump",
+    "sample",
+    "batch",
+    "landmark",
+    "artifact",
+];
+
+/// Camera / phone dumps (always timestamped): IMG_2026…, VID_2026…, PXL_…
+const CAMERA_PREFIXES: &[&str] = &["img_", "vid_", "pxl_", "dsc_", "dscn_", "photo_", "video_"];
+
+/// Date-shaped digit runs — the strongest machine-generated signal.
+/// `20260403_112819_…` (8-digit), `2026_08_13`, `13-08-2026`.
+/// Deliberately loose: it only ever *combines* with a keyword to prune files,
+/// while date-named *dirs* are pruned outright (humans don't name folders by
+/// pure timestamp).
+fn has_datestamp(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut run = 0usize;
+    for &b in bytes {
+        if b.is_ascii_digit() {
+            run += 1;
+            if run >= 6 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    // Separated groups: `2026_08_13` / `13-08-2026` (year + month + day).
+    let groups: Vec<&str> = s
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|g| !g.is_empty())
+        .collect();
+    for w in groups.windows(3) {
+        let (a, b, c) = (w[0].len(), w[1].len(), w[2].len());
+        if (a == 4 && (b == 1 || b == 2) && (c == 1 || c == 2))
+            || ((a == 1 || a == 2) && (b == 1 || b == 2) && c == 4)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whole-word `kw` presence in `s` (ASCII separators on both sides).
+fn stem_has_keyword(s: &str, kw: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = s[from..].find(kw) {
+        let i = from + rel;
+        let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let after = i + kw.len();
+        let after_ok = after == bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = after;
+    }
+    false
+}
+
+fn is_generated_filename(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    // Camera / phone dumps are always timestamped.
+    if CAMERA_PREFIXES.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    // Transient download / editor junk.
+    if lower.ends_with(".part")
+        || lower.ends_with(".tmp")
+        || lower.ends_with(".crdownload")
+        || lower.ends_with(".download")
+        || lower.ends_with(".lock")
+        || lower.ends_with(".swp")
+        || lower.ends_with(".swo")
+        || lower.ends_with('~')
+        || lower == ".ds_store"
+        || lower == "thumbs.db"
+        || lower == "desktop.ini"
+    {
+        return true;
+    }
+    // Pure counter dumps: `000000.png`, `1234567.csv`.
+    let stem = lower.split('.').next().unwrap_or(&lower);
+    if !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    // Timestamped AND machine-y — `test_20_13082026.csv`, `frame_2026_08_13.png`.
+    if !has_datestamp(stem) {
+        return false;
+    }
+    GENERATED_KEYWORDS
+        .iter()
+        .any(|kw| stem_has_keyword(stem, kw))
+}
+
+fn is_generated_dirname(name: &str) -> bool {
+    // Dirs almost never carry extensions; files do. A dotted name goes through
+    // the filename rules instead, so `2026_08_13_notes.md` survives.
+    if name.contains('.') {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    if GENERATED_DIR_NAMES.contains(&lower.as_str()) {
+        return true;
+    }
+    // Date-named dump dirs: `20260403_112819_46d7d6_eye_crops`, `runs_2026_08_13`.
+    has_datestamp(&lower)
+}
+
 pub(crate) fn expand_user(q: &str) -> PathBuf {
     if let Some(rest) = q.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -615,6 +794,7 @@ fn save_cache(items: &[IndexedPath], fingerprint: &str, capped_by_deep: bool) {
                 path: i.path.to_string_lossy().into_owned(),
                 is_dir: i.is_dir,
                 depth: i.depth,
+                mnt: i.is_mnt,
             })
             .collect(),
     };
@@ -668,6 +848,99 @@ mod tests {
         assert!(!should_skip_entry(Path::new("/home/u/.local"), &excludes));
         assert!(!should_skip_entry(
             Path::new("/home/u/notes.txt"),
+            &excludes
+        ));
+    }
+
+    #[test]
+    fn human_files_survive_artifact_filter() {
+        let excludes = ExcludeSet::from_list(&[]);
+        assert!(!should_skip_entry(
+            Path::new("/mnt/windows_d/finance.csv"),
+            &excludes
+        ));
+        assert!(!should_skip_entry(
+            Path::new("/mnt/windows_d/shopping.csv"),
+            &excludes
+        ));
+        assert!(!should_skip_entry(
+            Path::new("/home/u/changelog.md"),
+            &excludes
+        ));
+        assert!(!should_skip_entry(
+            Path::new("/home/u/report_2026.pdf"),
+            &excludes
+        ));
+        assert!(!should_skip_entry(
+            Path::new("/home/u/2026_08_13_notes.md"),
+            &excludes
+        ));
+        assert!(!should_skip_entry(
+            Path::new("/home/u/notes.txt"),
+            &excludes
+        ));
+    }
+
+    #[test]
+    fn machine_dumps_pruned() {
+        let excludes = ExcludeSet::from_list(&[]);
+        // Date-named recording dirs (the Eye Tracker pattern) — whole subtree.
+        assert!(should_skip_entry(
+            Path::new("/mnt/windows_d/Eye Tracker/data/raw/20260403_112819_46d7d6_eye_crops"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new(
+                "/mnt/windows_d/Eye Tracker/data/raw/20260403_112819_46d7d6_landmark_features.csv"
+            ),
+            &excludes
+        ));
+        // Timestamped + tool keyword.
+        assert!(should_skip_entry(
+            Path::new("/home/u/test_20_13082026.csv"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new("/home/u/frame_2026_08_13.png"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new("/home/u/log_20260813.txt"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new("/home/u/backup_20260813.zip"),
+            &excludes
+        ));
+        // Transient download / editor junk.
+        assert!(should_skip_entry(
+            Path::new("/home/u/file.download"),
+            &excludes
+        ));
+        assert!(should_skip_entry(Path::new("/home/u/file.part"), &excludes));
+        assert!(should_skip_entry(Path::new("/home/u/notes.md~"), &excludes));
+        // Camera dumps.
+        assert!(should_skip_entry(
+            Path::new("/home/u/IMG_20260813_123456.jpg"),
+            &excludes
+        ));
+        // Pure counter files.
+        assert!(should_skip_entry(
+            Path::new("/mnt/windows_d/frames/000000.png"),
+            &excludes
+        ));
+        // Generated tool dirs prune their whole subtree (the walk prunes them
+        // at the dir boundary; here we match the dir name itself).
+        assert!(should_skip_entry(
+            Path::new("/mnt/windows_d/proj/runs"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new("/mnt/windows_d/proj/artifacts"),
+            &excludes
+        ));
+        assert!(should_skip_entry(
+            Path::new("/mnt/windows_d/tmp"),
             &excludes
         ));
     }
