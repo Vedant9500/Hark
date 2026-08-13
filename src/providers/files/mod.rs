@@ -144,7 +144,8 @@ impl FileProvider {
 
     pub fn resolve_path(&self, path: &Path) -> Option<SearchResult> {
         // One syscall (not exists() + is_dir()). Missing paths drop out.
-        let meta = std::fs::symlink_metadata(path).ok()?;
+        // metadata() follows symlinks so shortcuts to dirs classify as folders.
+        let meta = std::fs::metadata(path).ok()?;
         let is_dir = meta.is_dir();
         let name = path
             .file_name()

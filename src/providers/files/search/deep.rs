@@ -674,7 +674,17 @@ pub(super) fn live_deep_under_roots(
                 continue;
             }
 
-            let is_dir = entry.file_type().is_dir();
+            let ft = entry.file_type();
+            let is_dir = if ft.is_symlink() {
+                // Follow the target so shortcuts to directories classify as
+                // folders; broken links are dropped.
+                match std::fs::metadata(path) {
+                    Ok(m) => m.is_dir(),
+                    Err(_) => continue,
+                }
+            } else {
+                ft.is_dir()
+            };
             let name = match path.file_name().and_then(|s| s.to_str()) {
                 Some(n) if !n.is_empty() => n,
                 _ => continue,

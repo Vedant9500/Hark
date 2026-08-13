@@ -14,7 +14,7 @@ pub const MAX_INDEX: usize = 100_000;
 /// Re-walk roots at most this often when fingerprint is unchanged.
 pub const INDEX_TTL_SECS: u64 = 30 * 60;
 /// Bump when on-disk cache layout changes.
-pub(crate) const CACHE_VERSION: u32 = 7;
+pub(crate) const CACHE_VERSION: u32 = 8;
 
 /// In-memory search entry (derived fields filled on load/build).
 #[derive(Debug, Clone)]
@@ -340,7 +340,13 @@ impl IndexState {
 
 fn index_entry(path: &Path, root: &Path, mnt: bool) -> Option<IndexedPath> {
     let meta = fs::symlink_metadata(path).ok()?;
-    let is_dir = meta.is_dir();
+    let is_dir = if meta.file_type().is_symlink() {
+        // Follow the target so shortcuts to directories classify as folders.
+        // Broken links resolve to nothing → drop the entry.
+        fs::metadata(path).ok()?.is_dir()
+    } else {
+        meta.is_dir()
+    };
     let name = path.file_name()?.to_str()?.to_string();
     if name.is_empty() {
         return None;
@@ -943,5 +949,36 @@ mod tests {
             Path::new("/mnt/windows_d/tmp"),
             &excludes
         ));
+    }
+
+    #[test]
+    fn symlink_to_dir_indexes_as_folder() {
+        let dir = std::env::temp_dir().join(format!("hark_index_test_{}", std::process::id()));
+        let target = dir.join("real");
+        let link = dir.join("shortcut");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let item = index_entry(&link, &dir, false).expect("symlink dir should index");
+        assert!(item.is_dir, "symlink to dir must classify as folder");
+        assert_eq!(item.name, "shortcut");
+
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broken_symlink_not_indexed() {
+        let dir = std::env::temp_dir().join(format!("hark_link_test_{}", std::process::id()));
+        let link = dir.join("ghost");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(dir.join("does_not_exist"), &link).unwrap();
+
+        assert!(index_entry(&link, &dir, false).is_none());
+
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
