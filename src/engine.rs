@@ -1195,6 +1195,71 @@ mod engine_search_tests {
     }
 
     #[test]
+    fn tier2_cooking_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        for q in [
+            "100g flour in cups",
+            "2 cups sugar in g",
+            "1 stick butter",
+            "double 2 cups flour",
+            "scale 1.5x 200g rice",
+            "4 servings to 8 2 cups rice",
+            "fan 200c to conventional",
+            "conventional 220 c to fan",
+        ] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+        // Volume↔volume conversions stay on the conversion provider.
+        let r = te.engine.search("2 cups to ml");
+        assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "2 cups to ml");
+    }
+
+    #[test]
+    fn tier2_quickwins_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        for q in [
+            "255 to hex",
+            "ff to dec",
+            "roman 1984",
+            "bmi 180cm 75kg",
+            "10000 steps in km",
+            "dice",
+            "roll d20",
+            "coin",
+            "uuid",
+            "password 16",
+            "wc hello world",
+            "slug Hello World",
+            "case snake Hello World",
+            "age 1998-03-15",
+            "1998-03-15 to 2026-08-15",
+            "1998-03-15 to now",
+        ] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+    }
+
+    #[test]
+    fn tier2_quickwins_do_not_steal() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        // Base-conversion must not swallow unit / financial pairs.
+        let r = te.engine.search("5 km to miles");
+        assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "unit conversion");
+        let r = te.engine.search("100 to 150");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc), "pct change");
+        assert_eq!(r[0].title, "+50%");
+        // Pure-letter quickwins are exempt from the plain-text gate.
+        for q in ["dice", "coin", "uuid", "wc hello world", "slug Hello World", "case snake x"] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+        }
+    }
+
+    #[test]
     fn tier3_battery_renders_cards() {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
         for q in ["battery", "bat", "power", "charging", "on battery"] {

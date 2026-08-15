@@ -104,6 +104,42 @@ fn parse_text_date(s: &str, today: NaiveDate) -> Option<NaiveDate> {
     }
 }
 
+/// Break the span `a → b` (a ≤ b) into whole years, months, days, plus total
+/// days. Walks calendar-safe increments so Feb 29 rollovers stay valid.
+fn ymd_between(a: NaiveDate, b: NaiveDate) -> (i64, i64, i64, i64) {
+    let (mut y, mut m) = (0i64, 0i64);
+    let mut cur = a;
+    while let Some(next) = cur.with_year(cur.year() + 1) {
+        if next > b {
+            break;
+        }
+        cur = next;
+        y += 1;
+    }
+    while let Some(next) = cur.with_month(cur.month() + 1) {
+        if next > b {
+            break;
+        }
+        cur = next;
+        m += 1;
+    }
+    (y, m, (b - cur).num_days(), (b - a).num_days())
+}
+
+fn fmt_span(y: i64, m: i64, d: i64) -> String {
+    let mut parts = Vec::new();
+    if y > 0 {
+        parts.push(format!("{y} year{}", if y == 1 { "" } else { "s" }));
+    }
+    if m > 0 {
+        parts.push(format!("{m} month{}", if m == 1 { "" } else { "s" }));
+    }
+    if d > 0 || parts.is_empty() {
+        parts.push(format!("{d} day{}", if d == 1 { "" } else { "s" }));
+    }
+    parts.join(" ")
+}
+
 fn month_idx(abbr: &str) -> Option<u32> {
     match abbr.get(..3)?.to_ascii_lowercase().as_str() {
         "jan" => Some(1),
@@ -122,9 +158,20 @@ fn month_idx(abbr: &str) -> Option<u32> {
     }
 }
 
-/// Parse a plain numeric date in the accepted datetime formats.
+/// Parse a plain numeric date in the accepted datetime formats. Day-first
+/// (`dd/mm/yyyy`, `dd-mm-yy`) is tried before US `mm/dd/yyyy`; `%y` uses the
+/// standard 69-99 → 19xx / 00-68 → 20xx pivot for 2-digit years.
 fn numeric_naive_date(s: &str) -> Option<NaiveDate> {
-    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"] {
+    // 2-digit-year variants before %Y: chrono `%Y` reads `05` as year 5 and
+    // `11-03-05` as year 11, so `%y` must win for the same separator shape.
+    for fmt in [
+        "%d-%m-%y",
+        "%Y-%m-%d",
+        "%d/%m/%y",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%d-%m-%Y",
+    ] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
             return Some(d);
         }
@@ -384,13 +431,66 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         }
     }
 
-    // parse datetime strings
+    // age / date diff: `age 1998-03-15`, `age 11/03/2005`, `age 11-03-05`,
+    // `1998-03-15 to now`, `11/03/2005 to 20/03/2005`
+    static RE_AGE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^age\s+([\d]{1,4}[-/][\d]{1,2}[-/][\d]{2,4})\s*$").unwrap());
+    if let Some(c) = RE_AGE.captures(&lower) {
+        let birth = numeric_naive_date(c.get(1)?.as_str())?;
+        let today = now.date_naive();
+        if birth > today {
+            return None;
+        }
+        let (y, mo, d, days) = ymd_between(birth, today);
+        let title = fmt_span(y, mo, d);
+        return Some(card_result(
+            title.clone(),
+            format!("{} → today", c.get(1)?.as_str()),
+            format!("{} days · born {}", days, c.get(1)?.as_str()),
+            c.get(1)?.as_str().to_string(),
+            "age",
+            title,
+            "result",
+        ));
+    }
+
+    static RE_DIFF: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)^([\d]{1,4}[-/][\d]{1,2}[-/][\d]{2,4})\s+to\s+(now|today|[\d]{1,4}[-/][\d]{1,2}[-/][\d]{2,4})\s*$",
+        )
+        .unwrap()
+    });
+    if let Some(c) = RE_DIFF.captures(&lower) {
+        let a = numeric_naive_date(c.get(1)?.as_str())?;
+        let b = match c.get(2)?.as_str() {
+            "now" | "today" => now.date_naive(),
+            s => numeric_naive_date(s)?,
+        };
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let (y, mo, d, days) = ymd_between(start, end);
+        let title = fmt_span(y, mo, d);
+        return Some(card_result(
+            title.clone(),
+            format!("{} → {}", c.get(1)?.as_str(), c.get(2)?.as_str()),
+            format!("{} days between", days),
+            c.get(1)?.as_str().to_string(),
+            "date diff",
+            title,
+            "result",
+        ));
+    }
+
+    // parse datetime strings; 2-digit-year variants before %Y (chrono %Y
+    // reads `05` as year 5 and `11-03-05` as year 11)
     for fmt in [
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
+        "%d-%m-%y",
         "%Y-%m-%d",
+        "%d/%m/%y",
         "%d/%m/%Y",
         "%m/%d/%Y",
+        "%d-%m-%Y",
     ] {
         if let Ok(dt) = NaiveDateTime::parse_from_str(q, fmt) {
             let s = format!(
@@ -603,5 +703,45 @@ mod datetime_tests {
         assert_eq!(r.conversion.expect("card").right_title, "Friday");
         // Unparseable remainder falls through, not an early error.
         assert!(try_datetime("day of year").is_some());
+    }
+
+    #[test]
+    fn age_and_date_diff() {
+        let r = try_datetime("age 1998-03-15").expect("age");
+        assert!(r.conversion.as_ref().unwrap().left_badge == "age", "{r:?}");
+        // 1998-03-15 → 2026-08-15 = 28y 5m.
+        assert!(r.title.starts_with("28 years 5 months"), "{}", r.title);
+        let r = try_datetime("1998-03-15 to 2026-08-15").expect("diff");
+        assert_eq!(r.title, "28 years 5 months");
+        assert_eq!(r.conversion.as_ref().unwrap().left_badge, "date diff");
+        // Reverse order normalizes.
+        let r = try_datetime("2026-08-15 to 1998-03-15").expect("reversed");
+        assert_eq!(r.title, "28 years 5 months");
+        // `to now` resolves against the clock.
+        let r = try_datetime("1998-03-15 to now").expect("to now");
+        assert!(r.title.starts_with("28 years"), "{}", r.title);
+        // Single dates still fall through to the plain date card.
+        let r = try_datetime("2026-08-15").expect("bare date");
+        assert_eq!(r.conversion.as_ref().unwrap().left_badge, "date");
+    }
+
+    #[test]
+    fn age_and_date_diff_alternate_formats() {
+        // dd/mm/yyyy, dd/mm/yy, dd-mm-yyyy, dd-mm-yy.
+        for birth in ["11/03/2005", "11/03/05", "11-03-2005", "11-03-05"] {
+            let r = try_datetime(&format!("age {birth}")).expect(&format!("age {birth}"));
+            assert!(r.title.starts_with("21 years"), "{}: {}", birth, r.title);
+        }
+        let r = try_datetime("11/03/2005 to 20/03/2005").expect("diff slashes");
+        assert_eq!(r.title, "9 days");
+        let r = try_datetime("11-03-2005 to 11-04-2005").expect("diff dashes");
+        assert_eq!(r.title, "1 month");
+        let r = try_datetime("11/03/05 to now").expect("diff short to now");
+        assert!(r.title.starts_with("21 years"), "{}", r.title);
+        let r = try_datetime("11/03/2005 to 20/03/2026").expect("diff long span");
+        assert_eq!(r.title, "21 years 9 days");
+        // Unambiguous day-first: 11/03/2005 is 11 March, never 3 Nov.
+        let r = try_datetime("age 11/03/2005").expect("day-first");
+        assert_eq!(r.title, "21 years 5 months 4 days");
     }
 }

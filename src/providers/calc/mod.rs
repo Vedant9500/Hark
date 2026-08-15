@@ -1,4 +1,5 @@
 mod battery;
+mod cooking;
 mod currency;
 mod datetime;
 mod duration;
@@ -6,18 +7,21 @@ mod expr;
 mod financial;
 mod fueleco;
 mod math;
+mod quick;
 mod timezone;
 mod unitmath;
 mod units;
 mod util;
 
 use battery::try_battery;
+use cooking::{try_cooking, try_oven, try_recipe_scale};
 use currency::{normalize_money_query, try_currency, try_currency_predict};
 use datetime::try_datetime;
 use duration::try_duration_expr;
 use financial::try_financial;
 use fueleco::try_fuel_economy;
 use math::{looks_like_math, try_math, try_natural};
+use quick::try_quickwin;
 use timezone::{try_timezone, try_timezone_predict};
 use unitmath::try_unit_math;
 use units::{try_conversion, try_conversion_predict};
@@ -69,11 +73,23 @@ impl CalcProvider {
         if let Some(r) = try_currency_predict(&q_norm, &self.fx) {
             return vec![r];
         }
+        if let Some(r) = try_recipe_scale(&q_norm) {
+            return vec![r];
+        }
+        if let Some(r) = try_cooking(&q_norm) {
+            return vec![r];
+        }
+        if let Some(r) = try_oven(&q_norm) {
+            return vec![r];
+        }
         if let Some(r) = try_conversion(&q_norm) {
             return vec![r];
         }
         if let Some(results) = try_conversion_predict(&q_norm) {
             return results;
+        }
+        if let Some(r) = try_quickwin(&q_norm) {
+            return vec![r];
         }
         if let Some(r) = try_financial(&q_norm) {
             return vec![r];
@@ -136,6 +152,19 @@ fn looks_like_plain_text(q: &str) -> bool {
         return false;
     }
     if battery::is_battery_keyword(&lower) {
+        return false;
+    }
+    // Quickwin commands that are pure letters (no digits to trigger math).
+    if lower.starts_with("dice")
+        || lower.starts_with("coin")
+        || lower.starts_with("roll ")
+        || lower.starts_with("random")
+        || lower.starts_with("uuid")
+        || lower.starts_with("password")
+        || lower.starts_with("wc ")
+        || lower.starts_with("slug ")
+        || lower.starts_with("case ")
+    {
         return false;
     }
 
