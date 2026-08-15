@@ -67,7 +67,10 @@ fn fmt_days_until(days: i64, date: &impl Datelike) -> (String, String) {
         -1 => ("Yesterday".into(), "Yesterday".into()),
         n => {
             let count = format!("{n} days");
-            (count.clone(), format!("{count}\n{}", weekday_name(date.weekday())))
+            (
+                count.clone(),
+                format!("{count}\n{}", weekday_name(date.weekday())),
+            )
         }
     }
 }
@@ -165,12 +168,7 @@ fn numeric_naive_date(s: &str) -> Option<NaiveDate> {
     // 2-digit-year variants before %Y: chrono `%Y` reads `05` as year 5 and
     // `11-03-05` as year 11, so `%y` must win for the same separator shape.
     for fmt in [
-        "%d-%m-%y",
-        "%Y-%m-%d",
-        "%d/%m/%y",
-        "%d/%m/%Y",
-        "%m/%d/%Y",
-        "%d-%m-%Y",
+        "%d-%m-%y", "%Y-%m-%d", "%d/%m/%y", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y",
     ] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
             return Some(d);
@@ -407,8 +405,9 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     }
 
     // what day is <date> / day on <date> / day <date> / on <date> → weekday.
-    static RE_DAY_LOOKUP: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^\s*(?:what\s+day(?:\s+is)?|day)\s+(?:on\s+)?(.+?)\s*$").unwrap());
+    static RE_DAY_LOOKUP: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*(?:what\s+day(?:\s+is)?|day)\s+(?:on\s+)?(.+?)\s*$").unwrap()
+    });
     static RE_ON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*on\s+(.+?)\s*$").unwrap());
     let day_query = RE_DAY_LOOKUP
         .captures(&lower)
@@ -416,7 +415,9 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         .and_then(|c| c.get(1))
         .map(|m| m.as_str());
     if let Some(rem) = day_query {
-        if let Some(date) = parse_text_date(rem, now.date_naive()).or_else(|| numeric_naive_date(rem)) {
+        if let Some(date) =
+            parse_text_date(rem, now.date_naive()).or_else(|| numeric_naive_date(rem))
+        {
             let wd = weekday_name(date.weekday());
             let shown = q.trim().to_string();
             return Some(card_result(
@@ -562,7 +563,7 @@ mod datetime_tests {
     #[test]
     fn relative_display_escalates_by_distance() {
         // 2026-08-15 is a Saturday.
-        let now = NaiveDate::from_ymd_opt(2026, 8, 15,).unwrap();
+        let now = NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
         let t = |day: u32, hour: u32| {
             NaiveDateTime::new(
                 NaiveDate::from_ymd_opt(2026, 8, day).unwrap(),
@@ -582,9 +583,18 @@ mod datetime_tests {
     #[test]
     fn days_until_uses_words_for_near_dates() {
         let d = |m: u32, day: u32| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
-        assert_eq!(fmt_days_until(0, &d(8, 15)), ("Today".into(), "Today".into()));
-        assert_eq!(fmt_days_until(1, &d(8, 16)), ("Tomorrow".into(), "Tomorrow".into()));
-        assert_eq!(fmt_days_until(-1, &d(8, 14)), ("Yesterday".into(), "Yesterday".into()));
+        assert_eq!(
+            fmt_days_until(0, &d(8, 15)),
+            ("Today".into(), "Today".into())
+        );
+        assert_eq!(
+            fmt_days_until(1, &d(8, 16)),
+            ("Tomorrow".into(), "Tomorrow".into())
+        );
+        assert_eq!(
+            fmt_days_until(-1, &d(8, 14)),
+            ("Yesterday".into(), "Yesterday".into())
+        );
         assert_eq!(
             fmt_days_until(5, &d(8, 20)),
             ("5 days".into(), "5 days\nThursday".into())
@@ -729,7 +739,7 @@ mod datetime_tests {
     fn age_and_date_diff_alternate_formats() {
         // dd/mm/yyyy, dd/mm/yy, dd-mm-yyyy, dd-mm-yy.
         for birth in ["11/03/2005", "11/03/05", "11-03-2005", "11-03-05"] {
-            let r = try_datetime(&format!("age {birth}")).expect(&format!("age {birth}"));
+            let r = try_datetime(&format!("age {birth}")).unwrap_or_else(|| panic!("age {birth}"));
             assert!(r.title.starts_with("21 years"), "{}: {}", birth, r.title);
         }
         let r = try_datetime("11/03/2005 to 20/03/2005").expect("diff slashes");

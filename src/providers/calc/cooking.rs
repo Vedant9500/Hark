@@ -27,14 +27,46 @@ struct Ingredient {
 /// Static density table. Values are the common kitchen figures (grams per
 /// US cup) for each ingredient.
 static INGREDIENTS: &[Ingredient] = &[
-    Ingredient { name: "flour", aliases: &["flour", "maida", "atta"], g_per_cup: 125.0 },
-    Ingredient { name: "sugar", aliases: &["sugar", "caster", "castor"], g_per_cup: 200.0 },
-    Ingredient { name: "butter", aliases: &["butter"], g_per_cup: 227.0 },
-    Ingredient { name: "rice", aliases: &["rice", "basmati", "jasmine", "arborio"], g_per_cup: 185.0 },
-    Ingredient { name: "oats", aliases: &["oats", "oatmeal", "rolled oats"], g_per_cup: 80.0 },
-    Ingredient { name: "honey", aliases: &["honey"], g_per_cup: 340.0 },
-    Ingredient { name: "milk", aliases: &["milk"], g_per_cup: 244.0 },
-    Ingredient { name: "oil", aliases: &["oil", "vegetable oil", "olive oil", "canola oil"], g_per_cup: 218.0 },
+    Ingredient {
+        name: "flour",
+        aliases: &["flour", "maida", "atta"],
+        g_per_cup: 125.0,
+    },
+    Ingredient {
+        name: "sugar",
+        aliases: &["sugar", "caster", "castor"],
+        g_per_cup: 200.0,
+    },
+    Ingredient {
+        name: "butter",
+        aliases: &["butter"],
+        g_per_cup: 227.0,
+    },
+    Ingredient {
+        name: "rice",
+        aliases: &["rice", "basmati", "jasmine", "arborio"],
+        g_per_cup: 185.0,
+    },
+    Ingredient {
+        name: "oats",
+        aliases: &["oats", "oatmeal", "rolled oats"],
+        g_per_cup: 80.0,
+    },
+    Ingredient {
+        name: "honey",
+        aliases: &["honey"],
+        g_per_cup: 340.0,
+    },
+    Ingredient {
+        name: "milk",
+        aliases: &["milk"],
+        g_per_cup: 244.0,
+    },
+    Ingredient {
+        name: "oil",
+        aliases: &["oil", "vegetable oil", "olive oil", "canola oil"],
+        g_per_cup: 218.0,
+    },
 ];
 
 fn find_ingredient(tail: &str) -> Option<&'static Ingredient> {
@@ -125,7 +157,11 @@ fn split_target(s: &str) -> (String, Option<String>) {
 /// Choose a pleasant default output unit: mass → g (or kg when big),
 /// volume → cups.
 fn default_mass_unit(g: f64) -> &'static str {
-    if g >= 1000.0 { "kg" } else { "g" }
+    if g >= 1000.0 {
+        "kg"
+    } else {
+        "g"
+    }
 }
 
 /// `100g flour in cups`, `2 cups sugar in g`, `1 stick butter`.
@@ -155,7 +191,13 @@ pub(crate) fn try_cooking(q: &str) -> Option<SearchResult> {
             _ => (mass, "g"),
         };
         let title = format!("{} {}", format_number(out), out_label);
-        let subtitle = format!("{} stick{} butter = {} · {} g/stick", format_number(qty), if qty == 1.0 { "" } else { "s" }, title, G_PER_BUTTER_STICK);
+        let subtitle = format!(
+            "{} stick{} butter = {} · {} g/stick",
+            format_number(qty),
+            if qty == 1.0 { "" } else { "s" },
+            title,
+            G_PER_BUTTER_STICK
+        );
         return Some(card_result(
             title.clone(),
             subtitle,
@@ -197,12 +239,21 @@ pub(crate) fn try_cooking(q: &str) -> Option<SearchResult> {
 
     let shown = q.trim().to_string();
     let title = format!("{} {}", format_number(out), out_label);
-    let from = format!("{} {} {}", format_number(qty), unit_label(&unit_raw), ing.name);
+    let from = format!(
+        "{} {} {}",
+        format_number(qty),
+        unit_label(&unit_raw),
+        ing.name
+    );
     let subtitle = format!("{from} → {title} · {:.3} g/ml", density);
     Some(card_result(
         title.clone(),
         subtitle,
-        format!("{shown} = {title} ({} {}/cup)", ing.name, format_number(ing.g_per_cup)),
+        format!(
+            "{shown} = {title} ({} {}/cup)",
+            ing.name,
+            format_number(ing.g_per_cup)
+        ),
         shown,
         "cooking",
         title,
@@ -245,9 +296,8 @@ fn scale_prefix(s: &str) -> Option<(f64, &str)> {
         }
         return None;
     }
-    static RE_SERVINGS: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^(\d+)\s+servings?\s+(?:to|for)\s+(\d+)\s+(.+)$").unwrap()
-    });
+    static RE_SERVINGS: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^(\d+)\s+servings?\s+(?:to|for)\s+(\d+)\s+(.+)$").unwrap());
     if let Some(c) = RE_SERVINGS.captures(s) {
         let from: f64 = c.get(1)?.as_str().parse().ok()?;
         let to: f64 = c.get(2)?.as_str().parse().ok()?;
@@ -272,7 +322,12 @@ pub(crate) fn try_recipe_scale(q: &str) -> Option<SearchResult> {
 
     let scaled = qty * factor;
     let shown = q.trim().to_string();
-    let title = format!("{} {} {}", format_number(scaled), unit_label(&unit_raw), ing.name);
+    let title = format!(
+        "{} {} {}",
+        format_number(scaled),
+        unit_label(&unit_raw),
+        ing.name
+    );
 
     // Bonus mass note when density is known and the unit is volume.
     let mass_note = vol_ml(&unit_raw).map(|ml| {
@@ -324,7 +379,11 @@ pub(crate) fn try_oven(q: &str) -> Option<SearchResult> {
         "f" => (v - 32.0) * 5.0 / 9.0,
         _ => return None,
     };
-    let out_c = if fan_to_conv { v_c + FAN_OFFSET_C } else { v_c - FAN_OFFSET_C };
+    let out_c = if fan_to_conv {
+        v_c + FAN_OFFSET_C
+    } else {
+        v_c - FAN_OFFSET_C
+    };
     let out = match unit.as_str() {
         "c" => out_c,
         _ => out_c * 9.0 / 5.0 + 32.0,
@@ -332,8 +391,16 @@ pub(crate) fn try_oven(q: &str) -> Option<SearchResult> {
 
     let shown = q.trim().to_string();
     let title = format!("{} {}", format_number(out), unit);
-    let verb = if fan_to_conv { "fan → conventional" } else { "conventional → fan" };
-    let subtitle = format!("{verb} · {}°{}", format_number(FAN_OFFSET_C), if unit == "f" { "F" } else { "C" });
+    let verb = if fan_to_conv {
+        "fan → conventional"
+    } else {
+        "conventional → fan"
+    };
+    let subtitle = format!(
+        "{verb} · {}°{}",
+        format_number(FAN_OFFSET_C),
+        if unit == "f" { "F" } else { "C" }
+    );
     let badge = match target {
         "fan" | "convection" | "convect" => "fan",
         _ => "conventional",

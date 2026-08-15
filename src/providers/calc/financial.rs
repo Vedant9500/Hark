@@ -34,7 +34,7 @@ fn fmt_pct(v: f64) -> String {
 fn interest(q: &str) -> Option<SearchResult> {
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
-            r"(?i)^interest\s+({AMT})\s+at\s+(\d+(?:\.\d+)?)\s*%\s*(?:compounded?\s+)?(?:for|over)\s+(\d+(?:\.\d+)?)\s+(years?|yrs?|y|months?|mos?|mo)(?:\s+compounded?\s+(?:annually|yearly))?\s*$"
+            r"(?i)^interest\s+({AMT})\s+at\s+(\d+(?:\.\d+)?)\s*%\s*(?:compounded?\s+)?(?:for|over)\s+(\d+(?:\.\d+)?)\s+(years?|yrs?|y|months?|mos?|mo)(?:\s+compounded?\s*(?:annually|yearly)?)?\s*$"
         ))
         .unwrap()
     });
@@ -55,7 +55,11 @@ fn interest(q: &str) -> Option<SearchResult> {
     };
     let interest_amt = total - p;
     let shown = q.trim();
-    let kind: &'static str = if compound { "compound interest" } else { "interest" };
+    let kind: &'static str = if compound {
+        "compound interest"
+    } else {
+        "interest"
+    };
     let copy = format!(
         "Total: {}\nPrincipal: {}\n{} earned: {} @ {}% for {} {}",
         format_number(total),
@@ -68,7 +72,12 @@ fn interest(q: &str) -> Option<SearchResult> {
     );
     Some(card_result(
         format_number(total),
-        format!("Principal {} · {} {} earned", format_number(p), format_number(interest_amt), kind),
+        format!(
+            "Principal {} · {} {} earned",
+            format_number(p),
+            format_number(interest_amt),
+            kind
+        ),
         copy,
         shown.into(),
         kind,
@@ -93,7 +102,12 @@ fn discount(q: &str) -> Option<SearchResult> {
     Some(card_result(
         format_number(total),
         format!("Save {}", format_number(saved)),
-        format!("{} ({} off {})", format_number(total), format_number(pct), format_number(base)),
+        format!(
+            "{} ({} off {})",
+            format_number(total),
+            format_number(pct),
+            format_number(base)
+        ),
         shown.into(),
         "discount",
         format_number(total),
@@ -115,7 +129,12 @@ fn split(q: &str) -> Option<SearchResult> {
     Some(card_result(
         format!("{} each", format_number(per)),
         format!("{} ÷ {}", format_number(total), n),
-        format!("{} ÷ {} = {} per person", format_number(total), n, format_number(per)),
+        format!(
+            "{} ÷ {} = {} per person",
+            format_number(total),
+            n,
+            format_number(per)
+        ),
         shown.into(),
         "split",
         format!("{} each", format_number(per)),
@@ -145,7 +164,13 @@ fn gst(q: &str) -> Option<SearchResult> {
     Some(card_result(
         inr(total),
         format!("GST {} · base {}", inr(gst_amt), inr(base)),
-        format!("Base: {}\nGST {}%: {}\nTotal: {}", inr(base), pct, inr(gst_amt), inr(total)),
+        format!(
+            "Base: {}\nGST {}%: {}\nTotal: {}",
+            inr(base),
+            pct,
+            inr(gst_amt),
+            inr(total)
+        ),
         shown.into(),
         "gst",
         inr(total),
@@ -179,7 +204,12 @@ fn emi(q: &str) -> Option<SearchResult> {
     let shown = q.trim();
     Some(card_result(
         format!("{}/mo", inr(emi_amt)),
-        format!("P {} @ {}%/yr · {} months", inr(p), annual_rate, months as i64),
+        format!(
+            "P {} @ {}%/yr · {} months",
+            inr(p),
+            annual_rate,
+            months as i64
+        ),
         format!(
             "EMI: {}/mo\nPrincipal: {}\nTenure: {} months\nTotal payable: {}\nInterest: {}",
             inr(emi_amt),
@@ -214,8 +244,19 @@ fn cagr(q: &str) -> Option<SearchResult> {
     let shown = q.trim();
     Some(card_result(
         pct.clone(),
-        format!("{} → {} over {} years", format_number(start), format_number(end), t),
-        format!("CAGR {} ({} → {} over {} years)", pct, format_number(start), format_number(end), t),
+        format!(
+            "{} → {} over {} years",
+            format_number(start),
+            format_number(end),
+            t
+        ),
+        format!(
+            "CAGR {} ({} → {} over {} years)",
+            pct,
+            format_number(start),
+            format_number(end),
+            t
+        ),
         shown.into(),
         "cagr",
         pct,
@@ -224,8 +265,9 @@ fn cagr(q: &str) -> Option<SearchResult> {
 }
 
 fn rule72(q: &str) -> Option<SearchResult> {
-    static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^(?:(?:rule of )?72)\s+at\s+(\d+(?:\.\d+)?)\s*%\s*$").unwrap());
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(?:(?:rule of )?72)\s+at\s+(\d+(?:\.\d+)?)\s*%\s*$").unwrap()
+    });
     let c = RE.captures(q)?;
     let rate: f64 = c.get(1)?.as_str().parse().ok()?;
     if rate <= 0.0 {
@@ -245,9 +287,8 @@ fn rule72(q: &str) -> Option<SearchResult> {
 }
 
 fn pct_change(q: &str) -> Option<SearchResult> {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(&format!(r"(?i)^({AMT})\s+to\s+({AMT})\s*$")).unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(&format!(r"(?i)^({AMT})\s+to\s+({AMT})\s*$")).unwrap());
     let c = RE.captures(q)?;
     let from = amt(c.get(1)?.as_str())?;
     let to = amt(c.get(2)?.as_str())?;
@@ -284,8 +325,18 @@ fn hourly_to_annual(q: &str) -> Option<SearchResult> {
     let shown = q.trim();
     Some(card_result(
         format!("{}/yr", format_number(annual)),
-        format!("{} × {}h = {}/yr", format_number(hourly), WORK_HOURS_PER_YEAR, format_number(annual)),
-        format!("{} per hour × {} hours = {} per year", format_number(hourly), WORK_HOURS_PER_YEAR, format_number(annual)),
+        format!(
+            "{} × {}h = {}/yr",
+            format_number(hourly),
+            WORK_HOURS_PER_YEAR,
+            format_number(annual)
+        ),
+        format!(
+            "{} per hour × {} hours = {} per year",
+            format_number(hourly),
+            WORK_HOURS_PER_YEAR,
+            format_number(annual)
+        ),
         shown.into(),
         "rate",
         format!("{}/yr", format_number(annual)),
@@ -306,8 +357,18 @@ fn annual_to_hourly(q: &str) -> Option<SearchResult> {
     let shown = q.trim();
     Some(card_result(
         format!("{}/hr", format_number(hourly)),
-        format!("{} ÷ {}h = {}/hr", format_number(annual), WORK_HOURS_PER_YEAR, format_number(hourly)),
-        format!("{} per year ÷ {} hours = {} per hour", format_number(annual), WORK_HOURS_PER_YEAR, format_number(hourly)),
+        format!(
+            "{} ÷ {}h = {}/hr",
+            format_number(annual),
+            WORK_HOURS_PER_YEAR,
+            format_number(hourly)
+        ),
+        format!(
+            "{} per year ÷ {} hours = {} per hour",
+            format_number(annual),
+            WORK_HOURS_PER_YEAR,
+            format_number(hourly)
+        ),
         shown.into(),
         "annual",
         format!("{}/hr", format_number(hourly)),
@@ -370,7 +431,8 @@ mod tests {
         // Compound (annual) beats simple.
         let r = try_financial("interest 1000 at 5% compounded for 3 years").expect("compound");
         assert_eq!(r.title, "1157.63");
-        let r = try_financial("interest 1000 at 5% for 3 years compounded annually").expect("compound");
+        let r =
+            try_financial("interest 1000 at 5% for 3 years compounded annually").expect("compound");
         assert_eq!(r.title, "1157.63");
     }
 

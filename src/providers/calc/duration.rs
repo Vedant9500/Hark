@@ -14,9 +14,8 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
 
     // `N% of <multi-token duration>` → scaled duration (`50% of 1h 30min` → 45min).
     // Single-token (`50% of 2h`) stays in unitmath's percentage card.
-    static RE_PCT_OF: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s+(.+?)\s*$").unwrap()
-    });
+    static RE_PCT_OF: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s+(.+?)\s*$").unwrap());
     if let Some(c) = RE_PCT_OF.captures(&lower) {
         let rest = c.get(2)?.as_str();
         let (secs, count, any_non_m_unit, _end) = parse_duration_tokens(rest)?;
@@ -24,7 +23,11 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
             let pct: f64 = c.get(1)?.as_str().parse().ok()?;
             let out = secs * pct / 100.0;
             let formatted = format_duration(out.abs());
-            let title = if out < 0.0 { format!("-{formatted}") } else { formatted };
+            let title = if out < 0.0 {
+                format!("-{formatted}")
+            } else {
+                formatted
+            };
             let shown = format!("{}% of {rest}", c.get(1)?.as_str());
             return Some(card_result(
                 title.clone(),
@@ -68,7 +71,11 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         if s == 0.0 {
             return None;
         }
-        total_secs = if divide { total_secs / s } else { total_secs * s };
+        total_secs = if divide {
+            total_secs / s
+        } else {
+            total_secs * s
+        };
     }
 
     let formatted = format_duration(total_secs.abs());

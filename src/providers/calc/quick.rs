@@ -88,10 +88,8 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
     });
     // `1010 bin to dec` — explicit source base.
     static RE_SRC_BASE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^([0-9a-f]+)\s+(hex|bin|oct|dec)\s+(?:to|in|as)\s+(hex|bin|oct|dec)\s*$",
-        )
-        .unwrap()
+        Regex::new(r"(?i)^([0-9a-f]+)\s+(hex|bin|oct|dec)\s+(?:to|in|as)\s+(hex|bin|oct|dec)\s*$")
+            .unwrap()
     });
 
     if let Some(c) = RE_SRC_BASE.captures(&lower) {
@@ -102,7 +100,12 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
             return None;
         }
         let v = u64::from_str_radix(digits, src_base).ok()?;
-        return Some(base_card(v, q.trim(), dst_base, base_badge(c.get(3)?.as_str())));
+        return Some(base_card(
+            v,
+            q.trim(),
+            dst_base,
+            base_badge(c.get(3)?.as_str()),
+        ));
     }
 
     if let Some(c) = RE_DIRECT.captures(&lower) {
@@ -111,7 +114,12 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
         if src_base == dst_base {
             return None;
         }
-        return Some(base_card(v, q.trim(), dst_base, base_badge(c.get(2)?.as_str())));
+        return Some(base_card(
+            v,
+            q.trim(),
+            dst_base,
+            base_badge(c.get(2)?.as_str()),
+        ));
     }
     None
 }
@@ -125,9 +133,19 @@ fn to_roman(mut n: u64) -> Option<String> {
         return None;
     }
     const M: [(u64, &str); 13] = [
-        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
-        (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"),
-        (5, "V"), (4, "IV"), (1, "I"),
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
     ];
     let mut out = String::new();
     for (v, s) in M {
@@ -145,8 +163,14 @@ fn from_roman(s: &str) -> Option<u64> {
     let mut prev = 0u64;
     for &c in chars.iter().rev() {
         let v = match c {
-            'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50,
-            'C' => 100, 'D' => 500, 'M' => 1000, _ => return None,
+            'I' => 1,
+            'V' => 5,
+            'X' => 10,
+            'L' => 50,
+            'C' => 100,
+            'D' => 500,
+            'M' => 1000,
+            _ => return None,
         };
         if v < prev {
             total = total.checked_sub(v)?;
@@ -155,13 +179,18 @@ fn from_roman(s: &str) -> Option<u64> {
             prev = v;
         }
     }
-    if total == 0 { None } else { Some(total) }
+    if total == 0 {
+        None
+    } else {
+        Some(total)
+    }
 }
 
 fn try_roman(q: &str) -> Option<SearchResult> {
     let lower = q.trim().to_ascii_lowercase();
     static RE_FWD: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^roman\s+(\d{1,4})\s*$").unwrap());
-    static RE_REV: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^roman\s+([ivxlcdm]+)\s*$").unwrap());
+    static RE_REV: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^roman\s+([ivxlcdm]+)\s*$").unwrap());
     let shown = q.trim().to_string();
 
     if let Some(c) = RE_FWD.captures(&lower) {
@@ -197,9 +226,20 @@ fn try_roman(q: &str) -> Option<SearchResult> {
 // BMI
 // ---------------------------------------------------------------------------
 
+/// Inches only go 0–11. An over-range value like `5'55"` is a dropped decimal
+/// (5'5.5"), not 5 ft 55 in — shift the decimal point left until it fits.
+fn normalize_inches(mut v: f64) -> f64 {
+    let mut shifts = 0;
+    while v >= 12.0 && shifts < 4 {
+        v /= 10.0;
+        shifts += 1;
+    }
+    v
+}
+
 /// Parse a height spec to meters. Accepts metric (`180cm`, `1.8m`) and
 /// imperial feet+inches (`5ft`, `5 feet 5 inches`, `5'5"`, `5' 5"`, `5'`,
-/// `5ft 5in`). A bare prime `'` means feet, `"` means inches.
+/// `5ft 5in`, `5'55"`). A bare prime `'` means feet, `"` means inches.
 fn parse_height(s: &str) -> Option<f64> {
     static RE_FTIN: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -210,7 +250,7 @@ fn parse_height(s: &str) -> Option<f64> {
     if let Some(c) = RE_FTIN.captures(s.trim()) {
         let ft: f64 = c.get(1)?.as_str().parse().ok()?;
         let inches: f64 = match c.get(2) {
-            Some(m) => m.as_str().parse().ok()?,
+            Some(m) => normalize_inches(m.as_str().parse().ok()?),
             None => 0.0,
         };
         return Some(ft * 0.3048 + inches * 0.0254);
@@ -231,10 +271,8 @@ fn parse_height(s: &str) -> Option<f64> {
 
 fn try_bmi(q: &str) -> Option<SearchResult> {
     static RE_BMI: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)^bmi\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(kg|kilograms?|kgs|lb|lbs|pounds?)?\s*$",
-        )
-        .unwrap()
+        Regex::new(r"(?i)^bmi\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(kg|kilograms?|kgs|lb|lbs|pounds?)?\s*$")
+            .unwrap()
     });
     let c = RE_BMI.captures(q)?;
     let h_m = parse_height(c.get(1)?.as_str())?;
@@ -264,7 +302,12 @@ fn try_bmi(q: &str) -> Option<SearchResult> {
     };
     Some(card_result(
         title.clone(),
-        format!("{} cm · {} kg · {}", format_number(h_m * 100.0), format_number(kg), cat),
+        format!(
+            "{} cm · {} kg · {}",
+            format_number(h_m * 100.0),
+            format_number(kg),
+            cat
+        ),
         format!("BMI {} kg/m² → {}", title, cat),
         shown,
         "bmi",
@@ -299,12 +342,14 @@ fn try_height(q: &str) -> Option<SearchResult> {
         "cm" | "centimeter" | "centimeters" | "centimetre" | "centimetres" => {
             (format!("{} cm", format_number(m * 100.0)), "cm")
         }
-        "m" | "meter" | "meters" | "metre" | "metres" => {
-            (format!("{} m", format_number(m)), "m")
-        }
+        "m" | "meter" | "meters" | "metre" | "metres" => (format!("{} m", format_number(m)), "m"),
         "ft" | "feet" | "foot" => {
             let r_in = inch.round();
-            let (f2, i2) = if r_in >= 12.0 { (ft + 1.0, 0.0) } else { (ft, r_in) };
+            let (f2, i2) = if r_in >= 12.0 {
+                (ft + 1.0, 0.0)
+            } else {
+                (ft, r_in)
+            };
             if i2 == 0.0 {
                 (format!("{} ft", format_number(f2)), "ft")
             } else {
@@ -354,15 +399,25 @@ fn try_steps(q: &str) -> Option<SearchResult> {
         let n: f64 = c.get(1)?.as_str().parse().ok()?;
         let meters = n * STEP_STRIDE_M;
         let (out, label) = match c.get(2)?.as_str() {
-            "km" | "kilometer" | "kilometers" | "kilometre" | "kilometres" => (meters / 1000.0, "km"),
+            "km" | "kilometer" | "kilometers" | "kilometre" | "kilometres" => {
+                (meters / 1000.0, "km")
+            }
             "mi" | "mile" | "miles" => (meters / 1609.344, "mi"),
             _ => (meters, "m"),
         };
         let title = format!("{} {}", format_number(out), label);
-        let copy = format!("{n} steps × {} m stride = {}", format_number(STEP_STRIDE_M), title);
+        let copy = format!(
+            "{n} steps × {} m stride = {}",
+            format_number(STEP_STRIDE_M),
+            title
+        );
         return Some(card_result(
             title.clone(),
-            format!("{} steps × {} m", format_number(n), format_number(STEP_STRIDE_M)),
+            format!(
+                "{} steps × {} m",
+                format_number(n),
+                format_number(STEP_STRIDE_M)
+            ),
             copy,
             shown,
             "steps",
@@ -382,7 +437,11 @@ fn try_steps(q: &str) -> Option<SearchResult> {
         let title = format!("{} steps", format_number(steps));
         return Some(card_result(
             title.clone(),
-            format!("{} ÷ {} m stride", format_number(meters), format_number(STEP_STRIDE_M)),
+            format!(
+                "{} ÷ {} m stride",
+                format_number(meters),
+                format_number(STEP_STRIDE_M)
+            ),
             format!("{} m = {}", format_number(meters), title),
             shown,
             "steps",
@@ -400,12 +459,14 @@ fn try_steps(q: &str) -> Option<SearchResult> {
 /// Split `55GB`, `5.5 GB`, `150mbps`, `150MB/s` → (number, unit-token).
 /// Spaces removed; `/s` or `/sec` stays part of the speed unit token.
 fn split_num_unit(s: &str) -> Option<(f64, String)> {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"^(\d+(?:\.\d+)?)([a-zA-Z]+(?:/[a-zA-Z]+)?)$").unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^(\d+(?:\.\d+)?)([a-zA-Z]+(?:/[a-zA-Z]+)?)$").unwrap());
     let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     let c = RE.captures(&t)?;
-    Some((c.get(1)?.as_str().parse().ok()?, c.get(2)?.as_str().to_string()))
+    Some((
+        c.get(1)?.as_str().parse().ok()?,
+        c.get(2)?.as_str().to_string(),
+    ))
 }
 
 /// Size token → bytes. Lowercase `kb`/`mb`/`gb` are treated as *bytes* (sizes
@@ -438,18 +499,21 @@ fn parse_size_bytes(s: &str) -> Option<f64> {
 /// bytes; lowercase `b` (`mbps`, `mb/s`, `Mb`) means bits (÷8).
 fn parse_speed_bps(s: &str) -> Option<f64> {
     let (v, u) = split_num_unit(s)?;
-    let is_byte = u.contains("Bps") || u.contains("B/s") || u.contains("B/sec")
-        || u.contains("byte") || u.ends_with('B');
+    let is_byte = u.contains("Bps")
+        || u.contains("B/s")
+        || u.contains("B/sec")
+        || u.contains("byte")
+        || u.ends_with('B');
     let mag = match u.to_ascii_lowercase().as_str() {
         "b" | "bps" | "b/s" | "b/sec" | "bit" | "bits" | "bit/s" | "bits/s" => 1.0,
-        "kb" | "kbps" | "kb/s" | "kbit" | "kbits" | "kilobit" | "kilobits"
-        | "kilobit/s" | "kilobits/s" => 1e3,
-        "mb" | "mbps" | "mb/s" | "mbit" | "mbits" | "megabit" | "megabits"
-        | "megabit/s" | "megabits/s" => 1e6,
-        "gb" | "gbps" | "gb/s" | "gbit" | "gbits" | "gigabit" | "gigabits"
-        | "gigabit/s" | "gigabits/s" => 1e9,
-        "tb" | "tbps" | "tb/s" | "tbit" | "tbits" | "terabit" | "terabits"
-        | "terabit/s" | "terabits/s" => 1e12,
+        "kb" | "kbps" | "kb/s" | "kbit" | "kbits" | "kilobit" | "kilobits" | "kilobit/s"
+        | "kilobits/s" => 1e3,
+        "mb" | "mbps" | "mb/s" | "mbit" | "mbits" | "megabit" | "megabits" | "megabit/s"
+        | "megabits/s" => 1e6,
+        "gb" | "gbps" | "gb/s" | "gbit" | "gbits" | "gigabit" | "gigabits" | "gigabit/s"
+        | "gigabits/s" => 1e9,
+        "tb" | "tbps" | "tb/s" | "tbit" | "tbits" | "terabit" | "terabits" | "terabit/s"
+        | "terabits/s" => 1e12,
         "kib" | "kib/s" | "kibps" => 1024.0,
         "mib" | "mib/s" | "mibps" => 1024f64 * 1024.0,
         "gib" | "gib/s" | "gibps" => 1024f64 * 1024.0 * 1024.0,
@@ -530,14 +594,13 @@ fn try_speed(q: &str) -> Option<SearchResult> {
     let b = c.get(2)?.as_str();
     // `for` puts speed first (`150MB/s for 55GB`); try both orders so
     // `55GB for 150MB/s` works too.
-    let (size_token, speed_token, bytes, speed) =
-        match (parse_size_bytes(a), parse_speed_bps(b)) {
-            (Some(sz), Some(sp)) => (a.to_string(), b.to_string(), sz, sp),
-            _ => match (parse_speed_bps(a), parse_size_bytes(b)) {
-                (Some(sp), Some(sz)) => (b.to_string(), a.to_string(), sz, sp),
-                _ => return None,
-            },
-        };
+    let (size_token, speed_token, bytes, speed) = match (parse_size_bytes(a), parse_speed_bps(b)) {
+        (Some(sz), Some(sp)) => (a.to_string(), b.to_string(), sz, sp),
+        _ => match (parse_speed_bps(a), parse_size_bytes(b)) {
+            (Some(sp), Some(sz)) => (b.to_string(), a.to_string(), sz, sp),
+            _ => return None,
+        },
+    };
     if bytes <= 0.0 || speed <= 0.0 {
         return None;
     }
@@ -552,7 +615,10 @@ fn try_speed(q: &str) -> Option<SearchResult> {
             speed_token,
             fmt_speed_bps(speed)
         ),
-        format!("{size_token} at {speed_token} → {dur} · {}", fmt_size_bytes(bytes)),
+        format!(
+            "{size_token} at {speed_token} → {dur} · {}",
+            fmt_size_bytes(bytes)
+        ),
         size_token,
         "download",
         dur,
@@ -752,7 +818,11 @@ fn try_password(q: &str) -> Option<SearchResult> {
         .unwrap_or(16);
     len = len.clamp(4, 128);
     let s: String = (0..len)
-        .map(|_| PASSWORD_CHARS[(rng_f64() * PASSWORD_CHARS.len() as f64) as usize % PASSWORD_CHARS.len()] as char)
+        .map(|_| {
+            PASSWORD_CHARS
+                [(rng_f64() * PASSWORD_CHARS.len() as f64) as usize % PASSWORD_CHARS.len()]
+                as char
+        })
         .collect();
     Some(card_result(
         s.clone(),
@@ -773,8 +843,10 @@ fn try_text(q: &str) -> Option<SearchResult> {
     let lower = q.trim().to_ascii_lowercase();
     static RE_WC: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^wc\s+(.+)$").unwrap());
     static RE_SLUG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^slug\s+(.+)$").unwrap());
-    static RE_CASE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^case\s+(snake|kebab|screaming|pascal|camel|upper|lower|title)\s+(.+)$").unwrap());
+    static RE_CASE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^case\s+(snake|kebab|screaming|pascal|camel|upper|lower|title)\s+(.+)$")
+            .unwrap()
+    });
     let shown = q.trim().to_string();
 
     if let Some(c) = RE_WC.captures(&lower) {
@@ -798,7 +870,13 @@ fn try_text(q: &str) -> Option<SearchResult> {
         let slug: String = text
             .to_ascii_lowercase()
             .chars()
-            .map(|ch| if ch.is_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+            .map(|ch| {
+                if ch.is_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
@@ -848,7 +926,11 @@ fn try_text(q: &str) -> Option<SearchResult> {
             }
             "upper" => words.join(" ").to_uppercase(),
             "lower" => words.join(" ").to_lowercase(),
-            "title" => words.iter().map(|w| cap(&w.to_ascii_lowercase())).collect::<Vec<_>>().join(" "),
+            "title" => words
+                .iter()
+                .map(|w| cap(&w.to_ascii_lowercase()))
+                .collect::<Vec<_>>()
+                .join(" "),
             _ => return None,
         };
         return Some(card_result(
@@ -954,6 +1036,9 @@ mod tests {
         assert_eq!(r.title, "24.6");
         let r = try_quickwin("bmi 5ft 6in 150 lb").expect("mixed");
         assert_eq!(r.title, "24.2");
+        // Over-range inches: 5'55" = 5'5.5".
+        let r = try_quickwin("bmi 5'55\" 55kg").expect("over-range");
+        assert_eq!(r.title, "19.9");
     }
 
     #[test]
@@ -970,6 +1055,13 @@ mod tests {
         assert_eq!(r.title, "65 in");
         let r = try_quickwin("180cm to ft").expect("cm to ft");
         assert_eq!(r.title, "5 ft 11 in");
+        // Over-range inches are a dropped decimal, not 5 ft 55 in.
+        let r = try_quickwin("5'55\" to cm").expect("over-range");
+        assert_eq!(r.title, "166.37 cm");
+        let r = try_quickwin("5'55\" to ft").expect("over-range ft");
+        assert_eq!(r.title, "5 ft 6 in");
+        let r = try_quickwin("6'15\" to cm").expect("over-range 15");
+        assert_eq!(r.title, "186.69 cm");
     }
 
     #[test]

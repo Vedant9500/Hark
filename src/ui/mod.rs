@@ -1233,6 +1233,7 @@ fn complete_path_query(query: &str, path: &std::path::Path) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tab_complete_tests {
     use super::{complete_path_query, completion_text_for, is_path_shaped_query};
     use crate::providers::{Action, ResultKind, SearchResult};

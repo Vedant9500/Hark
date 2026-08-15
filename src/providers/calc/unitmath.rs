@@ -38,13 +38,13 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
         // Pure-number expression → plain math owns it.
         return None;
     }
-    // Bare unit values without arithmetic ("5km", "100m") are P2; only a bare
-    // fraction quantity ("1/2 cup") is shown here.
+    // Bare unit values ("5km", "500g", "2kg") render their base value; a bare
+    // fraction quantity ("1/2 cup") shows in its original unit.
     if !had_op && !had_fraction {
-        return None;
+        return bare_value_card(&qty, q.trim());
     }
 
-    let formatted = if !had_op && had_fraction {
+    let formatted = if had_fraction {
         // Show a bare fraction in its original unit ("0.5 cup").
         let v = qty.base / unit_factor(qty.unit.as_deref()?)?;
         format!("{} {}", format_number(v), qty.unit.as_deref()?)
@@ -63,11 +63,45 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
     ))
 }
 
+/// Bare unit value ("5km", "500g", "2kg") → base value on the card.
+/// Single-letter `m`/`b`/`t` stay unresolved here: they are ambiguous
+/// (meters vs minutes/million, bytes vs billion, tonne vs trillion).
+fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
+    let unit = qty.unit.as_deref()?;
+    if matches!(unit, "m" | "b" | "t") {
+        return None;
+    }
+    let factor = unit_factor(unit)?;
+    let orig = qty.base / factor;
+    let base_unit = match qty.cat {
+        Some("length") => "m",
+        Some("mass") => "g",
+        Some("volume") => "l",
+        Some("data") => "b",
+        Some("time") => "s",
+        _ => return None,
+    };
+    let title = match qty.cat {
+        Some("time") => super::duration::format_duration(qty.base),
+        Some("data") => smart_prefix(qty.base, "data"),
+        _ => format!("{} {base_unit}", format_number(qty.base)),
+    };
+    let subtitle = format!("{} {} = {title}", format_number(orig), unit);
+    Some(card_result(
+        title.clone(),
+        subtitle.clone(),
+        subtitle,
+        shown.to_string(),
+        base_unit,
+        title,
+        "base",
+    ))
+}
+
 /// `N% of QTY` → QTY × N/100 (unit-aware; pure-number targets stay in math).
 fn try_pct_units(q: &str) -> Option<SearchResult> {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s*(.+?)\s*$").unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s*(.+?)\s*$").unwrap());
     let c = RE.captures(q)?;
     let pct: f64 = c.get(1)?.as_str().parse().ok()?;
     let (qty, _, unitful, _) = parse_expr(c.get(2)?.as_str())?;
@@ -149,7 +183,11 @@ struct P<'a> {
 
 impl<'a> P<'a> {
     fn new(s: &'a str) -> Self {
-        P { _b: s.as_bytes(), chars: s.chars().collect(), i: 0 }
+        P {
+            _b: s.as_bytes(),
+            chars: s.chars().collect(),
+            i: 0,
+        }
     }
     fn skip_ws(&mut self) {
         while matches!(self.peek(), Some(c) if c.is_whitespace()) {
@@ -270,11 +308,15 @@ fn parse_term(p: &mut P) -> Option<(Qty, bool, bool)> {
     }
 
     let mut den = String::new();
-    if !u.is_empty() && p.peek() == Some('/') && matches!(p.peek2(), Some(c) if c.is_ascii_alphabetic()) {
+    if !u.is_empty()
+        && p.peek() == Some('/')
+        && matches!(p.peek2(), Some(c) if c.is_ascii_alphabetic())
+    {
         p.i += 1;
         loop {
             match p.peek() {
-                Some(c) if c.is_ascii_alphabetic() || matches!(c, 'µ' | 'μ' | '°' | '²' | '³') => {
+                Some(c) if c.is_ascii_alphabetic() || matches!(c, 'µ' | 'μ' | '°' | '²' | '³') =>
+                {
                     den.push(c);
                     p.i += 1;
                 }
@@ -296,7 +338,12 @@ fn parse_term(p: &mut P) -> Option<(Qty, bool, bool)> {
 
     if u.is_empty() {
         return Some((
-            Qty { base: value, cat: None, unit: None, display: None },
+            Qty {
+                base: value,
+                cat: None,
+                unit: None,
+                display: None,
+            },
             false,
             had_fraction,
         ));
@@ -323,7 +370,12 @@ fn parse_term(p: &mut P) -> Option<(Qty, bool, bool)> {
 
     let (factor, cat) = to_base(&normalize_unit(&u))?;
     Some((
-        Qty { base: value * factor, cat: Some(cat), unit: Some(u), display: None },
+        Qty {
+            base: value * factor,
+            cat: Some(cat),
+            unit: Some(u),
+            display: None,
+        },
         true,
         had_fraction,
     ))
@@ -333,17 +385,36 @@ fn add_sub(a: Qty, b: Qty, op: char) -> Option<Qty> {
     if a.cat.is_none() || b.cat.is_none() || a.cat != b.cat {
         return None;
     }
-    let base = if op == '+' { a.base + b.base } else { a.base - b.base };
-    Some(Qty { base, cat: a.cat, unit: None, display: None })
+    let base = if op == '+' {
+        a.base + b.base
+    } else {
+        a.base - b.base
+    };
+    Some(Qty {
+        base,
+        cat: a.cat,
+        unit: None,
+        display: None,
+    })
 }
 
 fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
     match op {
         '*' => {
             if a.cat.is_none() {
-                Some(Qty { base: a.base * b.base, cat: b.cat, unit: b.unit, display: None })
+                Some(Qty {
+                    base: a.base * b.base,
+                    cat: b.cat,
+                    unit: b.unit,
+                    display: None,
+                })
             } else if b.cat.is_none() {
-                Some(Qty { base: a.base * b.base, cat: a.cat, unit: a.unit, display: None })
+                Some(Qty {
+                    base: a.base * b.base,
+                    cat: a.cat,
+                    unit: a.unit,
+                    display: None,
+                })
             } else {
                 None
             }
@@ -353,7 +424,12 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
                 if b.base == 0.0 {
                     return None;
                 }
-                Some(Qty { base: a.base / b.base, cat: a.cat, unit: a.unit, display: None })
+                Some(Qty {
+                    base: a.base / b.base,
+                    cat: a.cat,
+                    unit: a.unit,
+                    display: None,
+                })
             } else if a.cat.is_none() {
                 None
             } else if a.cat == Some("length") && b.cat == Some("time") {
@@ -377,7 +453,12 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
                 if b.base == 0.0 {
                     return None;
                 }
-                Some(Qty { base: a.base / b.base, cat: None, unit: None, display: None })
+                Some(Qty {
+                    base: a.base / b.base,
+                    cat: None,
+                    unit: None,
+                    display: None,
+                })
             } else {
                 None
             }
@@ -396,10 +477,9 @@ fn display_qty(q: &Qty) -> String {
         Some(cat) => {
             if let Some(u) = &q.unit {
                 if let Some(slash) = u.find('/') {
-                    if let (Some(fn_), Some(fd)) = (
-                        unit_factor(&u[..slash]),
-                        unit_factor(&u[slash + 1..]),
-                    ) {
+                    if let (Some(fn_), Some(fd)) =
+                        (unit_factor(&u[..slash]), unit_factor(&u[slash + 1..]))
+                    {
                         return format!("{} {}", format_number(q.base / (fn_ / fd)), u);
                     }
                 }
@@ -490,14 +570,32 @@ mod tests {
     }
 
     #[test]
+    fn bare_unit_values() {
+        let r = try_unit_math("5km").expect("5km");
+        assert_eq!(r.title, "5000 m");
+        assert_eq!(r.conversion.as_ref().unwrap().right_badge, "base");
+        let r = try_unit_math("2kg").expect("2kg");
+        assert_eq!(r.title, "2000 g");
+        let r = try_unit_math("500g").expect("500g");
+        assert_eq!(r.title, "500 g");
+        let r = try_unit_math("100mb").expect("100mb");
+        assert_eq!(r.title, "100 mb");
+        let r = try_unit_math("5min").expect("5min");
+        assert_eq!(r.title, "5min");
+        let r = try_unit_math("15.5 cm").expect("decimal");
+        assert_eq!(r.title, "0.155 m");
+        // Ambiguous single-letter units stay unhandled here.
+        assert!(try_unit_math("100m").is_none());
+        assert!(try_unit_math("1b").is_none());
+        assert!(try_unit_math("2t").is_none());
+    }
+
+    #[test]
     fn does_not_steal() {
         // Pure math stays in math provider.
         assert!(try_unit_math("2+2").is_none());
         assert!(try_unit_math("5k + 2k").is_none());
         assert!(try_unit_math("1/2").is_none());
-        // Bare unit values (P2) stay unhandled here.
-        assert!(try_unit_math("5km").is_none());
-        assert!(try_unit_math("100m").is_none());
         // Multi-token time → duration provider.
         assert!(try_unit_math("2h + 30m").is_none());
         assert!(try_unit_math("10h 30min").is_none());

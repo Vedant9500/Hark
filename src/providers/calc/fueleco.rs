@@ -105,7 +105,10 @@ mod tests {
 
     #[test]
     fn kml_to_mpg() {
-        assert_eq!(try_fuel_economy("12 km/l to mpg").expect("kml→mpg").title, "28.2258 mpg");
+        assert_eq!(
+            try_fuel_economy("12 km/l to mpg").expect("kml→mpg").title,
+            "28.2258 mpg"
+        );
         let r = try_fuel_economy("12 km per litre to mpg").expect("word form");
         assert_eq!(r.title, "28.2258 mpg");
         assert_eq!(r.conversion.as_ref().unwrap().left_badge, "fuel economy");
@@ -114,16 +117,44 @@ mod tests {
 
     #[test]
     fn mpg_to_l100km() {
-        assert_eq!(try_fuel_economy("30 mpg to l/100km").expect("mpg→l100").title, "7.8405 l/100km");
-        assert_eq!(try_fuel_economy("30 mpg to l/100 km").expect("spaced").title, "7.8405 l/100km");
+        assert_eq!(
+            try_fuel_economy("30 mpg to l/100km")
+                .expect("mpg→l100")
+                .title,
+            "7.8405 l/100km"
+        );
+        assert_eq!(
+            try_fuel_economy("30 mpg to l/100 km")
+                .expect("spaced")
+                .title,
+            "7.8405 l/100km"
+        );
     }
 
     #[test]
     fn other_directions() {
-        assert_eq!(try_fuel_economy("30 mpg to km/l").expect("mpg→kml").title, "12.7543 km/l");
-        assert_eq!(try_fuel_economy("12 km/l to l/100km").expect("kml→l100").title, "8.3333 l/100km");
-        assert_eq!(try_fuel_economy("7.84 l/100km to mpg").expect("l100→mpg").title, "30.0019 mpg");
-        assert_eq!(try_fuel_economy("7.84 l/100km to km/l").expect("l100→kml").title, "12.7551 km/l");
+        assert_eq!(
+            try_fuel_economy("30 mpg to km/l").expect("mpg→kml").title,
+            "12.7543 km/l"
+        );
+        assert_eq!(
+            try_fuel_economy("12 km/l to l/100km")
+                .expect("kml→l100")
+                .title,
+            "8.3333 l/100km"
+        );
+        assert_eq!(
+            try_fuel_economy("7.84 l/100km to mpg")
+                .expect("l100→mpg")
+                .title,
+            "30.0019 mpg"
+        );
+        assert_eq!(
+            try_fuel_economy("7.84 l/100km to km/l")
+                .expect("l100→kml")
+                .title,
+            "12.7551 km/l"
+        );
     }
 
     #[test]

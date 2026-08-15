@@ -126,7 +126,7 @@ Closes the `todo.txt` wishlist items: `200mb * 10`, `1h 30 min from now`, `2min 
 | P2 | ✅ Same-dimension add/sub with mixed prefixes | `2m + 30cm`, `1km + 500m`, `5km + 2km`, `2km - 500m`, `200mb + 100mb`, `1gb - 512mb`. Convert both to base, then smart-prefix the result |
 | P2 | ✅ Percentage of units | `15% of 2km`, `10% of 200mb`, `50% of 2h`, `tip 10% on 500g` |
 | P2 | ✅ Day-of-week lookup | `day on 27 august 2026`, `what day is 26 aug`, `on 26 aug` → weekday card. Missing year rolls to next occurrence |
-| P2 | Bare unit values | `5km`, `500g`, `2kg` → show base (or common-target) value instead of no result |
+| P2 | ✅ Bare unit values | `5km`, `500g`, `2kg` → show base (or common-target) value instead of no result |
 | P3 | ✅ Compound units | `5km / 2h` (speed), `60km/h * 2`, `2km² / 2`, `4m2 * 3` |
 
 ## Cooking tools

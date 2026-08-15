@@ -1085,7 +1085,8 @@ mod engine_search_tests {
     fn t0_unit_magnitude_and_duration_steal() {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
         fn no_calc(r: &[SearchResult]) -> bool {
-            r.iter().all(|x| !matches!(x.kind, ResultKind::Calc | ResultKind::Conversion))
+            r.iter()
+                .all(|x| !matches!(x.kind, ResultKind::Calc | ResultKind::Conversion))
         }
         fn calc_title(r: &[SearchResult]) -> String {
             r.first().map(|x| x.title.clone()).unwrap_or_default()
@@ -1098,7 +1099,17 @@ mod engine_search_tests {
         assert_eq!(calc_title(&te.engine.search("1b / 2")), "0.5 b");
         assert_eq!(calc_title(&te.engine.search("2t / 4")), "500 kg");
         // Bare `100m` (no arithmetic) still gets no calc answer.
-        assert!(no_calc(&te.engine.search("100m")), "must not be 100 m from now");
+        assert!(
+            no_calc(&te.engine.search("100m")),
+            "must not be 100 m from now"
+        );
+        // Unambiguous bare unit values render a base-value card.
+        let r = te.engine.search("5km");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{r:?}");
+        assert!(
+            r[0].conversion.is_some(),
+            "5km must carry a conversion card"
+        );
         // `50% of 1h 30min` → 45min, not a duration echo of "1h 30min".
         let r = te.engine.search("50% of 1h 30min");
         assert_eq!(calc_title(&r), "45min");
@@ -1131,7 +1142,10 @@ mod engine_search_tests {
         for q in cases {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 
@@ -1159,7 +1173,10 @@ mod engine_search_tests {
         for q in cases {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 
@@ -1180,17 +1197,28 @@ mod engine_search_tests {
         ] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 
     #[test]
     fn tier2_fuel_economy_renders_cards() {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
-        for q in ["12 km/l to mpg", "30 mpg to l/100km", "30 mpg to km/l", "7.84 l/100km to mpg"] {
+        for q in [
+            "12 km/l to mpg",
+            "30 mpg to l/100km",
+            "30 mpg to km/l",
+            "7.84 l/100km to mpg",
+        ] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 
@@ -1209,7 +1237,10 @@ mod engine_search_tests {
         ] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
         // Volume↔volume conversions stay on the conversion provider.
         let r = te.engine.search("2 cups to ml");
@@ -1239,7 +1270,10 @@ mod engine_search_tests {
         ] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 
@@ -1248,12 +1282,23 @@ mod engine_search_tests {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
         // Base-conversion must not swallow unit / financial pairs.
         let r = te.engine.search("5 km to miles");
-        assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "unit conversion");
+        assert_eq!(
+            first_kind(&r),
+            Some(ResultKind::Conversion),
+            "unit conversion"
+        );
         let r = te.engine.search("100 to 150");
         assert_eq!(first_kind(&r), Some(ResultKind::Calc), "pct change");
         assert_eq!(r[0].title, "+50%");
         // Pure-letter quickwins are exempt from the plain-text gate.
-        for q in ["dice", "coin", "uuid", "wc hello world", "slug Hello World", "case snake x"] {
+        for q in [
+            "dice",
+            "coin",
+            "uuid",
+            "wc hello world",
+            "slug Hello World",
+            "case snake x",
+        ] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
         }
@@ -1265,7 +1310,10 @@ mod engine_search_tests {
         for q in ["battery", "bat", "power", "charging", "on battery"] {
             let r = te.engine.search(q);
             assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
-            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+            assert!(
+                r[0].conversion.is_some(),
+                "{q} must carry a conversion card"
+            );
         }
     }
 

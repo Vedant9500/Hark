@@ -164,6 +164,7 @@ fn looks_like_plain_text(q: &str) -> bool {
         || lower.starts_with("wc ")
         || lower.starts_with("slug ")
         || lower.starts_with("case ")
+        || lower.starts_with("roman ")
     {
         return false;
     }
