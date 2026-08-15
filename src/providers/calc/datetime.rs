@@ -1,8 +1,148 @@
-use super::util::{relative_secs, result_calc};
+use super::util::{card_result, relative_secs};
 use crate::providers::SearchResult;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
+
+/// Readable 3-line clock for the card's right panel: `5:00pm` / `Saturday` /
+/// `15 Aug 2026`. Works for local/utc `DateTime` and naive timestamps.
+fn fmt_readable_time(ts: &(impl Datelike + Timelike)) -> String {
+    format!(
+        "{}\n{}\n{} {} {}",
+        fmt_time_only(ts),
+        weekday_name(ts.weekday()),
+        ts.day(),
+        MONTH_ABBR[(ts.month() - 1) as usize],
+        ts.year(),
+    )
+}
+
+/// 12-hour clock time only: `5:00pm`.
+fn fmt_time_only(ts: &impl Timelike) -> String {
+    let hr = match ts.hour() % 12 {
+        0 => 12,
+        h => h,
+    };
+    let ampm = if ts.hour() < 12 { "am" } else { "pm" };
+    format!("{hr}:{:02}{ampm}", ts.minute())
+}
+
+/// Relative display that answers what was asked: same day → time only; next /
+/// prev day → time + `Tomorrow`/`Yesterday`; within a week → time + weekday;
+/// further out → full readout.
+fn fmt_relative(then: &(impl Datelike + Timelike), now: &impl Datelike) -> String {
+    let day = date_of(then);
+    let today = date_of(now);
+    let diff = (day - today).num_days();
+    if diff == 0 {
+        fmt_time_only(then)
+    } else if diff == 1 {
+        format!("{}\nTomorrow", fmt_time_only(then))
+    } else if diff == -1 {
+        format!("{}\nYesterday", fmt_time_only(then))
+    } else if diff.abs() <= 6 {
+        format!("{}\n{}", fmt_time_only(then), weekday_name(then.weekday()))
+    } else {
+        fmt_readable_time(then)
+    }
+}
+
+/// Readable 2-line date: `Saturday` / `15 Aug 2026`.
+fn fmt_readable_date(d: &impl Datelike) -> String {
+    format!(
+        "{}\n{} {} {}",
+        weekday_name(d.weekday()),
+        d.day(),
+        MONTH_ABBR[(d.month() - 1) as usize],
+        d.year(),
+    )
+}
+
+/// Day-count answer: `Today`/`Tomorrow`/`Yesterday` for ±1, else `N days` with
+/// a weekday line (`5 days` / `Saturday`).
+fn fmt_days_until(days: i64, date: &impl Datelike) -> (String, String) {
+    match days {
+        0 => ("Today".into(), "Today".into()),
+        1 => ("Tomorrow".into(), "Tomorrow".into()),
+        -1 => ("Yesterday".into(), "Yesterday".into()),
+        n => {
+            let count = format!("{n} days");
+            (count.clone(), format!("{count}\n{}", weekday_name(date.weekday())))
+        }
+    }
+}
+
+const MONTH_ABBR: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn date_of(d: &impl Datelike) -> NaiveDate {
+    NaiveDate::from_ymd_opt(d.year(), d.month(), d.day()).expect("valid date")
+}
+
+/// `27 august 2026` / `26 aug` → date. Missing year defaults to the current
+/// year, bumped forward when the date already passed (looks like an upcoming
+/// weekday question).
+fn parse_text_date(s: &str, today: NaiveDate) -> Option<NaiveDate> {
+    static RE_TEXT_DATE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{4})?\s*$")
+            .unwrap()
+    });
+    let c = RE_TEXT_DATE.captures(s)?;
+    let day: u32 = c.get(1)?.as_str().parse().ok()?;
+    let month = month_idx(c.get(2)?.as_str())?;
+    let had_year = c.get(3).is_some();
+    let year: i32 = c
+        .get(3)
+        .map(|y| y.as_str().parse().ok())
+        .unwrap_or(Some(today.year()))?;
+    let d = NaiveDate::from_ymd_opt(year, month, day)?;
+    if !had_year && d < today {
+        NaiveDate::from_ymd_opt(year + 1, month, day)
+    } else {
+        Some(d)
+    }
+}
+
+fn month_idx(abbr: &str) -> Option<u32> {
+    match abbr.get(..3)?.to_ascii_lowercase().as_str() {
+        "jan" => Some(1),
+        "feb" => Some(2),
+        "mar" => Some(3),
+        "apr" => Some(4),
+        "may" => Some(5),
+        "jun" => Some(6),
+        "jul" => Some(7),
+        "aug" => Some(8),
+        "sep" => Some(9),
+        "oct" => Some(10),
+        "nov" => Some(11),
+        "dec" => Some(12),
+        _ => None,
+    }
+}
+
+/// Parse a plain numeric date in the accepted datetime formats.
+fn numeric_naive_date(s: &str) -> Option<NaiveDate> {
+    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"] {
+        if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
+            return Some(d);
+        }
+    }
+    None
+}
+
+fn weekday_name(w: chrono::Weekday) -> &'static str {
+    match w {
+        chrono::Weekday::Mon => "Monday",
+        chrono::Weekday::Tue => "Tuesday",
+        chrono::Weekday::Wed => "Wednesday",
+        chrono::Weekday::Thu => "Thursday",
+        chrono::Weekday::Fri => "Friday",
+        chrono::Weekday::Sat => "Saturday",
+        chrono::Weekday::Sun => "Sunday",
+    }
+}
 
 pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase();
@@ -10,28 +150,57 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
 
     if matches!(lower.as_str(), "now" | "time" | "date" | "today") {
         let s = now.format("%Y-%m-%d %H:%M:%S %Z").to_string();
-        return Some(result_calc(
+        return Some(card_result(
             s.clone(),
             format!("Local now · unix {}", now.timestamp()),
-            s,
+            s.clone(),
+            q.trim().to_string(),
+            "local time",
+            fmt_readable_time(&now),
+            "result",
         ));
     }
 
     if lower == "utc" || lower == "now utc" {
-        let s = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-        return Some(result_calc(s.clone(), "UTC now".into(), s));
+        let utc = Utc::now();
+        let s = utc.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+        return Some(card_result(
+            s.clone(),
+            "UTC now".into(),
+            s.clone(),
+            q.trim().to_string(),
+            "utc",
+            fmt_readable_time(&utc),
+            "result",
+        ));
     }
 
     if lower == "tomorrow" {
         let d = now + Duration::days(1);
         let s = d.format("%Y-%m-%d (%A)").to_string();
-        return Some(result_calc(s.clone(), "Tomorrow".into(), s));
+        return Some(card_result(
+            s.clone(),
+            "Tomorrow".into(),
+            s.clone(),
+            "tomorrow".into(),
+            "date",
+            fmt_readable_date(&d),
+            "result",
+        ));
     }
 
     if lower == "yesterday" {
         let d = now - Duration::days(1);
         let s = d.format("%Y-%m-%d (%A)").to_string();
-        return Some(result_calc(s.clone(), "Yesterday".into(), s));
+        return Some(card_result(
+            s.clone(),
+            "Yesterday".into(),
+            s.clone(),
+            "yesterday".into(),
+            "date",
+            fmt_readable_date(&d),
+            "result",
+        ));
     }
 
     // unix timestamp
@@ -42,7 +211,15 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         let dt = chrono::DateTime::from_timestamp(ts, 0)?;
         let local = dt.with_timezone(&Local);
         let s = local.format("%Y-%m-%d %H:%M:%S %Z").to_string();
-        return Some(result_calc(s.clone(), format!("unix {ts}"), s));
+        return Some(card_result(
+            s.clone(),
+            format!("unix {ts}"),
+            s.clone(),
+            format!("unix {ts}"),
+            "unix",
+            fmt_readable_time(&local),
+            "result",
+        ));
     }
 
     // bare large epoch
@@ -51,14 +228,30 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
             let dt = chrono::DateTime::from_timestamp(ts, 0)?;
             let local = dt.with_timezone(&Local);
             let s = local.format("%Y-%m-%d %H:%M:%S %Z").to_string();
-            return Some(result_calc(s.clone(), format!("unix {ts}"), s));
+            return Some(card_result(
+                s.clone(),
+                format!("unix {ts}"),
+                s.clone(),
+                format!("{ts}"),
+                "unix",
+                fmt_readable_time(&local),
+                "result",
+            ));
         }
     }
 
     // "to unix" / "unix now"
     if matches!(lower.as_str(), "unix" | "epoch" | "to unix" | "unix now") {
         let ts = now.timestamp().to_string();
-        return Some(result_calc(ts.clone(), "Current unix timestamp".into(), ts));
+        return Some(card_result(
+            ts.clone(),
+            "Current unix timestamp".into(),
+            ts.clone(),
+            "now".into(),
+            "unix",
+            ts,
+            "result",
+        ));
     }
 
     // in N units / N units from now / N units ago.
@@ -112,7 +305,15 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         let then = now + delta;
         let s = then.format("%Y-%m-%d %H:%M:%S %Z").to_string();
         let shown = c.get(2)?.as_str().trim();
-        return Some(result_calc(s.clone(), format!("{shown} {dir}"), s));
+        return Some(card_result(
+            s.clone(),
+            format!("{shown} {dir}"),
+            s.clone(),
+            shown.to_string(),
+            "relative",
+            fmt_relative(&then, &now),
+            "result",
+        ));
     }
 
     // days until / days since YYYY-MM-DD
@@ -130,22 +331,55 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         let date = NaiveDate::parse_from_str(c.get(2)?.as_str(), "%Y-%m-%d").ok()?;
         let today = now.date_naive();
         let days = (date - today).num_days();
-        let title = format!("{days} days");
-        return Some(result_calc(
-            title.clone(),
+        let (title, right) = fmt_days_until(days, &date);
+        return Some(card_result(
+            title,
             format!("{} → {date}", c.get(1)?.as_str()),
             days.to_string(),
+            date.to_string(),
+            "date",
+            right,
+            "result",
         ));
     }
     if let Some(c) = RE_UNTIL.captures(&lower) {
         if lower.contains('-') && lower.len() == 10 {
             let date = NaiveDate::parse_from_str(c.get(1)?.as_str(), "%Y-%m-%d").ok()?;
             let days = (date - now.date_naive()).num_days();
-            let title = format!("{days} days");
-            return Some(result_calc(
-                title.clone(),
+            let (title, right) = fmt_days_until(days, &date);
+            return Some(card_result(
+                title,
                 format!("from today to {date}"),
                 days.to_string(),
+                date.to_string(),
+                "date",
+                right,
+                "result",
+            ));
+        }
+    }
+
+    // what day is <date> / day on <date> / day <date> / on <date> → weekday.
+    static RE_DAY_LOOKUP: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)^\s*(?:what\s+day(?:\s+is)?|day)\s+(?:on\s+)?(.+?)\s*$").unwrap());
+    static RE_ON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*on\s+(.+?)\s*$").unwrap());
+    let day_query = RE_DAY_LOOKUP
+        .captures(&lower)
+        .or_else(|| RE_ON.captures(&lower))
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str());
+    if let Some(rem) = day_query {
+        if let Some(date) = parse_text_date(rem, now.date_naive()).or_else(|| numeric_naive_date(rem)) {
+            let wd = weekday_name(date.weekday());
+            let shown = q.trim().to_string();
+            return Some(card_result(
+                date.format("%Y-%m-%d").to_string(),
+                shown.clone(),
+                wd.to_string(),
+                shown,
+                "date",
+                wd.into(),
+                "result",
             ));
         }
     }
@@ -164,18 +398,26 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
                 dt.format("%A, %d %B %Y %H:%M"),
                 dt.and_utc().timestamp()
             );
-            return Some(result_calc(
+            return Some(card_result(
                 dt.format("%Y-%m-%d %H:%M:%S").to_string(),
                 s,
                 dt.and_utc().timestamp().to_string(),
+                q.trim().to_string(),
+                "date",
+                fmt_readable_time(&dt),
+                "result",
             ));
         }
         if let Ok(d) = NaiveDate::parse_from_str(q, fmt) {
             let s = d.format("%A, %d %B %Y").to_string();
-            return Some(result_calc(
+            return Some(card_result(
                 s.clone(),
                 format!("date · day {}", d.weekday()),
-                s,
+                s.clone(),
+                q.trim().to_string(),
+                "date",
+                fmt_readable_date(&d),
+                "result",
             ));
         }
     }
@@ -184,20 +426,28 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
     if matches!(lower.as_str(), "week" | "week number" | "iso week") {
         let w = now.iso_week();
         let s = format!("Week {} · {}", w.week(), now.format("%Y"));
-        return Some(result_calc(
+        return Some(card_result(
             s.clone(),
             "ISO week".into(),
             w.week().to_string(),
+            "week".into(),
+            "iso week",
+            s,
+            "result",
         ));
     }
 
     // day of year
     if matches!(lower.as_str(), "day of year" | "doy") {
         let d = now.ordinal();
-        return Some(result_calc(
+        return Some(card_result(
             format!("Day {d}"),
             now.format("%Y-%m-%d").to_string(),
             d.to_string(),
+            "day of year".into(),
+            "day",
+            format!("{d}"),
+            "result",
         ));
     }
 
@@ -208,6 +458,38 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
 #[cfg(test)]
 mod datetime_tests {
     use super::*;
+
+    #[test]
+    fn relative_display_escalates_by_distance() {
+        // 2026-08-15 is a Saturday.
+        let now = NaiveDate::from_ymd_opt(2026, 8, 15,).unwrap();
+        let t = |day: u32, hour: u32| {
+            NaiveDateTime::new(
+                NaiveDate::from_ymd_opt(2026, 8, day).unwrap(),
+                chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+            )
+        };
+        assert_eq!(fmt_relative(&t(15, 12), &now), "12:00pm");
+        assert_eq!(fmt_relative(&t(16, 12), &now), "12:00pm\nTomorrow");
+        assert_eq!(fmt_relative(&t(14, 12), &now), "12:00pm\nYesterday");
+        assert_eq!(fmt_relative(&t(18, 12), &now), "12:00pm\nTuesday");
+        assert_eq!(
+            fmt_relative(&t(23, 12), &now),
+            "12:00pm\nSunday\n23 Aug 2026"
+        );
+    }
+
+    #[test]
+    fn days_until_uses_words_for_near_dates() {
+        let d = |m: u32, day: u32| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+        assert_eq!(fmt_days_until(0, &d(8, 15)), ("Today".into(), "Today".into()));
+        assert_eq!(fmt_days_until(1, &d(8, 16)), ("Tomorrow".into(), "Tomorrow".into()));
+        assert_eq!(fmt_days_until(-1, &d(8, 14)), ("Yesterday".into(), "Yesterday".into()));
+        assert_eq!(
+            fmt_days_until(5, &d(8, 20)),
+            ("5 days".into(), "5 days\nThursday".into())
+        );
+    }
 
     #[test]
     fn huge_relative_input_is_clamped() {
@@ -249,5 +531,77 @@ mod datetime_tests {
         let r = try_datetime("1h 30min ago").expect("ago");
         let d = NaiveDate::parse_from_str(&r.title[..10], "%Y-%m-%d").unwrap();
         assert!(d <= Local::now().date_naive(), "ago → future: {d}");
+    }
+
+    #[test]
+    fn all_datetime_results_render_cards() {
+        let cases: &[(&str, &str)] = &[
+            ("now", "local time"),
+            ("time", "local time"),
+            ("date", "local time"),
+            ("today", "local time"),
+            ("utc", "utc"),
+            ("now utc", "utc"),
+            ("tomorrow", "date"),
+            ("yesterday", "date"),
+            ("unix 1735000000", "unix"),
+            ("1735000000", "unix"),
+            ("to unix", "unix"),
+            ("in 1h 30min", "relative"),
+            ("1h 30min ago", "relative"),
+            ("days until 2026-08-20", "date"),
+            ("2026-08-20", "date"),
+            ("15/08/2026", "date"),
+            ("week", "iso week"),
+            ("day of year", "day"),
+            ("day on 27 august 2026", "date"),
+            ("on 26 aug", "date"),
+        ];
+        for (q, badge) in cases {
+            let r = try_datetime(q).expect(q);
+            let conv = r.conversion.expect("card");
+            assert_eq!(conv.right_badge, "result", "{q}");
+            assert_eq!(conv.left_badge, *badge, "{q}");
+        }
+    }
+
+    #[test]
+    fn right_title_is_readable_multiline() {
+        let r = try_datetime("unix 1735000000").expect("unix");
+        let conv = r.conversion.as_ref().expect("card");
+        let lines: Vec<&str> = conv.right_title.split('\n').collect();
+        assert_eq!(lines.len(), 3, "{:?}", conv.right_title);
+        assert!(lines[0].contains(':'), "time line: {}", lines[0]);
+        assert!(lines[2].contains("2024"), "year line: {}", lines[2]);
+
+        let r = try_datetime("15/08/2026").expect("parsed date");
+        let conv = r.conversion.as_ref().expect("card");
+        let lines: Vec<&str> = conv.right_title.split('\n').collect();
+        assert_eq!(lines.len(), 2, "{:?}", conv.right_title);
+        assert_eq!(lines[0], "Saturday");
+        assert_eq!(lines[1], "15 Aug 2026");
+    }
+
+    #[test]
+    fn day_lookup_weekday() {
+        let r = try_datetime("day on 27 august 2026").expect("lookup");
+        assert_eq!(r.title, "2026-08-27");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_badge, "date");
+        assert_eq!(conv.right_title, "Thursday");
+        assert!(matches!(&r.action, crate::providers::Action::Copy(s) if s == "Thursday"));
+        let r = try_datetime("what day is 26 aug").expect("lookup");
+        assert_eq!(r.conversion.expect("card").right_title, "Wednesday");
+        let r = try_datetime("on 26 aug").expect("lookup");
+        assert_eq!(r.conversion.expect("card").right_title, "Wednesday");
+        let r = try_datetime("day on 26 dec").expect("lookup");
+        assert_eq!(r.conversion.expect("card").right_title, "Saturday");
+        let r = try_datetime("day on 27/08/2026").expect("numeric lookup");
+        assert_eq!(r.conversion.expect("card").right_title, "Thursday");
+        // Past month without year rolls to next year.
+        let r = try_datetime("day on 26 feb").expect("rollover");
+        assert_eq!(r.conversion.expect("card").right_title, "Friday");
+        // Unparseable remainder falls through, not an early error.
+        assert!(try_datetime("day of year").is_some());
     }
 }

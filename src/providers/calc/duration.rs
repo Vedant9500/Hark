@@ -12,46 +12,37 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         return Some(r);
     }
 
+    // `N% of <multi-token duration>` → scaled duration (`50% of 1h 30min` → 45min).
+    // Single-token (`50% of 2h`) stays in unitmath's percentage card.
+    static RE_PCT_OF: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s+(.+?)\s*$").unwrap()
+    });
+    if let Some(c) = RE_PCT_OF.captures(&lower) {
+        let rest = c.get(2)?.as_str();
+        let (secs, count, any_non_m_unit, _end) = parse_duration_tokens(rest)?;
+        if count >= 2 && any_non_m_unit {
+            let pct: f64 = c.get(1)?.as_str().parse().ok()?;
+            let out = secs * pct / 100.0;
+            let formatted = format_duration(out.abs());
+            let title = if out < 0.0 { format!("-{formatted}") } else { formatted };
+            let shown = format!("{}% of {rest}", c.get(1)?.as_str());
+            return Some(card_result(
+                title.clone(),
+                format!("= {shown}"),
+                title.clone(),
+                shown,
+                "percentage",
+                title,
+                "result",
+            ));
+        }
+    }
+
     // Must look like multi-unit duration, not plain math or conversion
     if lower.contains(" to ") || lower.contains(" in ") || lower.contains(" as ") {
         return None;
     }
-    static RE_TOKEN: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(concat!(
-            r"(?i)([+-])?\s*(\d+(?:\.\d+)?)\s*",
-            r"(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|w)",
-        ))
-        .unwrap()
-    });
-    let mut total_secs: f64 = 0.0;
-    let mut count = 0;
-    let mut last_end = 0;
-    let mut any_non_m_unit = false;
-
-    for cap in RE_TOKEN.captures_iter(&lower) {
-        let m = cap.get(0)?;
-        // Only whitespace (or an explicit +/-) may separate tokens — including
-        // BEFORE the first token, so leading junk like `in ` or `50% of ` can't
-        // be swallowed into a duration ("in 1h 30min", "50% of 1h 30min").
-        let between = lower[last_end..m.start()].trim();
-        if !between.is_empty() && between != "+" && between != "-" {
-            return None;
-        }
-        let sign_g = cap.get(1).map(|x| x.as_str()).unwrap_or("");
-        let mut sign = 1.0_f64;
-        if sign_g == "-" || between == "-" {
-            sign = -1.0;
-        }
-        let n: f64 = cap.get(2)?.as_str().parse().ok()?;
-        let unit = cap.get(3)?.as_str();
-        if unit != "m" {
-            any_non_m_unit = true;
-        }
-        let secs = relative_secs(n, unit)?;
-        total_secs += sign * secs;
-        count += 1;
-        last_end = m.end();
-    }
+    let (mut total_secs, count, any_non_m_unit, last_end) = parse_duration_tokens(&lower)?;
 
     // Optional ×/÷ by a dimensionless number (`2min 16 sec * 5`, `1h / 2`).
     let mut scale: Option<f64> = None;
@@ -95,6 +86,48 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         title,
         "result",
     ))
+}
+
+/// Parse a duration expression's time tokens (whitespace or explicit `+`/`-`
+/// separators). Returns `(total_secs, token_count, any_non_m_unit, end)`
+/// where `end` is the byte offset past the last token. Rejects leading /
+/// embedded junk (`in `, `50% of `, `about `) so those queries can't be
+/// swallowed into a duration.
+fn parse_duration_tokens(s: &str) -> Option<(f64, usize, bool, usize)> {
+    static RE_TOKEN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(concat!(
+            r"(?i)([+-])?\s*(\d+(?:\.\d+)?)\s*",
+            r"(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|w)",
+        ))
+        .unwrap()
+    });
+    let mut total_secs: f64 = 0.0;
+    let mut count = 0;
+    let mut any_non_m_unit = false;
+    let mut last_end = 0;
+
+    for cap in RE_TOKEN.captures_iter(s) {
+        let m = cap.get(0)?;
+        let between = s[last_end..m.start()].trim();
+        if !between.is_empty() && between != "+" && between != "-" {
+            return None;
+        }
+        let sign_g = cap.get(1).map(|x| x.as_str()).unwrap_or("");
+        let mut sign = 1.0_f64;
+        if sign_g == "-" || between == "-" {
+            sign = -1.0;
+        }
+        let n: f64 = cap.get(2)?.as_str().parse().ok()?;
+        let unit = cap.get(3)?.as_str();
+        if unit != "m" {
+            any_non_m_unit = true;
+        }
+        let secs = relative_secs(n, unit)?;
+        total_secs += sign * secs;
+        count += 1;
+        last_end = m.end();
+    }
+    Some((total_secs, count, any_non_m_unit, last_end))
 }
 
 /// Difference between two clock times on the same day (or overnight if end < start).
@@ -286,8 +319,23 @@ mod tests {
     #[test]
     fn does_not_steal_leading_junk() {
         assert!(try_duration_expr("in 1h 30min").is_none());
-        assert!(try_duration_expr("50% of 1h 30min").is_none());
         assert!(try_duration_expr("about 2h 30min").is_none());
+        // Single-token `% of` stays in unitmath, not a duration.
+        assert!(try_duration_expr("50% of 2h").is_none());
+    }
+
+    #[test]
+    fn percent_of_multi_token_duration() {
+        let r = try_duration_expr("50% of 1h 30min").expect("pct");
+        assert_eq!(r.title, "45min");
+        let conv = r.conversion.expect("card layout");
+        assert_eq!(conv.left_badge, "percentage");
+        assert_eq!(conv.right_title, "45min");
+        assert_eq!(conv.right_badge, "result");
+        let r = try_duration_expr("20% of 2h 30min").expect("pct");
+        assert_eq!(r.title, "30min");
+        let r = try_duration_expr("10% of 1d 2h").expect("pct");
+        assert_eq!(r.title, "2h 36min");
     }
 
     #[test]

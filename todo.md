@@ -80,9 +80,9 @@ Unifies legacy text rows (`conversion: None` via `result_calc`) onto the Raycast
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| P2 | Migrate `datetime.rs` to card | `now`, `utc`, `tomorrow`/`yesterday`, unix/epoch, relative `in N units`, days-until, date parsing, week number, day-of-year |
+| ✅ | Migrate `datetime.rs` to card | `now`, `utc`, `tomorrow`/`yesterday`, unix/epoch, relative `in N units`, days-until, date parsing, week number, day-of-year |
 | P2 | Migrate `battery.rs` to card | `format_result`: `battery`, `power`, `charging`, charge %, ETA |
-| P2 | Migrate `math.rs` natural/base to card | `try_natural` (`10% of 2k`, `tip 15% on 2k`) + `base_result` (`0xff`, `0b1010`) |
+| ✅ | Migrate `math.rs` natural/base to card | `try_natural` (`10% of 2k`, `tip 15% on 2k`) + `base_result` (`0xff`, `0b1010`) |
 | ✅ | Migrate `duration.rs` unit-duration to card | `try_duration_expr`: plain `10h 30min`, `2h + 30m`, ×/÷ scale — shipped in T1 (clock range already done) |
 
 ## Master priority order
@@ -118,13 +118,14 @@ Closes the `todo.txt` wishlist items: `200mb * 10`, `1h 30 min from now`, `2min 
 | Priority | Item | Notes |
 |----------|------|-------|
 | P0 | Fix single-letter magnitude/unit collision | `m` magnitude = million collides with meters: `100m / 2` → `50000000` (should be `50m`), `1m * 3` → `3000000`. Same for `b`=billion vs byte, `t`=trillion vs tonne |
-| P0 | Stop duration provider stealing non-duration queries | `50% of 1h 30min` → "1h 30min" (should be `45min`); `in 1h 30min` returns a duration card, not a future timestamp (inconsistent with `in 2h`). Duration regex ignores leading junk and the bare `in ` prefix |
+| ✅ | Stop duration provider stealing non-duration queries | `50% of 1h 30min` → `45min` (duration provider now owns multi-token `N% of`); `in 1h 30min` → future timestamp (kept). Single-token `50% of 2h` stays in unitmath |
 | P0 | `m` = minutes vs meters routing conflict | `100m` → "100 m from now" timestamp; `100m + 5m` → "1h 45min" duration. Meters get reinterpreted as minutes |
 | P1 | ✅ Unit × number / ÷ number | `200mb * 10`, `2km / 5`, `1kg * 4`, `500g / 2`, `2km×3`, `2km ÷ 5`, `2km/5`. Output smart prefix (`2km/5` → `400m`) |
 | P1 | ✅ Duration × number / ÷ number | `2min 16 sec * 5`, `1h 30min * 2`, `30min / 2`, `1h / 2`, `1.5h * 2` |
 | P1 | Multi-unit relative datetime | `1h 30 min from now`, `1h 30 min ago`, `1h 30 min later`, `2 hours 30 minutes from now` (datetime handles single unit only today) |
 | P2 | ✅ Same-dimension add/sub with mixed prefixes | `2m + 30cm`, `1km + 500m`, `5km + 2km`, `2km - 500m`, `200mb + 100mb`, `1gb - 512mb`. Convert both to base, then smart-prefix the result |
 | P2 | ✅ Percentage of units | `15% of 2km`, `10% of 200mb`, `50% of 2h`, `tip 10% on 500g` |
+| P2 | ✅ Day-of-week lookup | `day on 27 august 2026`, `what day is 26 aug`, `on 26 aug` → weekday card. Missing year rolls to next occurrence |
 | P2 | Bare unit values | `5km`, `500g`, `2kg` → show base (or common-target) value instead of no result |
 | P3 | ✅ Compound units | `5km / 2h` (speed), `60km/h * 2`, `2km² / 2`, `4m2 * 3` |
 

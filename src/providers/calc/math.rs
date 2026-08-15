@@ -1,4 +1,4 @@
-use super::util::{format_number, result_calc};
+use super::util::{card_result, format_number};
 use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -80,10 +80,15 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
         let b = super::expr::eval_str(c.get(2)?.as_str())?;
         let v = a / 100.0 * b;
         let formatted = format_number(v);
-        return Some(result_calc(
+        let shown = format!("{}% of {}", c.get(1)?.as_str(), c.get(2)?.as_str());
+        return Some(card_result(
             formatted.clone(),
-            format!("{}% of {}", c.get(1)?.as_str(), c.get(2)?.as_str()),
+            shown.clone(),
+            formatted.clone(),
+            shown,
+            "percentage",
             formatted,
+            "result",
         ));
     }
 
@@ -104,10 +109,16 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
         let tip = bill * pct / 100.0;
         let total = bill + tip;
         let formatted = format_number(total);
-        return Some(result_calc(
-            format!("Total {formatted}"),
+        let title = format!("Total {formatted}");
+        let shown = format!("Tip {}% on {}", c.get(1)?.as_str(), c.get(2)?.as_str());
+        return Some(card_result(
+            title.clone(),
             format!("Tip {} on {}", format_number(tip), c.get(2)?.as_str()),
             formatted,
+            shown,
+            "tip",
+            title,
+            "result",
         ));
     }
 
@@ -127,10 +138,15 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
 
 pub(crate) fn base_result(v: u64, original: &str) -> SearchResult {
     let title = format!("{v}");
-    result_calc(
+    let subtitle = format!("{original} → dec {v} · hex 0x{v:X} · bin 0b{v:b}");
+    card_result(
         title.clone(),
-        format!("{original} → dec {v} · hex 0x{v:X} · bin 0b{v:b}"),
+        subtitle,
+        title.clone(),
+        original.to_string(),
+        "base",
         title,
+        "dec",
     )
 }
 
@@ -163,5 +179,33 @@ mod math_gate_tests {
     fn percent_of_with_suffix() {
         let r = try_natural("10% of 2k").expect("natural");
         assert_eq!(r.title, "200");
+    }
+
+    #[test]
+    fn natural_results_render_cards() {
+        let r = try_natural("50% of 100").expect("natural");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_title, "50% of 100");
+        assert_eq!(conv.left_badge, "percentage");
+        assert_eq!(conv.right_badge, "result");
+
+        let r = try_natural("tip 15% on 2k").expect("natural");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_title, "Tip 15% on 2k");
+        assert_eq!(conv.left_badge, "tip");
+        assert_eq!(conv.right_title, "Total 2300");
+        assert_eq!(r.title, "Total 2300");
+
+        let r = try_natural("0x1f").expect("natural");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_title, "0x1f");
+        assert_eq!(conv.left_badge, "base");
+        assert_eq!(conv.right_title, "31");
+        assert_eq!(conv.right_badge, "dec");
+
+        let r = try_natural("0b1010").expect("natural");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.right_title, "10");
+        assert_eq!(conv.right_badge, "dec");
     }
 }

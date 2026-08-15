@@ -1099,8 +1099,10 @@ mod engine_search_tests {
         assert_eq!(calc_title(&te.engine.search("2t / 4")), "500 kg");
         // Bare `100m` (no arithmetic) still gets no calc answer.
         assert!(no_calc(&te.engine.search("100m")), "must not be 100 m from now");
-        // Duration provider must not steal non-duration queries.
-        assert!(no_calc(&te.engine.search("50% of 1h 30min")), "no 1h 30min card");
+        // `50% of 1h 30min` → 45min, not a duration echo of "1h 30min".
+        let r = te.engine.search("50% of 1h 30min");
+        assert_eq!(calc_title(&r), "45min");
+        assert!(r[0].conversion.is_some(), "must carry a conversion card");
         // `in 1h 30min` → future timestamp, not a duration card.
         let r = te.engine.search("in 1h 30min");
         assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{r:?}");
@@ -1120,6 +1122,45 @@ mod engine_search_tests {
         assert_eq!(r[0].title, "400 m");
         let r = te.engine.search("50% of 2h");
         assert_eq!(r[0].title, "1h");
+    }
+
+    #[test]
+    fn tier1_math_natural_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        let cases = ["50% of 100", "10% of 2k", "tip 15% on 2k", "0x1f", "0b1010"];
+        for q in cases {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+    }
+
+    #[test]
+    fn tier2_datetime_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        let cases = [
+            "now",
+            "utc",
+            "tomorrow",
+            "yesterday",
+            "unix 1735000000",
+            "1735000000",
+            "to unix",
+            "in 1h 30min",
+            "1h 30min ago",
+            "days until 2026-08-20",
+            "2026-08-20",
+            "15/08/2026",
+            "week",
+            "day of year",
+            "day on 27 august 2026",
+            "on 26 aug",
+        ];
+        for q in cases {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
     }
 
     #[test]
