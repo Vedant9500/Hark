@@ -64,6 +64,8 @@ pub struct Launcher {
     deep_gen: Rc<Cell<u64>>,
     /// Pending search debounce timer (cancelled on each keystroke / hide).
     search_debounce: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Async deep/translate jobs still in flight (drives the spinner icon).
+    async_pending: Rc<Cell<u32>>,
     /// Queries typed this open session (v2 typo reformulation learning).
     session_queries: Rc<RefCell<VecDeque<String>>>,
     drag_session: DragSession,
@@ -133,7 +135,7 @@ impl Launcher {
         header.set_hexpand(true);
 
         let search = Entry::builder()
-            .placeholder_text("Search apps, files, or type math…")
+            .placeholder_text("Search apps, files, math, or tr translate…")
             .css_classes(["hark-search"])
             .hexpand(true)
             .build();
@@ -302,6 +304,7 @@ impl Launcher {
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let search_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let async_pending: Rc<Cell<u32>> = Rc::new(Cell::new(0));
         let session_queries: Rc<RefCell<VecDeque<String>>> =
             Rc::new(RefCell::new(VecDeque::with_capacity(12)));
 
@@ -327,12 +330,18 @@ impl Launcher {
             let footer_sep_c = footer_sep.clone();
             let scroll_c = scroll.clone();
             let session_queries = session_queries.clone();
+            let async_pending = async_pending.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
                 }
                 let q = entry.text().to_string();
                 note_session_query(&session_queries, &q);
+                // Icon feedback is instant — don't wait for the debounce timer.
+                // A keystroke invalidates any async state tied to the old query.
+                async_pending.set(0);
+                entry.set_primary_icon_name(Some(search_mode_icon(&q)));
+                update_search_icons(entry, &async_pending);
                 // Expand/collapse body immediately (don't wait for search debounce).
                 apply_body_chrome(
                     ui_compact.get(),
@@ -362,6 +371,7 @@ impl Launcher {
                 let body_revealer_c = body_revealer_c.clone();
                 let footer_sep_c = footer_sep_c.clone();
                 let scroll_c = scroll_c.clone();
+                let async_pending = async_pending.clone();
                 // Longer settle only for auto script paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -382,6 +392,7 @@ impl Launcher {
                             &footer_action,
                             &preview,
                             &deep_gen,
+                            &async_pending,
                             &search_for_deep,
                             &drag_session,
                             &suppress_select,
@@ -398,6 +409,13 @@ impl Launcher {
                 *search_debounce.borrow_mut() = Some(id);
             });
         }
+
+        // Pointer users: click the trailing `×` to clear the query (Raycast).
+        search.connect_icon_press(move |entry, pos| {
+            if pos == gtk::EntryIconPosition::Secondary {
+                entry.set_text("");
+            }
+        });
 
         let open_settings = {
             let stack = stack.clone();
@@ -438,6 +456,7 @@ impl Launcher {
             let body_revealer_cs = body_revealer.clone();
             let footer_sep_cs = footer_sep.clone();
             let scroll_cs = scroll.clone();
+            let async_pending_cs = async_pending.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
@@ -458,6 +477,7 @@ impl Launcher {
                     &footer_action,
                     &preview,
                     &deep_gen,
+                    &async_pending_cs,
                     &search,
                     &drag_session,
                     &suppress_select,
@@ -767,7 +787,14 @@ impl Launcher {
 
                 match keyval {
                     Key::Escape => {
-                        window.set_visible(false);
+                        // Raycast 2-stage lifecycle: first Escape clears a typed
+                        // query; a second Escape (empty field) dismisses the app.
+                        if !search.text().is_empty() {
+                            search.set_text("");
+                            search.set_position(0);
+                        } else {
+                            window.set_visible(false);
+                        }
                         glib::Propagation::Stop
                     }
                     Key::Return | Key::KP_Enter => {
@@ -1019,6 +1046,7 @@ impl Launcher {
             preview,
             deep_gen,
             search_debounce,
+            async_pending,
             session_queries: session_queries.clone(),
             drag_session,
             suppress_select,
@@ -1067,6 +1095,7 @@ impl Launcher {
             &self.footer_action,
             &self.preview,
             &self.deep_gen,
+            &self.async_pending,
             &self.search,
             &self.drag_session,
             &self.suppress_select,
@@ -1097,6 +1126,9 @@ impl Launcher {
             id.remove();
         }
         self.deep_gen.set(self.deep_gen.get().wrapping_add(1));
+        self.async_pending.set(0);
+        self.search.remove_css_class("hark-search-busy");
+        self.search.set_secondary_icon_name(None);
         self.session_queries.borrow_mut().clear();
         self.preview.clear();
     }
@@ -1242,7 +1274,7 @@ fn complete_path_query(query: &str, path: &std::path::Path) -> String {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tab_complete_tests {
-    use super::{complete_path_query, completion_text_for, is_path_shaped_query};
+    use super::{complete_path_query, completion_text_for, is_path_shaped_query, search_mode_icon};
     use crate::providers::{Action, ResultKind, SearchResult};
     use std::path::PathBuf;
 
@@ -1369,6 +1401,34 @@ mod tab_complete_tests {
         if target.is_dir() {
             assert!(completed.ends_with('/'), "got {completed}");
         }
+    }
+
+    #[test]
+    fn search_icon_morphs_with_mode() {
+        assert_eq!(search_mode_icon(""), "system-search-symbolic");
+        assert_eq!(search_mode_icon("  "), "system-search-symbolic");
+        assert_eq!(search_mode_icon("firefox"), "system-search-symbolic");
+        assert_eq!(
+            search_mode_icon("25 * 4"),
+            "accessories-calculator-symbolic"
+        );
+        assert_eq!(
+            search_mode_icon("50 eur to usd"),
+            "document-convert-symbolic"
+        );
+        assert_eq!(
+            search_mode_icon("100 lbs in kg"),
+            "document-convert-symbolic"
+        );
+        assert_eq!(
+            search_mode_icon("tr hola"),
+            "preferences-desktop-locale-symbolic"
+        );
+        assert_eq!(
+            search_mode_icon("translate bonjour"),
+            "preferences-desktop-locale-symbolic"
+        );
+        assert_eq!(search_mode_icon("now"), "clock-symbolic");
     }
 }
 
@@ -1671,6 +1731,67 @@ fn apply_body_chrome(
     }
 }
 
+/// Sync the search field's trailing icon:
+/// - spinner (`process-working-symbolic`, CSS-spun) while async deep/translate jobs run;
+/// - otherwise a `×` clear button when text is present;
+/// - nothing on an empty idle field.
+fn update_search_icons(search: &Entry, async_pending: &Rc<Cell<u32>>) {
+    if async_pending.get() > 0 {
+        search.set_secondary_icon_name(Some("process-working-symbolic"));
+        search.add_css_class("hark-search-busy");
+    } else {
+        search.remove_css_class("hark-search-busy");
+        if search.text().trim().is_empty() {
+            search.set_secondary_icon_name(None);
+        } else {
+            search.set_secondary_icon_name(Some("edit-clear-symbolic"));
+        }
+    }
+}
+
+/// Context-aware leading icon: morph the magnifier into the detected query mode
+/// (calculator, conversion, clock, locale/translation) — Raycast-style glyph.
+fn search_mode_icon(query: &str) -> &'static str {
+    use crate::providers::translate::{looks_like_translatable_script, strip_translate_prefix};
+
+    let q = query.trim();
+    if q.is_empty() {
+        return "system-search-symbolic";
+    }
+    let lower = q.to_ascii_lowercase();
+    let (forced, text) = strip_translate_prefix(q);
+    if forced || looks_like_translatable_script(text) {
+        return "preferences-desktop-locale-symbolic";
+    }
+    if matches!(
+        lower.as_str(),
+        "now" | "time" | "date" | "today" | "tomorrow" | "yesterday" | "utc" | "unix" | "epoch"
+    ) {
+        return "clock-symbolic";
+    }
+    // Digits / operators / money / unit markers → calc or conversion.
+    if q.bytes().any(|b| b.is_ascii_digit())
+        || q.contains('+')
+        || q.contains('*')
+        || q.contains('/')
+        || q.contains('%')
+        || q.contains('^')
+        || q.contains('=')
+        || q.contains(" to ")
+        || q.contains(" in ")
+        || q.contains(" as ")
+        || q.contains("->")
+        || q.chars()
+            .any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽'))
+    {
+        if q.contains(" to ") || q.contains(" in ") || q.contains(" as ") || q.contains("->") {
+            return "document-convert-symbolic";
+        }
+        return "accessories-calculator-symbolic";
+    }
+    "system-search-symbolic"
+}
+
 #[allow(clippy::too_many_arguments)]
 fn refresh_results(
     engine: &Arc<Engine>,
@@ -1683,6 +1804,7 @@ fn refresh_results(
     footer_action: &Label,
     preview: &Rc<PreviewPanel>,
     deep_gen: &Rc<Cell<u64>>,
+    async_pending: &Rc<Cell<u32>>,
     search_entry: &Entry,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -1715,6 +1837,10 @@ fn refresh_results(
     // Invalidate any in-flight async deep/translate for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
     deep_gen.set(gen);
+    // This refresh re-owns the spinner: drop pending tallies from stale jobs
+    // (their futures bail on the gen check without decrementing).
+    async_pending.set(0);
+    update_search_icons(search_entry, async_pending);
 
     // Compact idle: skip ranking recents — body is hidden anyway.
     let found = if compact && query_empty {
@@ -1775,8 +1901,11 @@ fn refresh_results(
         let suppress_t = suppress_select.clone();
         let icon_size_t = ui_icon_size.clone();
         let symbolic_t = ui_symbolic.clone();
+        let async_pending_t = async_pending.clone();
         let q_t = q.clone();
         let gen_t = gen;
+        async_pending.set(async_pending.get() + 1);
+        update_search_icons(search_entry, async_pending);
         let (tx_t, rx_t) = async_channel::bounded::<Vec<SearchResult>>(1);
         schedule_translate_job(engine_t.clone(), q_t.clone(), gen_t, tx_t);
         glib::spawn_future_local(async move {
@@ -1789,6 +1918,9 @@ fn refresh_results(
             if search_entry_t.text().as_str() != q_t.as_str() {
                 return;
             }
+            let pending = async_pending_t.get().saturating_sub(1);
+            async_pending_t.set(pending);
+            update_search_icons(&search_entry_t, &async_pending_t);
             if hits.is_empty() {
                 return;
             }
@@ -1828,7 +1960,10 @@ fn refresh_results(
     let suppress_select = suppress_select.clone();
     let ui_icon_size = ui_icon_size.clone();
     let ui_symbolic = ui_symbolic.clone();
+    let async_pending = async_pending.clone();
 
+    async_pending.set(async_pending.get() + 1);
+    update_search_icons(&search_entry, &async_pending);
     let (tx, rx) = async_channel::bounded::<Vec<SearchResult>>(1);
     schedule_deep_job(engine.clone(), q.clone(), gen, tx);
 
@@ -1842,6 +1977,9 @@ fn refresh_results(
         if search_entry.text().as_str() != q.as_str() {
             return;
         }
+        let pending = async_pending.get().saturating_sub(1);
+        async_pending.set(pending);
+        update_search_icons(&search_entry, &async_pending);
         if deep_hits.is_empty() {
             return;
         }

@@ -63,6 +63,11 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let subtitle = &theme.on_surface_variant;
     let on_surface = &theme.on_surface;
     let conv_badge_bg = rgba(&theme.on_surface, 0.08);
+    // Placeholder / leading icon are blended text, not `on_surface_variant`
+    // (that hint color measured 1.78:1 against the shell — fails WCAG).
+    // on_surface @0.55 ≈ 5.4:1 on the dark shell; ~4.5:1 on light shells.
+    let placeholder = rgba(&theme.on_surface, 0.55);
+    let icon_color = rgba(&theme.on_surface, 0.62);
 
     // Scaled type sizes (base @ scale 1.0).
     let fs = |px: f32| -> String { format!("{:.1}px", px * scale) };
@@ -160,8 +165,28 @@ window.hark-window .hark-search:focus {{
 }}
 
 window.hark-window .hark-search placeholder {{
-  color: {hint};
-  opacity: 0.75;
+  color: {placeholder};
+  opacity: 1;
+}}
+
+/* Leading search icon: legible tint + scales with the search font size so
+   accessibility font scales don't leave a tiny 16px glyph next to 23px text. */
+window.hark-window .hark-search image {{
+  color: {icon_color};
+  min-width: {search_fs};
+  min-height: {search_fs};
+}}
+
+/* Async deep/translate spinner lives in the secondary-icon slot (image.right).
+   `.hark-search-busy` is toggled from Rust; the class gate keeps the static
+   clear button from spinning when idle. */
+@keyframes hark-icon-spin {{
+  to {{ transform: rotate(1turn); }}
+}}
+
+window.hark-window .hark-search.hark-search-busy image.right,
+window.hark-window .hark-search.hark-search-busy image:last-child {{
+  animation: hark-icon-spin 1.1s linear infinite;
 }}
 
 /* Separators between search / body / footer */
@@ -998,5 +1023,33 @@ mod tests {
         ui.radius = 16;
         let css = render(&theme, &ui);
         assert!(css.contains("border-radius: 10px;"));
+    }
+
+    #[test]
+    fn test_search_placeholder_and_icon_contrast() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        // Placeholder now blends on_surface (≈5:1) instead of the dim hint (1.78:1).
+        let placeholder_rule = css
+            .split("window.hark-window .hark-search placeholder")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(!placeholder_rule.contains("{hint}"), "{placeholder_rule}");
+        // Icons get an explicit color + font-scale-linked size.
+        assert!(css.contains("window.hark-window .hark-search image"));
+        assert!(css.contains("min-height: 18.0px"));
+    }
+
+    #[test]
+    fn test_search_busy_spinner_animation() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        assert!(css.contains("@keyframes hark-icon-spin"));
+        assert!(css.contains(".hark-search-busy image.right"));
     }
 }
