@@ -74,9 +74,9 @@ pub struct Launcher {
     ui_symbolic: Rc<Cell<bool>>,
     /// Raycast compact: hide results body until query is non-empty.
     ui_compact: Rc<Cell<bool>>,
-    /// Results middle section + separators (toggled for compact idle).
+    /// Results middle section + separators (animated for compact idle).
     body: GtkBox,
-    header_sep: gtk::Separator,
+    body_revealer: gtk::Revealer,
     footer_sep: gtk::Separator,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
@@ -86,18 +86,10 @@ impl Launcher {
     pub fn new(app: &Application, engine: Arc<Engine>) -> Self {
         let window = ApplicationWindow::builder()
             .application(app)
-            .title("Hark")
-            .decorated(false)
-            .resizable(false)
             .css_classes(["hark-window"])
             .build();
 
         window.set_hide_on_close(true);
-        // Outer window is slightly larger than the card so rounded corners + shadow
-        // are not clipped by a square surface (reads as "padding" / square corners).
-        let outer_w = WINDOW_WIDTH + SHELL_INSET * 2;
-        window.set_default_size(outer_w, -1);
-        window.set_size_request(outer_w, -1);
         setup_window_chrome(&window);
 
         let theme = ThemeManager::new(engine.config());
@@ -155,6 +147,22 @@ impl Launcher {
         body.add_css_class("hark-body");
         body.set_hexpand(true);
         body.set_vexpand(true);
+
+        // Fluid height expansion: body + header separator slide down together
+        // instead of snapping between compact idle and populated results.
+        let body_revealer = gtk::Revealer::new();
+        body_revealer.add_css_class("hark-body-revealer");
+        body_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        body_revealer.set_transition_duration(120);
+        body_revealer.set_hexpand(true);
+        body_revealer.set_vexpand(false);
+        body_revealer.set_reveal_child(true);
+        {
+            let body_wrap = GtkBox::new(Orientation::Vertical, 0);
+            body_wrap.append(&header_sep);
+            body_wrap.append(&body);
+            body_revealer.set_child(Some(&body_wrap));
+        }
 
         let list_col = GtkBox::new(Orientation::Vertical, 0);
         list_col.add_css_class("hark-list-col");
@@ -249,8 +257,7 @@ impl Launcher {
         footer.append(&actions_chip);
 
         search_view.append(&header);
-        search_view.append(&header_sep);
-        search_view.append(&body);
+        search_view.append(&body_revealer);
         search_view.append(&footer_sep);
         search_view.append(&footer);
 
@@ -264,7 +271,7 @@ impl Launcher {
                 compact0,
                 true,
                 &body,
-                &header_sep,
+                &body_revealer,
                 &footer_sep,
                 Some(&scroll),
             );
@@ -316,7 +323,7 @@ impl Launcher {
             let ui_compact = ui_compact.clone();
             let row_pool = row_pool.clone();
             let body_c = body.clone();
-            let header_sep_c = header_sep.clone();
+            let body_revealer_c = body_revealer.clone();
             let footer_sep_c = footer_sep.clone();
             let scroll_c = scroll.clone();
             let session_queries = session_queries.clone();
@@ -331,7 +338,7 @@ impl Launcher {
                     ui_compact.get(),
                     q.trim().is_empty(),
                     &body_c,
-                    &header_sep_c,
+                    &body_revealer_c,
                     &footer_sep_c,
                     Some(&scroll_c),
                 );
@@ -352,7 +359,7 @@ impl Launcher {
                 let ui_compact = ui_compact.clone();
                 let row_pool = row_pool.clone();
                 let body_c = body_c.clone();
-                let header_sep_c = header_sep_c.clone();
+                let body_revealer_c = body_revealer_c.clone();
                 let footer_sep_c = footer_sep_c.clone();
                 let scroll_c = scroll_c.clone();
                 // Longer settle only for auto script paste/IME (not forced `tr …`).
@@ -382,7 +389,7 @@ impl Launcher {
                             &ui_symbolic,
                             &ui_compact,
                             &body_c,
-                            &header_sep_c,
+                            &body_revealer_c,
                             &footer_sep_c,
                             Some(&scroll_c),
                         );
@@ -428,7 +435,7 @@ impl Launcher {
             let ui_compact = ui_compact.clone();
             let row_pool = row_pool.clone();
             let body_cs = body.clone();
-            let header_sep_cs = header_sep.clone();
+            let body_revealer_cs = body_revealer.clone();
             let footer_sep_cs = footer_sep.clone();
             let scroll_cs = scroll.clone();
             Rc::new(move || {
@@ -458,7 +465,7 @@ impl Launcher {
                     &ui_symbolic,
                     &ui_compact,
                     &body_cs,
-                    &header_sep_cs,
+                    &body_revealer_cs,
                     &footer_sep_cs,
                     Some(&scroll_cs),
                 );
@@ -1019,7 +1026,7 @@ impl Launcher {
             ui_symbolic,
             ui_compact,
             body,
-            header_sep,
+            body_revealer,
             footer_sep,
             theme: theme.clone(),
         }
@@ -1067,7 +1074,7 @@ impl Launcher {
             &self.ui_symbolic,
             &self.ui_compact,
             &self.body,
-            &self.header_sep,
+            &self.body_revealer,
             &self.footer_sep,
             None,
         );
@@ -1628,14 +1635,14 @@ fn apply_body_chrome(
     compact: bool,
     query_empty: bool,
     body: &GtkBox,
-    header_sep: &gtk::Separator,
+    body_revealer: &gtk::Revealer,
     footer_sep: &gtk::Separator,
     scroll: Option<&ScrolledWindow>,
 ) {
     // Compact + idle query → search bar + footer only (no middle body).
     let show_body = !(compact && query_empty);
-    body.set_visible(show_body);
-    header_sep.set_visible(show_body);
+    // Animated expand/collapse (SlideDown, 120ms) — no 0ms layout snap.
+    body_revealer.set_reveal_child(show_body);
     // Keep a hairline above the footer when body is hidden (compact bar look).
     footer_sep.set_visible(true);
     if show_body {
@@ -1683,7 +1690,7 @@ fn refresh_results(
     ui_symbolic: &Rc<Cell<bool>>,
     ui_compact: &Rc<Cell<bool>>,
     body: &GtkBox,
-    header_sep: &gtk::Separator,
+    body_revealer: &gtk::Revealer,
     footer_sep: &gtk::Separator,
     scroll: Option<&ScrolledWindow>,
 ) {
@@ -1696,7 +1703,14 @@ fn refresh_results(
     let compact = ui_compact.get();
     let query_empty = query.trim().is_empty();
 
-    apply_body_chrome(compact, query_empty, body, header_sep, footer_sep, scroll);
+    apply_body_chrome(
+        compact,
+        query_empty,
+        body,
+        body_revealer,
+        footer_sep,
+        scroll,
+    );
 
     // Invalidate any in-flight async deep/translate for a previous query.
     let gen = deep_gen.get().wrapping_add(1);
@@ -2118,6 +2132,15 @@ fn kind_rank_ui(k: ResultKind) -> u8 {
 }
 
 fn setup_window_chrome(window: &ApplicationWindow) {
+    // Fallback toplevel geometry (non-layer-shell / X11). These also apply as
+    // sane defaults before layer-shell takes over the surface.
+    let outer_w = WINDOW_WIDTH + SHELL_INSET * 2;
+    window.set_title(Some("Hark"));
+    window.set_resizable(false);
+    window.set_decorated(false);
+    window.set_default_size(outer_w, -1);
+    window.set_size_request(outer_w, -1);
+
     #[cfg(feature = "layer-shell")]
     {
         use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -2149,21 +2172,47 @@ fn center_on_active_monitor(window: &ApplicationWindow) {
             // Prefer the monitor under the *pointer*, not the focused window's
             // monitor. Keyboard-only focus can lag the cursor on multi-monitor
             // setups (window on laptop, pointer on external).
-            if let Some(info) = hypr_pointer_monitor() {
-                if let Some(gdk_mon) = gdk_monitor_for_hypr(&info) {
-                    window.set_monitor(Some(&gdk_mon));
-                }
-                let top = (info.geom.height / 5).max(80);
-                window.set_anchor(Edge::Top, true);
-                window.set_anchor(Edge::Left, false);
-                window.set_anchor(Edge::Right, false);
-                window.set_anchor(Edge::Bottom, false);
-                window.set_margin(Edge::Top, top);
+            let (gdk_mon, geom_height) = match hypr_pointer_monitor() {
+                Some(info) => (gdk_monitor_for_hypr(&info), Some(info.geom.height)),
+                // Non-Hyprland layer-shell compositors (Sway, River, Wayfire)
+                // have no hyprctl — fall back to GDK monitor geometry.
+                None => (gdk_pointer_monitor(), None),
+            };
+            let top = geom_height.map(|h| h / 5).unwrap_or(80).max(80);
+            if let Some(gdk_mon) = gdk_mon {
+                window.set_monitor(Some(&gdk_mon));
             }
+            window.set_anchor(Edge::Top, true);
+            window.set_anchor(Edge::Left, false);
+            window.set_anchor(Edge::Right, false);
+            window.set_anchor(Edge::Bottom, false);
+            window.set_margin(Edge::Top, top);
             return;
         }
     }
+
+    // Non-layer-shell toplevel (X11 / GNOME Wayland): GTK4 has no client-side
+    // positioning API — `present()` (called by the caller) delegates placement
+    // to the WM, which centers new toplevels by default.
     let _ = window;
+}
+
+/// GDK monitor under the pointer — used for non-Hyprland compositors where the
+/// Hyprland layerrule subprocess path is unavailable (Sway, River, Wayfire).
+#[cfg(feature = "layer-shell")]
+fn gdk_pointer_monitor() -> Option<gtk::gdk::Monitor> {
+    use gtk::gdk::prelude::*;
+    let display = gtk::gdk::Display::default()?;
+    let device = display.default_seat()?.pointer()?;
+    // The surface under the pointer sits on the monitor the pointer is on.
+    let (surface, _, _) = device.surface_at_position();
+    if let Some(surface) = surface {
+        display.monitor_at_surface(&surface)
+    } else {
+        let m = display.monitors();
+        m.item(0)
+            .and_then(|i| i.downcast::<gtk::gdk::Monitor>().ok())
+    }
 }
 
 #[cfg(feature = "layer-shell")]
@@ -2180,21 +2229,45 @@ struct HyprMonitorGeom {
 struct HyprMonitorInfo {
     name: String,
     geom: HyprMonitorGeom,
+    focused: bool,
 }
 
 /// Monitor that contains the pointer (fallback: Hyprland focused / first).
 #[cfg(feature = "layer-shell")]
 fn hypr_pointer_monitor() -> Option<HyprMonitorInfo> {
-    // Short TTL only — pointer can move to another output between toggles.
-    // Still avoid double hyprctl spawns if show() is re-entered quickly.
-    const TTL: Duration = Duration::from_millis(200);
-    static CACHE: OnceLock<Mutex<Option<(Instant, HyprMonitorInfo)>>> = OnceLock::new();
+    let mons = fetch_hypr_monitors()?;
+    // Single-monitor fast-path: 0 subprocess spawns on the toggle path.
+    if let Some(single) = mons.first() {
+        if mons.len() == 1 {
+            return Some(single.clone());
+        }
+    }
+    // Multi-monitor: one fast `cursorpos -j` against the cached topology.
+    if let Some((cx, cy)) = hypr_cursor_pos() {
+        if let Some(mon) = mons.iter().find(|m| {
+            let g = &m.geom;
+            cx >= g.x && cy >= g.y && cx < g.x + g.width && cy < g.y + g.height
+        }) {
+            return Some(mon.clone());
+        }
+    }
+    focused_or_first(&mons)
+}
+
+/// Cached Hyprland monitor topology (5s TTL). The topology rarely changes
+/// between toggles, so cache it and avoid blocking process spawns on the hotkey
+/// presentation path.
+#[cfg(feature = "layer-shell")]
+fn fetch_hypr_monitors() -> Option<Vec<HyprMonitorInfo>> {
+    const TTL: Duration = Duration::from_secs(5);
+    type TopologyCache = OnceLock<Mutex<Option<(Instant, Vec<HyprMonitorInfo>)>>>;
+    static CACHE: TopologyCache = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     {
         let g = cache.lock().unwrap();
-        if let Some((at, info)) = g.as_ref() {
-            if at.elapsed() < TTL {
-                return Some(info.clone());
+        if let Some((at, mons)) = g.as_ref() {
+            if at.elapsed() < TTL && !mons.is_empty() {
+                return Some(mons.clone());
             }
         }
     }
@@ -2209,40 +2282,34 @@ fn hypr_pointer_monitor() -> Option<HyprMonitorInfo> {
     let v: serde_json::Value = serde_json::from_slice(&mon_out.stdout).ok()?;
     let arr = v.as_array()?;
 
-    let parse = |m: &serde_json::Value| -> Option<HyprMonitorInfo> {
-        Some(HyprMonitorInfo {
-            name: m.get("name")?.as_str()?.to_string(),
-            geom: HyprMonitorGeom {
-                x: m.get("x")?.as_i64()? as i32,
-                y: m.get("y")?.as_i64()? as i32,
-                width: m.get("width")?.as_i64()? as i32,
-                height: m.get("height")?.as_i64()? as i32,
-            },
-        })
-    };
-
-    let focused_or_first = || {
-        arr.iter()
-            .find(|m| m.get("focused").and_then(|f| f.as_bool()) == Some(true))
-            .and_then(parse)
-            .or_else(|| arr.first().and_then(parse))
-    };
-
-    let mon = if let Some((cx, cy)) = hypr_cursor_pos() {
-        arr.iter()
-            .find_map(|m| {
-                let info = parse(m)?;
-                let g = &info.geom;
-                let inside = cx >= g.x && cy >= g.y && cx < g.x + g.width && cy < g.y + g.height;
-                inside.then_some(info)
+    let mons: Vec<HyprMonitorInfo> = arr
+        .iter()
+        .filter_map(|m| {
+            Some(HyprMonitorInfo {
+                name: m.get("name")?.as_str()?.to_string(),
+                geom: HyprMonitorGeom {
+                    x: m.get("x")?.as_i64()? as i32,
+                    y: m.get("y")?.as_i64()? as i32,
+                    width: m.get("width")?.as_i64()? as i32,
+                    height: m.get("height")?.as_i64()? as i32,
+                },
+                focused: m.get("focused").and_then(|f| f.as_bool()) == Some(true),
             })
-            .or_else(focused_or_first)
-    } else {
-        focused_or_first()
-    }?;
+        })
+        .collect();
+    if mons.is_empty() {
+        return None;
+    }
+    *cache.lock().unwrap() = Some((Instant::now(), mons.clone()));
+    Some(mons)
+}
 
-    *cache.lock().unwrap() = Some((Instant::now(), mon.clone()));
-    Some(mon)
+#[cfg(feature = "layer-shell")]
+fn focused_or_first(mons: &[HyprMonitorInfo]) -> Option<HyprMonitorInfo> {
+    mons.iter()
+        .find(|m| m.focused)
+        .or_else(|| mons.first())
+        .cloned()
 }
 
 #[cfg(feature = "layer-shell")]

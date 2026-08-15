@@ -2,15 +2,16 @@
 --
 -- Why: Hyprland blurs the full rectangular layer surface. Transparent pixels
 -- outside the rounded card read as a square "padding" halo. ignore_alpha must
--- sit just under the shell fill (~0.85) so only the frosted card is blurred.
+-- sit just under the minimum allowed shell fill (0.40) so only the frosted card
+-- is blurred, even when opacity is set to its lowest slider value.
 
--- Hark frosted glass: blur only pixels above ignore_alpha (shell ~0.85).
--- Fully transparent corners must stay under the threshold or Hyprland paints a
--- square blur halo around the rounded card.
+-- Hark frosted glass: blur only pixels above ignore_alpha (shell 0.40..1.00).
+-- Fully transparent corners stay at alpha 0.0 under the threshold, preventing
+-- any square blur halo around the rounded card.
 hl.layer_rule({
     match        = { namespace = "hark" },
     animation    = "popin 80%",
     blur         = true,
-    ignore_alpha = 0.80,
+    ignore_alpha = 0.35,
     xray         = false,
 })

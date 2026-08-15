@@ -79,3 +79,6 @@ lcov.info
 /packaging/aur/src/
 /packaging/aur/*.tar.gz
 /packaging/aur/*.pkg.tar*
+docs/audit/
+assets/ui_review/
+UI_UX_AUDIT.md

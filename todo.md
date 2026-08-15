@@ -108,6 +108,8 @@ Single consolidated priority across the unit-math, cooking, financial, and quick
 | T2 | ✅ Cooking oven fan offset | — |
 | T2 | ✅ Quick wins: base-conversion output, roman, BMI, steps→km | — |
 | T2 | ✅ Quick wins P3: random, uuid, text utils, date-diff | — |
+| T3 | Update README.md | — |
+| T3 | Create a new markdown file mentioning every available feature/conversion in `src/providers/calc` | — |
 
 ## Unit math & duration arithmetic gaps
 

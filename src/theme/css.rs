@@ -1,3 +1,15 @@
+pub fn is_light_theme(hex: &str) -> bool {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() < 6 {
+        return false;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(26) as f32;
+    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(27) as f32;
+    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(38) as f32;
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lum > 128.0
+}
+
 use super::Theme;
 
 fn rgba(hex: &str, alpha: f32) -> String {
@@ -20,8 +32,24 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
         .unwrap_or(theme.primary.as_str());
     let scale = ui.font_scale.clamp(0.85, 1.30);
     let radius = ui.radius.clamp(8, 24);
-    let row_radius = (radius as f32 * 0.5).round().clamp(4.0, 14.0) as u32;
+    // Optical concentricity: R_inner = max(4, R_outer - padding_h)
+    let row_radius = radius.saturating_sub(6).clamp(4, 18);
     let icon_size = ui.icon_size.clamp(18, 36);
+
+    let is_light = is_light_theme(&theme.surface_container);
+    let (border, border_soft, shell_shadow) = if is_light {
+        (
+            rgba(&theme.outline_variant, 0.85),
+            rgba(&theme.outline_variant, 0.60),
+            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
+        )
+    } else {
+        (
+            rgba(&theme.outline_variant, 0.75),
+            rgba(&theme.outline_variant, 0.50),
+            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
+        )
+    };
 
     let shell_bg = rgba(&theme.surface_container, base);
     // Popovers float over results/previews without Hyprland blur — need higher opacity.
@@ -30,8 +58,6 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
     let selected_bg = rgba(primary, 0.18);
-    let border = rgba(&theme.outline_variant, 0.65);
-    let border_soft = rgba(&theme.outline_variant, 0.50);
     let hint = &theme.on_surface_variant;
     let empty = &theme.on_surface_variant;
     let subtitle = &theme.on_surface_variant;
@@ -80,15 +106,13 @@ window.hark-window .hark-shell stack > * {{
   background-image: none;
 }}
 
-/* Panel shell — single rounded card */
+/* Panel shell — single rounded card with dual-layer glass rim highlight */
 window.hark-window .hark-shell {{
   background-color: {shell_bg};
   background-image: none;
   border: 1px solid {border};
   border-radius: {radius}px;
-  /* No outer box-shadow: GTK paints it in the rectangular surface and Hyprland
-     layer blur turns that into a square "padding" halo. Depth comes from blur. */
-  box-shadow: none;
+  {shell_shadow}
   padding: 0;
   margin: 0;
   /* Compact list width; Rust grows the window only when preview opens. */
@@ -159,6 +183,17 @@ window.hark-window .hark-body {{
 window.hark-window .hark-body.hark-body-collapsed {{
   min-height: 0;
   padding: 0;
+}}
+
+/* Fluid height expansion wrapper — must stay transparent so only the shell
+   paints the card while the body slides down. */
+window.hark-window .hark-body-revealer {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
 }}
 
 window.hark-window .hark-list-col {{
@@ -932,4 +967,36 @@ window.hark-window checkbutton label {{
 }}
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::UiThemeConfig;
+
+    #[test]
+    fn test_is_light_theme() {
+        assert!(!is_light_theme("#24283b"));
+        assert!(!is_light_theme("#1a1b26"));
+        assert!(is_light_theme("#ffffff"));
+        assert!(is_light_theme("#f0f0f0"));
+    }
+
+    #[test]
+    fn test_render_css_contains_rim_highlight() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        assert!(css.contains("box-shadow: inset 0 1px 0 0"));
+        assert!(css.contains("window.hark-window .hark-shell"));
+    }
+
+    #[test]
+    fn test_concentric_row_radius() {
+        let theme = Theme::fallback();
+        let mut ui = UiThemeConfig::default();
+        ui.radius = 16;
+        let css = render(&theme, &ui);
+        assert!(css.contains("border-radius: 10px;"));
+    }
 }
