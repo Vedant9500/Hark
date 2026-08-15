@@ -81,7 +81,7 @@ Unifies legacy text rows (`conversion: None` via `result_calc`) onto the Raycast
 | Priority | Item | Notes |
 |----------|------|-------|
 | ✅ | Migrate `datetime.rs` to card | `now`, `utc`, `tomorrow`/`yesterday`, unix/epoch, relative `in N units`, days-until, date parsing, week number, day-of-year |
-| P2 | Migrate `battery.rs` to card | `format_result`: `battery`, `power`, `charging`, charge %, ETA |
+| ✅ | Migrate `battery.rs` to card | `format_result`: `battery`, `power`, `charging`, charge %, ETA — left `ac`/`battery`/`power`, right status line |
 | ✅ | Migrate `math.rs` natural/base to card | `try_natural` (`10% of 2k`, `tip 15% on 2k`) + `base_result` (`0xff`, `0b1010`) |
 | ✅ | Migrate `duration.rs` unit-duration to card | `try_duration_expr`: plain `10h 30min`, `2h + 30m`, ×/÷ scale — shipped in T1 (clock range already done) |
 
@@ -99,10 +99,10 @@ Single consolidated priority across the unit-math, cooking, financial, and quick
 | T1 | ✅ Fraction parsing (`1/2 cup`) | T0 |
 | T1 | ✅ Same-dimension add/sub (`2m + 30cm`) | unit engine |
 | T1 | ✅ `% of units` (`15% of 2km`) | unit engine |
-| T1 | Compound units (`5km/2h` speed done; fuel economy open) | unit engine |
-| T2 | Multi-unit relative datetime (`1h 30 min from now`) | — |
-| T2 | Financial P1: interest, discount, split, GST | — |
-| T2 | Financial P2: EMI, CAGR, rule-72, % change, hourly↔annual | — |
+| T1 | ✅ Compound units | `5km/2h` speed + fuel economy (`12 km/l to mpg`, `30 mpg to l/100km`) via `fueleco.rs` | unit engine |
+| T2 | ✅ Multi-unit relative datetime (`1h 30 min from now`) | — |
+| T2 | ✅ Financial P1: interest (simple + compound), discount, split, GST | — |
+| T2 | ✅ Financial P2: EMI, CAGR, rule-72, % change, hourly↔annual | — |
 | T2 | Cooking density table + butter sticks | fractions |
 | T2 | Cooking recipe scaling | unit engine |
 | T2 | Cooking oven fan offset | — |
@@ -122,7 +122,7 @@ Closes the `todo.txt` wishlist items: `200mb * 10`, `1h 30 min from now`, `2min 
 | P0 | `m` = minutes vs meters routing conflict | `100m` → "100 m from now" timestamp; `100m + 5m` → "1h 45min" duration. Meters get reinterpreted as minutes |
 | P1 | ✅ Unit × number / ÷ number | `200mb * 10`, `2km / 5`, `1kg * 4`, `500g / 2`, `2km×3`, `2km ÷ 5`, `2km/5`. Output smart prefix (`2km/5` → `400m`) |
 | P1 | ✅ Duration × number / ÷ number | `2min 16 sec * 5`, `1h 30min * 2`, `30min / 2`, `1h / 2`, `1.5h * 2` |
-| P1 | Multi-unit relative datetime | `1h 30 min from now`, `1h 30 min ago`, `1h 30 min later`, `2 hours 30 minutes from now` (datetime handles single unit only today) |
+| ✅ | Multi-unit relative datetime | `1h 30 min from now`, `1h 30 min ago`, `1h 30 min later`, `2 hours 30 minutes from now` — `RE_REL` already matches multi-token with explicit `in `/direction |
 | P2 | ✅ Same-dimension add/sub with mixed prefixes | `2m + 30cm`, `1km + 500m`, `5km + 2km`, `2km - 500m`, `200mb + 100mb`, `1gb - 512mb`. Convert both to base, then smart-prefix the result |
 | P2 | ✅ Percentage of units | `15% of 2km`, `10% of 200mb`, `50% of 2h`, `tip 10% on 500g` |
 | P2 | ✅ Day-of-week lookup | `day on 27 august 2026`, `what day is 26 aug`, `on 26 aug` → weekday card. Missing year rolls to next occurrence |
@@ -143,19 +143,19 @@ Volume↔volume, temperature, and mass cooking conversions already work (`2 tbsp
 
 ## Financial tools
 
-New pattern provider in `calc/` (same shape as `math.rs`/`try_natural`), reusing `format_number`. Currency/FX and `tip` already exist.
+New pattern provider in `calc/` (same shape as `math.rs`/`try_natural`), reusing `format_number`. Currency/FX and `tip` already exist. Shipped 2026-08-15 in `src/providers/calc/financial.rs` (all rows ✅).
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| P1 | Simple + compound interest | `interest 1000 at 5% for 3 years` → total + interest earned |
-| P1 | Discount | `20% off 500` → 400 (only `tip 20% on 45` exists today) |
-| P1 | Bill split | `split 45 4` → per person |
-| P1 | GST / tax add | `gst 18% on 1000` → ₹1180 + GST amount (₹-friendly, matches existing lakh/crore support) |
-| P2 | EMI | `emi 500000 8% 5 years` → monthly payment |
-| P2 | CAGR / returns | `cagr 10000 to 20000 3 years` |
-| P2 | Rule of 72 | `72 at 8%` → years to double |
-| P2 | Percent change | `100 to 150` → +50% |
-| P2 | Hourly↔annual | `25/hr to annual`, `60000/yr to hourly` |
+| ✅ | Simple + compound interest | `interest 1000 at 5% for 3 years` → total + interest earned; `compounded` → annual compounding |
+| ✅ | Discount | `20% off 500` → 400 |
+| ✅ | Bill split | `split 45 4` → per person |
+| ✅ | GST / tax add | `gst 18% on 1000` → ₹1180 + GST amount (₹-friendly, lakh/crore magnitudes via `eval_str`) |
+| ✅ | EMI | `emi 500000 8% 5 years` → monthly payment |
+| ✅ | CAGR / returns | `cagr 10000 to 20000 3 years` |
+| ✅ | Rule of 72 | `72 at 8%` / `rule of 72 at 8%` → years to double |
+| ✅ | Percent change | `100 to 150` → +50% |
+| ✅ | Hourly↔annual | `25/hr to annual`, `60000/yr to hourly` (2080h/yr) |
 | P3 | Inflation-adjusted value | `10000 in 2020 to now` |
 
 ## Other calculator quick wins
@@ -167,7 +167,7 @@ All pattern-based, cheap to add. Base conversion today only accepts `0x`/`0b` in
 | P1 | Base conversion output | `255 to hex`, `ff to dec`, `1010 to bin`, `o` octal |
 | P2 | Roman numerals | `roman 1984` → MCMLXXXIV |
 | P2 | BMI | `bmi 180cm 75kg` → 23.1 |
-| P2 | Fuel economy | `12 km/l to mpg`, `30 mpg to l/100km` |
+| ✅ | Fuel economy | `12 km/l to mpg`, `30 mpg to l/100km`, `mpg ↔ km/l`, `l/100km ↔ mpg` (US gallons) |
 | P2 | Steps→distance | `10000 steps in km` (stride-length assumption) |
 | P3 | Random | `dice`, `roll d20`, `coin` |
 | P3 | UUID / password | `uuid`, `password 16` |

@@ -70,21 +70,6 @@ pub(crate) fn relative_secs(n: f64, unit: &str) -> Option<f64> {
     Some(n * mult)
 }
 
-pub(crate) fn result_calc(title: String, subtitle: String, copy: String) -> SearchResult {
-    SearchResult {
-        id: format!("calc:{title}:{subtitle}"),
-        title,
-        subtitle,
-        kind: ResultKind::Calc,
-        score: 10_000,
-        icon: Some("accessories-calculator".into()),
-        action: Action::Copy(copy),
-        conversion: None,
-    }
-}
-
-/// Raycast-style dual-panel card result (modern layout). New calc providers
-/// should use this instead of `result_calc`'s plain text row.
 pub(crate) fn card_result(
     title: String,
     subtitle: String,

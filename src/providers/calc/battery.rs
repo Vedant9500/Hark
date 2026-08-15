@@ -3,7 +3,7 @@
 //! Queries: `battery`, `power`, `ac`, `charging`, `on battery`, etc.
 //! Read-only, event-style (only when the user searches) — no background poll.
 
-use super::util::result_calc;
+use super::util::card_result;
 use crate::providers::SearchResult;
 use std::fs;
 use std::path::Path;
@@ -241,9 +241,23 @@ fn format_result(snap: &PowerSnapshot) -> SearchResult {
 
     let subtitle = build_subtitle(snap);
     let copy = build_copy_text(snap, &title);
+    let left = match snap.source {
+        PowerSource::Ac => "ac",
+        PowerSource::Battery => "battery",
+        PowerSource::Unknown => "power",
+    };
 
+    // Status readout on the card: left = source, right = the status line.
+    let mut r = card_result(
+        title.clone(),
+        subtitle,
+        copy,
+        left.into(),
+        "power",
+        title,
+        "result",
+    );
     // Prefer battery-themed icons when the theme has them; util helper uses calc icon.
-    let mut r = result_calc(title, subtitle, copy);
     r.icon = Some(icon.into());
     r.id = format!("power:{}", r.id);
     // Slightly above generic calc so it wins pure keyword matches.
@@ -440,5 +454,15 @@ mod tests {
     fn duration_format() {
         assert_eq!(format_duration_secs(90), "~1m left");
         assert_eq!(format_duration_secs(3661), "~1h 01m left");
+    }
+
+    #[test]
+    fn card_layout() {
+        let r = try_battery("battery").expect("battery result");
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_badge, "power");
+        assert_eq!(conv.right_badge, "result");
+        assert!(r.icon.is_some(), "battery icon must be kept");
+        assert_eq!(r.score, 15_000);
     }
 }

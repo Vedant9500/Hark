@@ -3,6 +3,8 @@ mod currency;
 mod datetime;
 mod duration;
 mod expr;
+mod financial;
+mod fueleco;
 mod math;
 mod timezone;
 mod unitmath;
@@ -13,6 +15,8 @@ use battery::try_battery;
 use currency::{normalize_money_query, try_currency, try_currency_predict};
 use datetime::try_datetime;
 use duration::try_duration_expr;
+use financial::try_financial;
+use fueleco::try_fuel_economy;
 use math::{looks_like_math, try_math, try_natural};
 use timezone::{try_timezone, try_timezone_predict};
 use unitmath::try_unit_math;
@@ -70,6 +74,12 @@ impl CalcProvider {
         }
         if let Some(results) = try_conversion_predict(&q_norm) {
             return results;
+        }
+        if let Some(r) = try_financial(&q_norm) {
+            return vec![r];
+        }
+        if let Some(r) = try_fuel_economy(&q_norm) {
+            return vec![r];
         }
         if let Some(r) = try_unit_math(&q_norm) {
             return vec![r];

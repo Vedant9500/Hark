@@ -1164,6 +1164,47 @@ mod engine_search_tests {
     }
 
     #[test]
+    fn tier2_financial_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        for q in [
+            "interest 1000 at 5% for 3 years",
+            "20% off 500",
+            "split 45 4",
+            "gst 18% on 1000",
+            "emi 500000 8% 5 years",
+            "cagr 10000 to 20000 3 years",
+            "72 at 8%",
+            "100 to 150",
+            "25/hr to annual",
+            "60000/yr to hourly",
+        ] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+    }
+
+    #[test]
+    fn tier2_fuel_economy_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        for q in ["12 km/l to mpg", "30 mpg to l/100km", "30 mpg to km/l", "7.84 l/100km to mpg"] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+    }
+
+    #[test]
+    fn tier3_battery_renders_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        for q in ["battery", "bat", "power", "charging", "on battery"] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{q}");
+            assert!(r[0].conversion.is_some(), "{q} must carry a conversion card");
+        }
+    }
+
+    #[test]
     fn force_files_query_bypasses_apps() {
         let te = build_engine(
             &[("firefox.desktop", "Firefox")],
