@@ -1,4 +1,18 @@
-use crate::providers::{Action, ResultKind, SearchResult};
+use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
+
+/// Parse a numeric literal that may be a fraction (`1/2`, `2/3`) or a plain
+/// decimal. Used for fraction quantities like `1/2 cup to ml`.
+pub(crate) fn parse_qty_number(s: &str) -> Option<f64> {
+    if let Some((a, b)) = s.split_once('/') {
+        let a: f64 = a.parse().ok()?;
+        let b: f64 = b.trim().parse().ok()?;
+        if b == 0.0 {
+            return None;
+        }
+        return Some(a / b);
+    }
+    s.parse().ok()
+}
 
 pub(crate) fn format_number(v: f64) -> String {
     if !v.is_finite() {
@@ -66,5 +80,33 @@ pub(crate) fn result_calc(title: String, subtitle: String, copy: String) -> Sear
         icon: Some("accessories-calculator".into()),
         action: Action::Copy(copy),
         conversion: None,
+    }
+}
+
+/// Raycast-style dual-panel card result (modern layout). New calc providers
+/// should use this instead of `result_calc`'s plain text row.
+pub(crate) fn card_result(
+    title: String,
+    subtitle: String,
+    copy: String,
+    left_title: String,
+    left_badge: &'static str,
+    right_title: String,
+    right_badge: &'static str,
+) -> SearchResult {
+    SearchResult {
+        id: format!("calc:{title}:{subtitle}"),
+        title,
+        subtitle,
+        kind: ResultKind::Calc,
+        score: 10_000,
+        icon: Some("accessories-calculator".into()),
+        action: Action::Copy(copy),
+        conversion: Some(ConversionView {
+            left_title,
+            left_badge: left_badge.into(),
+            right_title,
+            right_badge: right_badge.into(),
+        }),
     }
 }

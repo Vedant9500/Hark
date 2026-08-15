@@ -5,6 +5,7 @@ mod duration;
 mod expr;
 mod math;
 mod timezone;
+mod unitmath;
 mod units;
 mod util;
 
@@ -14,6 +15,7 @@ use datetime::try_datetime;
 use duration::try_duration_expr;
 use math::{looks_like_math, try_math, try_natural};
 use timezone::{try_timezone, try_timezone_predict};
+use unitmath::try_unit_math;
 use units::{try_conversion, try_conversion_predict};
 
 use super::fx::FxStore;
@@ -68,6 +70,9 @@ impl CalcProvider {
         }
         if let Some(results) = try_conversion_predict(&q_norm) {
             return results;
+        }
+        if let Some(r) = try_unit_math(&q_norm) {
+            return vec![r];
         }
         if let Some(r) = try_datetime(&q_norm) {
             return vec![r];

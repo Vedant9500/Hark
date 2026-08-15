@@ -1,5 +1,5 @@
 use super::timezone::parse_clock;
-use super::util::{relative_secs, result_calc};
+use super::util::{card_result, relative_secs};
 use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -26,7 +26,6 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     let mut total_secs: f64 = 0.0;
     let mut count = 0;
     let mut last_end = 0;
-    let mut has_op = false;
     let mut any_non_m_unit = false;
 
     for cap in RE_TOKEN.captures_iter(&lower) {
@@ -38,17 +37,9 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         if !between.is_empty() && between != "+" && between != "-" {
             return None;
         }
-        if between == "+" || between == "-" {
-            has_op = true;
-        }
         let sign_g = cap.get(1).map(|x| x.as_str()).unwrap_or("");
         let mut sign = 1.0_f64;
-        if sign_g == "-" {
-            sign = -1.0;
-            has_op = true;
-        } else if sign_g == "+" {
-            has_op = true;
-        } else if between == "-" {
+        if sign_g == "-" || between == "-" {
             sign = -1.0;
         }
         let n: f64 = cap.get(2)?.as_str().parse().ok()?;
@@ -62,21 +53,31 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         last_end = m.end();
     }
 
-    if count < 2 {
-        return None;
+    // Optional ×/÷ by a dimensionless number (`2min 16 sec * 5`, `1h / 2`).
+    let mut scale: Option<f64> = None;
+    let mut divide = false;
+    let trailing = lower[last_end..].trim();
+    if !trailing.is_empty() {
+        static RE_SCALE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"^(?:×|\*|/|÷)\s*([+-]?\d+(?:\.\d+)?)\s*$").unwrap());
+        let c = RE_SCALE.captures(trailing)?;
+        divide = trailing.starts_with('/') || trailing.starts_with('÷');
+        scale = Some(c.get(1)?.as_str().parse().ok()?);
     }
-    // trailing junk?
-    if !lower[last_end..].trim().is_empty() {
-        return None;
-    }
-    // Prefer when there's an operator OR multiple units stacked (10h 30min)
-    if !has_op && count < 2 {
+
+    if count < 2 && scale.is_none() {
         return None;
     }
     // All-bare-`m` expressions (`100m + 5m`, `30m + 30m`) are meters/length,
     // not minutes — reject so the unit engine can own them.
     if !any_non_m_unit {
         return None;
+    }
+    if let Some(s) = scale {
+        if s == 0.0 {
+            return None;
+        }
+        total_secs = if divide { total_secs / s } else { total_secs * s };
     }
 
     let formatted = format_duration(total_secs.abs());
@@ -85,7 +86,15 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     } else {
         formatted
     };
-    Some(result_calc(title.clone(), format!("duration · {q}"), title))
+    Some(card_result(
+        title.clone(),
+        format!("= {q}"),
+        title.clone(),
+        q.to_string(),
+        "duration",
+        title,
+        "result",
+    ))
 }
 
 /// Difference between two clock times on the same day (or overnight if end < start).
@@ -249,6 +258,29 @@ mod tests {
         assert_eq!(r.title, "10h 30min");
         let r = try_duration_expr("2h + 30m").expect("ops");
         assert_eq!(r.title, "2h 30min");
+    }
+
+    #[test]
+    fn scale_by_number() {
+        let r = try_duration_expr("2min 16 sec * 5").expect("scale");
+        assert_eq!(r.title, "11min 20s");
+        let r = try_duration_expr("1h 30min * 2").expect("scale");
+        assert_eq!(r.title, "3h");
+        let r = try_duration_expr("1.5h * 2").expect("scale");
+        assert_eq!(r.title, "3h");
+        let r = try_duration_expr("30min / 2").expect("scale");
+        assert_eq!(r.title, "15min");
+        let r = try_duration_expr("1h / 2").expect("scale");
+        assert_eq!(r.title, "30min");
+        let r = try_duration_expr("1h ÷ 4").expect("scale");
+        assert_eq!(r.title, "15min");
+        // Scale still renders on the card.
+        let conv = r.conversion.expect("card layout");
+        assert_eq!(conv.left_badge, "duration");
+        assert_eq!(conv.right_badge, "result");
+        // Zero divisor and scale-only-without-time are rejected.
+        assert!(try_duration_expr("2h / 0").is_none());
+        assert!(try_duration_expr("* 5").is_none());
     }
 
     #[test]

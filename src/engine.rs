@@ -1087,14 +1087,18 @@ mod engine_search_tests {
         fn no_calc(r: &[SearchResult]) -> bool {
             r.iter().all(|x| !matches!(x.kind, ResultKind::Calc | ResultKind::Conversion))
         }
-        // Single-letter m/b/t are meters/bytes/tonnes, not magnitudes: no
-        // plausible-but-wrong calc answer for these.
-        assert!(no_calc(&te.engine.search("100m / 2")), "100m/2 must not be 50000000");
-        assert!(no_calc(&te.engine.search("1m * 3")), "1m*3 must not be 3000000");
-        assert!(no_calc(&te.engine.search("100m + 5m")), "must not be 1h 45min");
+        fn calc_title(r: &[SearchResult]) -> String {
+            r.first().map(|x| x.title.clone()).unwrap_or_default()
+        }
+        // Single-letter m/b/t are meters/bytes/tonnes, not magnitudes: unit
+        // arithmetic returns real unit answers, never 5e7/3e6-style junk.
+        assert_eq!(calc_title(&te.engine.search("100m / 2")), "50 m");
+        assert_eq!(calc_title(&te.engine.search("1m * 3")), "3 m");
+        assert_eq!(calc_title(&te.engine.search("100m + 5m")), "105 m");
+        assert_eq!(calc_title(&te.engine.search("1b / 2")), "0.5 b");
+        assert_eq!(calc_title(&te.engine.search("2t / 4")), "500 kg");
+        // Bare `100m` (no arithmetic) still gets no calc answer.
         assert!(no_calc(&te.engine.search("100m")), "must not be 100 m from now");
-        assert!(no_calc(&te.engine.search("1b / 2")), "1b/2 must not be 500000000");
-        assert!(no_calc(&te.engine.search("2t / 4")), "2t/4 must not be 500000000000");
         // Duration provider must not steal non-duration queries.
         assert!(no_calc(&te.engine.search("50% of 1h 30min")), "no 1h 30min card");
         // `in 1h 30min` → future timestamp, not a duration card.
@@ -1105,10 +1109,17 @@ mod engine_search_tests {
         assert_eq!(first_kind(&r), Some(ResultKind::Calc));
         let r = te.engine.search("10k * 3");
         assert_eq!(first_kind(&r), Some(ResultKind::Calc));
-        // Duration math still works.
+        // Duration math still works (duration provider owns time arithmetic).
         let r = te.engine.search("2h + 30m");
         assert_eq!(first_kind(&r), Some(ResultKind::Calc));
         assert_eq!(r[0].title, "2h 30min");
+        // Unit math renders on the card (title = formatted result).
+        let r = te.engine.search("200mb * 10");
+        assert_eq!(r[0].title, "2 gb");
+        let r = te.engine.search("2km / 5");
+        assert_eq!(r[0].title, "400 m");
+        let r = te.engine.search("50% of 2h");
+        assert_eq!(r[0].title, "1h");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use regex::Regex;
 
 pub(crate) static RE_CONVERT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*",
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)\s*",
         r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
         r"(?:to|in|as|->|→)\s+",
         r"([a-zA-Z°²³/µμ]+(?:\^[23])?)?\s*$",
@@ -17,7 +17,7 @@ pub(crate) static RE_CONVERT: Lazy<Regex> = Lazy::new(|| {
 // Incomplete: "10kg to pou" / "10 kg to" (target optional/partial)
 pub(crate) static RE_CONVERT_PARTIAL: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*",
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)\s*",
         r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
         r"(to|in|as|->|→)\s*",
         r"([a-zA-Z°²³/µμ]*)\s*$",
@@ -27,7 +27,7 @@ pub(crate) static RE_CONVERT_PARTIAL: Lazy<Regex> = Lazy::new(|| {
 
 pub(crate) fn try_conversion(q: &str) -> Option<SearchResult> {
     let caps = RE_CONVERT.captures(q)?;
-    let value: f64 = caps.get(1)?.as_str().parse().ok()?;
+    let value: f64 = super::util::parse_qty_number(caps.get(1)?.as_str())?;
     let from_raw = caps.get(2)?.as_str();
     let to_raw = caps.get(3)?.as_str();
     if to_raw.is_empty() {
@@ -45,7 +45,7 @@ pub(crate) fn try_conversion(q: &str) -> Option<SearchResult> {
 /// Predict incomplete targets: `10kg to pou` → pounds, `100m to ki` → km
 pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
     let caps = RE_CONVERT_PARTIAL.captures(q)?;
-    let value: f64 = caps.get(1)?.as_str().parse().ok()?;
+    let value: f64 = super::util::parse_qty_number(caps.get(1)?.as_str())?;
     let from_raw = caps.get(2)?.as_str();
     let to_prefix = caps.get(4).map(|m| m.as_str()).unwrap_or("").trim();
 
@@ -548,5 +548,19 @@ pub(crate) fn to_base(unit: &str) -> Option<(f64, &'static str)> {
         "mhz" => Some((1_000_000.0, "frequency")),
         "ghz" => Some((1_000_000_000.0, "frequency")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_conversion;
+
+    #[test]
+    fn fractional_quantity_converts() {
+        // `2/3 cup to ml` → 0.6667 × 236.588 ml = 157.725 ml.
+        let r = try_conversion("2/3 cup to ml").expect("fraction");
+        assert_eq!(r.title, "157.725 ml");
+        let r = try_conversion("1/2 cup to ml").expect("fraction");
+        assert_eq!(r.title, "118.294 ml");
     }
 }
