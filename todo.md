@@ -85,6 +85,94 @@ Unifies legacy text rows (`conversion: None` via `result_calc`) onto the Raycast
 | P2 | Migrate `math.rs` natural/base to card | `try_natural` (`10% of 2k`, `tip 15% on 2k`) + `base_result` (`0xff`, `0b1010`) |
 | P2 | Migrate `duration.rs` unit-duration to card | `try_duration_expr`: plain `10h 30min`, `2h + 30m` (clock range already done) |
 
+## Master priority order
+
+Single consolidated priority across the unit-math, cooking, financial, and quick-win sections below. Rationale: the unit-math engine is a shared foundation that gates several cooking/financial items, and the correctness bugs must land first because they return plausible-but-wrong answers. Execution is not strictly top-to-bottom — Tier 2 items are independent providers and parallelize while Tier 1 work proceeds.
+
+| Tier | Item | Gated by |
+|------|------|----------|
+| T0 | `m`/`b`/`t` magnitude vs meter/byte/tonne collision | — |
+| T0 | Duration provider steal (`50% of 1h 30min`, `in 1h 30min`) | — |
+| T0 | `m` = minutes vs meters routing | — |
+| T1 | Unit engine: × / ÷ by number (`200mb * 10`, `2km/5`) | T0 |
+| T1 | Duration × / ÷ number (`2min 16 sec * 5`) | T0 |
+| T1 | Fraction parsing (`1/2 cup`) | T0 |
+| T1 | Same-dimension add/sub (`2m + 30cm`) | unit engine |
+| T1 | `% of units` (`15% of 2km`) | unit engine |
+| T1 | Compound units (`5km/2h`, fuel economy) | unit engine |
+| T2 | Multi-unit relative datetime (`1h 30 min from now`) | — |
+| T2 | Financial P1: interest, discount, split, GST | — |
+| T2 | Financial P2: EMI, CAGR, rule-72, % change, hourly↔annual | — |
+| T2 | Cooking density table + butter sticks | fractions |
+| T2 | Cooking recipe scaling | unit engine |
+| T2 | Cooking oven fan offset | — |
+| T2 | Quick wins: base-conversion output, roman, BMI, steps→km | — |
+| T2 | Quick wins P3: random, uuid, text utils, date-diff | — |
+
+## Unit math & duration arithmetic gaps
+
+Empirically probed against `CalcProvider::search` (2026-08-15). "NONE" = no result. Some queries **silently return wrong answers** (P0 rows) — worse than a missing result. The root cause: `expr.rs` resolves identifiers to `pi`/`e` only (`const_val`), so unit tokens abort the parse; `duration.rs` token regex supports only `+`/`-`; `datetime.rs` relative regex takes a single number+unit; `calc/mod.rs` routing order (duration → datetime → math) lets early providers steal queries.
+
+Closes the `todo.txt` wishlist items: `200mb * 10`, `1h 30 min from now`, `2min 16 sec * 5`.
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| P0 | Fix single-letter magnitude/unit collision | `m` magnitude = million collides with meters: `100m / 2` → `50000000` (should be `50m`), `1m * 3` → `3000000`. Same for `b`=billion vs byte, `t`=trillion vs tonne |
+| P0 | Stop duration provider stealing non-duration queries | `50% of 1h 30min` → "1h 30min" (should be `45min`); `in 1h 30min` returns a duration card, not a future timestamp (inconsistent with `in 2h`). Duration regex ignores leading junk and the bare `in ` prefix |
+| P0 | `m` = minutes vs meters routing conflict | `100m` → "100 m from now" timestamp; `100m + 5m` → "1h 45min" duration. Meters get reinterpreted as minutes |
+| P1 | Unit × number / ÷ number | `200mb * 10`, `2km / 5`, `1kg * 4`, `500g / 2`, `2km×3`, `2km ÷ 5`, `2km/5`. Output smart prefix (`2km/5` → `400m`) |
+| P1 | Duration × number / ÷ number | `2min 16 sec * 5`, `1h 30min * 2`, `30min / 2`, `1h / 2`, `1.5h * 2` |
+| P1 | Multi-unit relative datetime | `1h 30 min from now`, `1h 30 min ago`, `1h 30 min later`, `2 hours 30 minutes from now` (datetime handles single unit only today) |
+| P2 | Same-dimension add/sub with mixed prefixes | `2m + 30cm`, `1km + 500m`, `5km + 2km`, `2km - 500m`, `200mb + 100mb`, `1gb - 512mb`. Convert both to base, then smart-prefix the result |
+| P2 | Percentage of units | `15% of 2km`, `10% of 200mb`, `50% of 2h`, `tip 10% on 500g` |
+| P2 | Bare unit values | `5km`, `500g`, `2kg` → show base (or common-target) value instead of no result |
+| P3 | Compound units | `5km / 2h` (speed), `60km/h * 2`, `2km² / 2`, `4m2 * 3` |
+
+## Cooking tools
+
+Volume↔volume, temperature, and mass cooking conversions already work (`2 tbsp to tsp` → 6 tsp, `1 cup to ml`, `250 c to f`). Missing: density-based weight↔volume, fractions, and scaling. Verified gaps (probe 2026-08-15).
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| P1 | Ingredient weight↔volume | `100g flour in cups`, `2 cups sugar in g` — static density table (flour, sugar, butter, rice, oats, honey, milk, oil), same shape as `UNIT_ALIASES` |
+| P1 | Fraction quantities | `1/2 cup to ml`, `1/3 cup sugar in g` — units/expr regex takes plain integers only today |
+| P2 | Recipe scaling | `double 2 cups flour`, `scale 1.5x`, `4 servings to 8` |
+| P2 | Butter sticks | `1 stick butter` → 113 g |
+| P3 | Oven fan↔conventional | `fan 200c to conventional` (~15-20 °C lower) |
+
+## Financial tools
+
+New pattern provider in `calc/` (same shape as `math.rs`/`try_natural`), reusing `format_number`. Currency/FX and `tip` already exist.
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| P1 | Simple + compound interest | `interest 1000 at 5% for 3 years` → total + interest earned |
+| P1 | Discount | `20% off 500` → 400 (only `tip 20% on 45` exists today) |
+| P1 | Bill split | `split 45 4` → per person |
+| P1 | GST / tax add | `gst 18% on 1000` → ₹1180 + GST amount (₹-friendly, matches existing lakh/crore support) |
+| P2 | EMI | `emi 500000 8% 5 years` → monthly payment |
+| P2 | CAGR / returns | `cagr 10000 to 20000 3 years` |
+| P2 | Rule of 72 | `72 at 8%` → years to double |
+| P2 | Percent change | `100 to 150` → +50% |
+| P2 | Hourly↔annual | `25/hr to annual`, `60000/yr to hourly` |
+| P3 | Inflation-adjusted value | `10000 in 2020 to now` |
+
+## Other calculator quick wins
+
+All pattern-based, cheap to add. Base conversion today only accepts `0x`/`0b` input (no output direction).
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| P1 | Base conversion output | `255 to hex`, `ff to dec`, `1010 to bin`, `o` octal |
+| P2 | Roman numerals | `roman 1984` → MCMLXXXIV |
+| P2 | BMI | `bmi 180cm 75kg` → 23.1 |
+| P2 | Fuel economy | `12 km/l to mpg`, `30 mpg to l/100km` |
+| P2 | Steps→distance | `10000 steps in km` (stride-length assumption) |
+| P3 | Random | `dice`, `roll d20`, `coin` |
+| P3 | UUID / password | `uuid`, `password 16` |
+| P3 | Text utils | word count, slugify, case convert (`case snake Hello World`) |
+| P3 | Date diff / age | `1998-03-15 to now`, `age 1998-03-15` |
+
 ## Architecture / hygiene
 
 | Priority | Item | Notes |

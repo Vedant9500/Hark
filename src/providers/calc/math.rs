@@ -6,10 +6,11 @@ use regex::Regex;
 pub(crate) static RE_MATHISH: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[\d\)\]]\s*[\+\-\*/%\^]|[\+\-\*/%\^]\s*[\d\(]|[\d\.]+\s*!").unwrap());
 
-/// `5k`, `1.5m`, `2 billion` — magnitude scales used as calc input.
+/// `5k`, `1.5 million`, `2 billion` — magnitude scales used as calc input.
+/// Single `m`/`b`/`t` are excluded: they read as meters/bytes/tonnes.
 pub(crate) static RE_MAGNITUDE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?i)\d(?:[\d.]*)\s*(?:k|m|b|t|bn|tn|mil|",
+        r"(?i)\d(?:[\d.]*)\s*(?:k|bn|tn|mil|",
         r"hundreds?|thousands?|millions?|billions?|trillions?|",
         r"lakhs?|lacs?|crores?)\b",
     ))
@@ -61,13 +62,14 @@ pub(crate) fn try_math(q: &str) -> Option<SearchResult> {
 pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
     let lower = q.to_lowercase();
 
-    // Numbers may include magnitude suffixes (`10% of 1.5m`, `tip 15% on 2k`).
+    // Numbers may include magnitude suffixes (`10% of 1.5 million`,
+    // `tip 15% on 2k`). Single m/b/t are units, not magnitudes.
     static RE_PCT: Lazy<Regex> = Lazy::new(|| {
         Regex::new(concat!(
-            r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:\s*(?:k|bn|tn|mil|",
             r"hundreds?|thousands?|millions?|billions?|trillions?|",
             r"lakhs?|lacs?|crores?)?)?)\s*%\s*of\s*",
-            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|bn|tn|mil|",
             r"hundreds?|thousands?|millions?|billions?|trillions?|",
             r"lakhs?|lacs?|crores?)?)?)\s*$",
         ))
@@ -87,10 +89,10 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
 
     static RE_TIP: Lazy<Regex> = Lazy::new(|| {
         Regex::new(concat!(
-            r"(?i)^\s*tip\s+([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"(?i)^\s*tip\s+([+-]?\d+(?:\.\d+)?(?:\s*(?:k|bn|tn|mil|",
             r"hundreds?|thousands?|millions?|billions?|trillions?|",
             r"lakhs?|lacs?|crores?)?)?)\s*%\s*(?:on|for)\s*",
-            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|m|b|t|bn|tn|mil|",
+            r"([+-]?\d+(?:\.\d+)?(?:\s*(?:k|bn|tn|mil|",
             r"hundreds?|thousands?|millions?|billions?|trillions?|",
             r"lakhs?|lacs?|crores?)?)?)\s*$",
         ))
@@ -148,8 +150,13 @@ mod math_gate_tests {
     fn try_math_magnitude() {
         let r = try_math("5k + 2.5k").expect("math");
         assert_eq!(r.title, "7500");
-        let r = try_math("1.5m").expect("math");
+        let r = try_math("1.5 million").expect("math");
         assert_eq!(r.title, "1500000");
+        // Single m/b/t are meters/bytes/tonnes, not magnitudes.
+        assert!(try_math("1.5m").is_none());
+        assert!(try_math("100m / 2").is_none());
+        assert!(try_math("1m * 3").is_none());
+        assert!(try_math("2t / 4").is_none());
     }
 
     #[test]

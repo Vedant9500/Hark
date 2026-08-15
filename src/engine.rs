@@ -1082,6 +1082,36 @@ mod engine_search_tests {
     }
 
     #[test]
+    fn t0_unit_magnitude_and_duration_steal() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        fn no_calc(r: &[SearchResult]) -> bool {
+            r.iter().all(|x| !matches!(x.kind, ResultKind::Calc | ResultKind::Conversion))
+        }
+        // Single-letter m/b/t are meters/bytes/tonnes, not magnitudes: no
+        // plausible-but-wrong calc answer for these.
+        assert!(no_calc(&te.engine.search("100m / 2")), "100m/2 must not be 50000000");
+        assert!(no_calc(&te.engine.search("1m * 3")), "1m*3 must not be 3000000");
+        assert!(no_calc(&te.engine.search("100m + 5m")), "must not be 1h 45min");
+        assert!(no_calc(&te.engine.search("100m")), "must not be 100 m from now");
+        assert!(no_calc(&te.engine.search("1b / 2")), "1b/2 must not be 500000000");
+        assert!(no_calc(&te.engine.search("2t / 4")), "2t/4 must not be 500000000000");
+        // Duration provider must not steal non-duration queries.
+        assert!(no_calc(&te.engine.search("50% of 1h 30min")), "no 1h 30min card");
+        // `in 1h 30min` → future timestamp, not a duration card.
+        let r = te.engine.search("in 1h 30min");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc), "{r:?}");
+        // Magnitude words / k still work.
+        let r = te.engine.search("2 million + 500k");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc));
+        let r = te.engine.search("10k * 3");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc));
+        // Duration math still works.
+        let r = te.engine.search("2h + 30m");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc));
+        assert_eq!(r[0].title, "2h 30min");
+    }
+
+    #[test]
     fn force_files_query_bypasses_apps() {
         let te = build_engine(
             &[("firefox.desktop", "Firefox")],

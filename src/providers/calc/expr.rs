@@ -3,7 +3,7 @@
 //! Replaces abandoned `meval` (which pulled ancient `nom` with future-incompat lints).
 //! Supports: + - * / % ** ^, unary ±, parentheses, factorial postfix `!`,
 //! constants `pi`/`e`, functions `sqrt sin cos tan log ln abs floor ceil round`,
-//! and magnitude suffixes (`5k`, `1.5m`, `2 billion`, …).
+//! and magnitude suffixes (`5k`, `1.5 million`, `2 billion`, …).
 
 use std::f64::consts::{E, PI};
 
@@ -272,14 +272,17 @@ fn call_fn(name: &str, args: &[f64]) -> Option<f64> {
 
 /// Scale factor for finance-style magnitude words/letters after a number.
 ///
-/// Short letters: `k`/`m`/`b`/`t` (and `bn`/`tn`). Full words: thousand…trillion.
-/// Unknown words return `None` so unit tokens like `km` are left alone.
+/// Short letters: `k` (and multi-letter `mil`/`bn`/`tn`). Full words:
+/// thousand…trillion. Single `m`/`b`/`t` are deliberately NOT magnitudes —
+/// they collide with meters/bytes/tonnes (`100m` is 100 meters, not 100
+/// million). Unknown words return `None` so unit tokens like `km` are left
+/// alone.
 fn magnitude_factor(word: &str) -> Option<f64> {
     match word {
         "k" | "thousand" | "thousands" => Some(1_000.0),
-        "m" | "mil" | "million" | "millions" => Some(1_000_000.0),
-        "b" | "bn" | "billion" | "billions" => Some(1_000_000_000.0),
-        "t" | "tn" | "trillion" | "trillions" => Some(1_000_000_000_000.0),
+        "mil" | "million" | "millions" => Some(1_000_000.0),
+        "bn" | "billion" | "billions" => Some(1_000_000_000.0),
+        "tn" | "trillion" | "trillions" => Some(1_000_000_000_000.0),
         "hundred" | "hundreds" => Some(100.0),
         // Common South-Asian scales (optional nicety).
         "lakh" | "lac" | "lakhs" | "lacs" => Some(100_000.0),
@@ -378,21 +381,39 @@ mod tests {
         assert!((eval_str("5k").unwrap() - 5_000.0).abs() < 1e-9);
         assert!((eval_str("1.5k").unwrap() - 1_500.0).abs() < 1e-9);
         assert!((eval_str("2K").unwrap() - 2_000.0).abs() < 1e-9);
-        assert!((eval_str("3m").unwrap() - 3_000_000.0).abs() < 1e-6);
+        assert!((eval_str("3 million").unwrap() - 3_000_000.0).abs() < 1e-6);
         assert!((eval_str("1.5 million").unwrap() - 1_500_000.0).abs() < 1e-6);
         assert!((eval_str("2 billion").unwrap() - 2_000_000_000.0).abs() < 1e-3);
-        assert!((eval_str("1t").unwrap() - 1_000_000_000_000.0).abs() < 1.0);
         assert!((eval_str("1 trillion").unwrap() - 1e12).abs() < 1.0);
         assert!((eval_str("2bn").unwrap() - 2e9).abs() < 1e-3);
         // Expressions
         assert!((eval_str("5k + 2k").unwrap() - 7_000.0).abs() < 1e-9);
-        assert!((eval_str("1m / 4").unwrap() - 250_000.0).abs() < 1e-6);
+        assert!((eval_str("1 million / 4").unwrap() - 250_000.0).abs() < 1e-6);
         assert!((eval_str("10k * 3").unwrap() - 30_000.0).abs() < 1e-9);
-        assert!((eval_str("(2.5m + 500k) / 1k").unwrap() - 3_000.0).abs() < 1e-6);
+        assert!((eval_str("(2.5 million + 500k) / 1k").unwrap() - 3_000.0).abs() < 1e-6);
         // Scientific still works; not confused with magnitude
         assert!((eval_str("1e3").unwrap() - 1_000.0).abs() < 1e-12);
         assert!((eval_str("1e3 + 1k").unwrap() - 2_000.0).abs() < 1e-9);
         // Unit-like tokens must not be partially eaten as magnitude
         assert!(eval_str("10km").is_none());
+    }
+
+    #[test]
+    fn single_letters_mbt_are_units_not_magnitudes() {
+        // `m`/`b`/`t` after a number are meters/bytes/tonnes, not
+        // million/billion/trillion — the unit token aborts the pure-math parse.
+        assert!(eval_str("100m").is_none());
+        assert!(eval_str("100m / 2").is_none());
+        assert!(eval_str("1m * 3").is_none());
+        assert!(eval_str("5b").is_none());
+        assert!(eval_str("1b / 2").is_none());
+        assert!(eval_str("2t").is_none());
+        assert!(eval_str("2t / 4").is_none());
+        assert!(eval_str("2m + 500k").is_none());
+        // Multi-letter or word magnitudes still work.
+        assert!((eval_str("5k").unwrap() - 5_000.0).abs() < 1e-9);
+        assert!((eval_str("1.5mil").unwrap() - 1_500_000.0).abs() < 1e-6);
+        assert!((eval_str("2tn").unwrap() - 2e12).abs() < 1.0);
+        assert!((eval_str("5bn").unwrap() - 5e9).abs() < 1e-3);
     }
 }

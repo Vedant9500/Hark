@@ -27,19 +27,16 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     let mut count = 0;
     let mut last_end = 0;
     let mut has_op = false;
+    let mut any_non_m_unit = false;
 
     for cap in RE_TOKEN.captures_iter(&lower) {
         let m = cap.get(0)?;
-        // allow only whitespace between tokens
+        // Only whitespace (or an explicit +/-) may separate tokens — including
+        // BEFORE the first token, so leading junk like `in ` or `50% of ` can't
+        // be swallowed into a duration ("in 1h 30min", "50% of 1h 30min").
         let between = lower[last_end..m.start()].trim();
-        if last_end > 0 && !between.is_empty() && between != "+" && between != "-" {
-            // first char of between might be absorbed in sign group
-            if !matches!(between, "+" | "-" | "") {
-                // e.g. garbage
-                if !between.chars().all(|c| c.is_whitespace()) {
-                    return None;
-                }
-            }
+        if !between.is_empty() && between != "+" && between != "-" {
+            return None;
         }
         if between == "+" || between == "-" {
             has_op = true;
@@ -56,6 +53,9 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         }
         let n: f64 = cap.get(2)?.as_str().parse().ok()?;
         let unit = cap.get(3)?.as_str();
+        if unit != "m" {
+            any_non_m_unit = true;
+        }
         let secs = relative_secs(n, unit)?;
         total_secs += sign * secs;
         count += 1;
@@ -71,6 +71,11 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     }
     // Prefer when there's an operator OR multiple units stacked (10h 30min)
     if !has_op && count < 2 {
+        return None;
+    }
+    // All-bare-`m` expressions (`100m + 5m`, `30m + 30m`) are meters/length,
+    // not minutes — reject so the unit engine can own them.
+    if !any_non_m_unit {
         return None;
     }
 
@@ -244,6 +249,25 @@ mod tests {
         assert_eq!(r.title, "10h 30min");
         let r = try_duration_expr("2h + 30m").expect("ops");
         assert_eq!(r.title, "2h 30min");
+    }
+
+    #[test]
+    fn does_not_steal_leading_junk() {
+        assert!(try_duration_expr("in 1h 30min").is_none());
+        assert!(try_duration_expr("50% of 1h 30min").is_none());
+        assert!(try_duration_expr("about 2h 30min").is_none());
+    }
+
+    #[test]
+    fn bare_m_is_meters_not_minutes() {
+        assert!(try_duration_expr("100m + 5m").is_none());
+        assert!(try_duration_expr("30m + 30m").is_none());
+        assert!(try_duration_expr("100m").is_none());
+        // Minutes alongside an unambiguous time unit still work.
+        let r = try_duration_expr("2h + 30m").expect("mixed");
+        assert_eq!(r.title, "2h 30min");
+        let r = try_duration_expr("1h 30min").expect("stacked");
+        assert_eq!(r.title, "1h 30min");
     }
 
     #[test]
