@@ -7,33 +7,51 @@ use super::HOT_SKIP_MIN_QUERY_LEN;
 use super::STRONG_SCORE;
 use crate::config::{pretty_path, MountInfo, PathStyle};
 use crate::providers::files::index::{is_encoded_session_name, IndexedPath};
-use crate::providers::{Action, ResultKind, SearchResult};
+use crate::providers::{title_match_indices, Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 pub(super) fn heap_to_results(
     heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>>,
     index: &[IndexedPath],
+    q_lower: &str,
+    fuzzy_spans: &HashMap<usize, Vec<usize>>,
     path_style: &PathStyle,
     mounts: &[MountInfo],
 ) -> Vec<SearchResult> {
-    let mut scored: Vec<(i64, &IndexedPath)> = heap
+    let mut scored: Vec<(i64, usize)> = heap
         .into_iter()
-        .map(|Reverse((score, _, idx))| (score, &index[idx]))
+        .map(|Reverse((score, _, idx))| (score, idx))
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.depth.cmp(&b.1.depth)));
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| index[a.1].depth.cmp(&index[b.1].depth))
+    });
 
     scored
         .into_iter()
-        .map(|(score, item)| indexed_to_result(item, score, path_style, mounts))
+        .map(|(score, idx)| {
+            let item = &index[idx];
+            // Fuzzy spans are char indices into name_lower; they map onto the
+            // displayed title only when case folding kept the char count and
+            // display_name didn't transform the name.
+            let matched = if item.name_lower.chars().count() == item.name.chars().count() {
+                fuzzy_spans.get(&idx).cloned()
+            } else {
+                None
+            }
+            .or_else(|| title_match_indices(&display_name(&item.name), q_lower));
+            indexed_to_result(item, score, matched, path_style, mounts)
+        })
         .collect()
 }
 
 pub(super) fn indexed_to_result(
     item: &IndexedPath,
     score: i64,
+    matched: Option<Vec<usize>>,
     path_style: &PathStyle,
     mounts: &[MountInfo],
 ) -> SearchResult {
@@ -50,6 +68,7 @@ pub(super) fn indexed_to_result(
         icon: Some(crate::providers::files::icon_for_path(&item.path, item.is_dir).into()),
         action: Action::OpenPath(item.path.clone()),
         conversion: None,
+        matched,
     }
 }
 
@@ -83,6 +102,7 @@ pub(super) fn score_free_text_full(
         BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
     let mut seen = std::collections::HashSet::with_capacity(hot_indices.len().max(8));
     let mut best_hot: i64 = 0;
+    let mut fuzzy_spans: HashMap<usize, Vec<usize>> = HashMap::new();
 
     for &idx in hot_indices {
         let Some(item) = index.get(idx) else {
@@ -100,7 +120,7 @@ pub(super) fn score_free_text_full(
     }
 
     if best_hot >= HOT_SKIP_FULL_SCORE {
-        return heap_to_results(heap, index, path_style, mounts);
+        return heap_to_results(heap, index, q_lower, &fuzzy_spans, path_style, mounts);
     }
 
     // Weak/empty hot — full scan (skip idxs already in heap via `seen`).
@@ -114,8 +134,16 @@ pub(super) fn score_free_text_full(
         push_heap(&mut heap, score, item.depth, idx);
     }
 
-    finish_free_text_fuzzy(&mut heap, index, q, q_lower, matcher, allow_fuzzy);
-    heap_to_results(heap, index, path_style, mounts)
+    finish_free_text_fuzzy(
+        &mut heap,
+        index,
+        q,
+        q_lower,
+        matcher,
+        allow_fuzzy,
+        &mut fuzzy_spans,
+    );
+    heap_to_results(heap, index, q_lower, &fuzzy_spans, path_style, mounts)
 }
 
 fn score_free_text_baseline(
@@ -129,6 +157,7 @@ fn score_free_text_baseline(
 ) -> Vec<SearchResult> {
     let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
         BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
+    let mut fuzzy_spans: HashMap<usize, Vec<usize>> = HashMap::new();
 
     for (idx, item) in index.iter().enumerate() {
         let Some(score) = score_name_only(item, q_lower) else {
@@ -137,8 +166,16 @@ fn score_free_text_baseline(
         push_heap(&mut heap, score, item.depth, idx);
     }
 
-    finish_free_text_fuzzy(&mut heap, index, q, q_lower, matcher, allow_fuzzy);
-    heap_to_results(heap, index, path_style, mounts)
+    finish_free_text_fuzzy(
+        &mut heap,
+        index,
+        q,
+        q_lower,
+        matcher,
+        allow_fuzzy,
+        &mut fuzzy_spans,
+    );
+    heap_to_results(heap, index, q_lower, &fuzzy_spans, path_style, mounts)
 }
 
 fn finish_free_text_fuzzy(
@@ -148,6 +185,7 @@ fn finish_free_text_fuzzy(
     q_lower: &str,
     matcher: &SkimMatcherV2,
     allow_fuzzy: bool,
+    fuzzy_spans: &mut HashMap<usize, Vec<usize>>,
 ) {
     let strong_full = heap.len() >= FILE_RESULT_LIMIT
         && heap
@@ -178,9 +216,12 @@ fn finish_free_text_fuzzy(
                 if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE
         );
         fuzzy_left -= 1;
-        let Some(score) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
+        let Some((score, spans)) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
             continue;
         };
+        if let Some(sp) = spans {
+            fuzzy_spans.insert(idx, sp);
+        }
         push_heap(heap, score, item.depth, idx);
     }
 }
@@ -278,29 +319,32 @@ fn score_name_only(item: &IndexedPath, q_lower: &str) -> Option<i64> {
     apply_path_boosts(item, q_lower, score)
 }
 
+/// Name fuzzy matches carry their matcher char spans for title highlighting;
+/// path fuzzy matches return `None` (the title didn't match).
 fn score_fuzzy(
     item: &IndexedPath,
     _q: &str,
     q_lower: &str,
     matcher: &SkimMatcherV2,
     allow_path_fuzzy: bool,
-) -> Option<i64> {
+) -> Option<(i64, Option<Vec<usize>>)> {
     // Prefer pre-lowercased name (matcher is ignore_case; avoids re-folding).
-    let score = if let Some(s) = matcher.fuzzy_match(&item.name_lower, q_lower) {
-        if s < 40 {
+    let (score, spans) =
+        if let Some((s, indices)) = matcher.fuzzy_indices(&item.name_lower, q_lower) {
+            if s < 40 {
+                return None;
+            }
+            (5_000 + s, Some(indices))
+        } else if allow_path_fuzzy {
+            let s = matcher.fuzzy_match(&item.path_lower, q_lower)?;
+            if s < 60 {
+                return None;
+            }
+            (1_000 + s / 2, None)
+        } else {
             return None;
-        }
-        5_000 + s
-    } else if allow_path_fuzzy {
-        let s = matcher.fuzzy_match(&item.path_lower, q_lower)?;
-        if s < 60 {
-            return None;
-        }
-        1_000 + s / 2
-    } else {
-        return None;
-    };
-    apply_path_boosts(item, q_lower, score)
+        };
+    apply_path_boosts(item, q_lower, score).map(|s| (s, spans))
 }
 
 pub(super) fn display_name(name: &str) -> String {

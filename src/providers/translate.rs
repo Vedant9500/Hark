@@ -376,6 +376,7 @@ fn ok_result(
             right_title: translated.to_string(),
             right_badge: tgt_b,
         }),
+        matched: None,
     }
 }
 
@@ -396,6 +397,7 @@ fn pending_result(source_text: &str, source: &str, target: &str) -> SearchResult
             right_title: "…".into(),
             right_badge: tgt_b,
         }),
+        matched: None,
     }
 }
 
@@ -430,6 +432,7 @@ fn fail_result(source_text: &str, source: &str, target: &str, msg: &str) -> Sear
             right_title: right,
             right_badge: tgt_b,
         }),
+        matched: None,
     }
 }
 

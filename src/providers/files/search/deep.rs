@@ -24,7 +24,7 @@ use crate::config::{pretty_path, ExcludeSet, MountInfo, PathStyle};
 use crate::providers::files::index::{
     expand_user, make_indexed, should_descend, should_skip_entry, IndexedPath,
 };
-use crate::providers::{Action, ResultKind, SearchResult};
+use crate::providers::{title_match_indices, Action, ResultKind, SearchResult};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -769,9 +769,13 @@ pub(super) fn live_deep_under_roots(
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_string();
+            let title = display_name(&name);
+            // Literal name patterns highlight like substring hits; glob
+            // patterns ("*.md") simply won't be found in the title → None.
+            let matched = name_pat.and_then(|pat| title_match_indices(&title, pat));
             SearchResult {
                 id: format!("path:{}", path.display()),
-                title: display_name(&name),
+                title,
                 subtitle: pretty_path(&path, path_style, mounts),
                 kind: if is_dir {
                     ResultKind::Folder
@@ -782,6 +786,7 @@ pub(super) fn live_deep_under_roots(
                 icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
                 action: Action::OpenPath(path),
                 conversion: None,
+                matched,
             }
         })
         .collect()

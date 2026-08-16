@@ -239,7 +239,11 @@ pub fn format_money(amount: f64, code: &str) -> String {
 
 fn fetch_rates() -> Option<RatesCache> {
     // Frankfurter: latest EUR-based rates (in-process HTTP — no curl spawn).
-    let body = crate::providers::http::get_bytes("https://api.frankfurter.dev/v1/latest").ok()?;
+    // Background agent: first DNS resolution in a fresh process can take 5s+,
+    // which the fast UI request agent would abort.
+    let body =
+        crate::providers::http::get_bytes_background("https://api.frankfurter.dev/v1/latest")
+            .ok()?;
     parse_rates_body(&body)
 }
 

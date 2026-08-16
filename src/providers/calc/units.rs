@@ -103,6 +103,7 @@ pub(crate) fn unit_result(value: f64, from: &str, to: &str) -> Option<SearchResu
             right_title: title,
             right_badge: to.to_string(),
         }),
+        matched: None,
     })
 }
 

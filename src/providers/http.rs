@@ -33,6 +33,32 @@ pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Background-fetch agent for non-UI workers (FX rates). Unlike the fast
+/// request agent, this tolerates slow cold DNS lookups (can take 5s+ on the
+/// first resolution in a fresh process, exceeding the UI-facing timeouts).
+fn background_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30))
+            .user_agent("hark-launcher/0.1")
+            .build()
+    })
+}
+
+/// GET body as bytes with generous timeouts; for background fetches that never
+/// block the UI (e.g. currency-rate refresh).
+pub fn get_bytes_background(url: &str) -> Result<Vec<u8>, String> {
+    let resp = background_agent().get(url).call().map_err(short_err)?;
+    let mut buf = Vec::new();
+    resp.into_reader()
+        .take(4 * 1024 * 1024)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read failed: {e}"))?;
+    Ok(buf)
+}
+
 /// GET with simple query pairs (values are form-urlencoded by ureq).
 pub fn get_bytes_query(url: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let mut req = agent().get(url);

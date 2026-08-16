@@ -208,6 +208,7 @@ fn try_clock_range(lower: &str, original: &str) -> Option<SearchResult> {
             right_title: formatted,
             right_badge: "duration".into(),
         }),
+        matched: None,
     })
 }
 

@@ -56,6 +56,7 @@ pub(crate) fn try_math(q: &str) -> Option<SearchResult> {
             right_title: formatted,
             right_badge: "result".into(),
         }),
+        matched: None,
     })
 }
 

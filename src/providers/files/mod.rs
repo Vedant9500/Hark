@@ -167,6 +167,7 @@ impl FileProvider {
             icon: Some(icon_for_path(path, is_dir).into()),
             action: Action::OpenPath(path.to_path_buf()),
             conversion: None,
+            matched: None,
         })
     }
 }

@@ -1,8 +1,8 @@
-use super::{Action, ResultKind, SearchResult};
+use super::{title_match_indices, Action, ResultKind, SearchResult};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -112,14 +112,14 @@ impl AppProvider {
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         apps.iter()
             .find(|a| a.id == key)
-            .map(|a| to_result(a, 1000))
+            .map(|a| to_result(a, 1000, None))
     }
 
     pub fn all_results(&self, limit: usize) -> Vec<SearchResult> {
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         apps.iter()
             .take(limit)
-            .map(|a| to_result(a, 1000))
+            .map(|a| to_result(a, 1000, None))
             .collect()
     }
 
@@ -179,13 +179,21 @@ impl AppProvider {
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         let q = query.trim();
         if q.is_empty() {
-            return apps.iter().take(12).map(|a| to_result(a, 1000)).collect();
+            return apps
+                .iter()
+                .take(12)
+                .map(|a| to_result(a, 1000, None))
+                .collect();
         }
 
         let q_lower = q.to_lowercase();
         // Min-heap of top-K scores
         let mut heap: BinaryHeap<Reverse<(i64, usize)>> =
             BinaryHeap::with_capacity(APP_RESULT_LIMIT + 1);
+        // Fuzzy-band char spans per app idx (heap entry keeps only score+idx).
+        // Substring bands re-derive their spans deterministically at
+        // conversion; fuzzy needs the matcher's own indices here.
+        let mut fuzzy_spans: HashMap<usize, Vec<usize>> = HashMap::new();
 
         for (idx, app) in apps.iter().enumerate() {
             // Fast path: prefix / substring on precomputed name_lower
@@ -207,10 +215,15 @@ impl AppProvider {
                 // Keyword / desktop-id token (e.g. Keywords=zed, id sublime_text).
                 // Keep below name-contains (15k) so real title hits still win.
                 14_000 + (q_lower.len() as i64 * 50)
-            } else if let Some(s) = self.matcher.fuzzy_match(&app.name_lower, q) {
+            } else if let Some((s, indices)) = self.matcher.fuzzy_indices(&app.name_lower, q) {
                 // Name-only fuzzy; ignore comment/keywords letter soup.
                 if s < 40 {
                     continue;
+                }
+                // Indices map onto the title only when case folding preserved
+                // the char count (guards rare Unicode expansions).
+                if app.name_lower.chars().count() == app.name.chars().count() {
+                    fuzzy_spans.insert(idx, indices);
                 }
                 s
             } else {
@@ -228,19 +241,30 @@ impl AppProvider {
             }
         }
 
-        let mut scored: Vec<(i64, &DesktopApp)> = heap
+        let mut scored: Vec<(i64, usize)> = heap
             .into_iter()
-            .map(|Reverse((score, idx))| (score, &apps[idx]))
+            .map(|Reverse((score, idx))| (score, idx))
             .collect();
         scored.sort_by_key(|b| std::cmp::Reverse(b.0));
         scored
             .into_iter()
-            .map(|(score, app)| to_result(app, score))
+            .map(|(score, idx)| {
+                let app = &apps[idx];
+                // Fuzzy spans when present; substring bands (exact / prefix /
+                // contains) re-derive from the title itself. Token-band hits
+                // never contain the query in the name (contains would have
+                // matched first), so they correctly get no highlight.
+                let matched = fuzzy_spans
+                    .get(&idx)
+                    .cloned()
+                    .or_else(|| title_match_indices(&app.name, &q_lower));
+                to_result(app, score, matched)
+            })
             .collect()
     }
 }
 
-fn to_result(app: &DesktopApp, score: i64) -> SearchResult {
+fn to_result(app: &DesktopApp, score: i64, matched: Option<Vec<usize>>) -> SearchResult {
     SearchResult {
         id: format!("app:{}", app.id),
         title: app.name.clone(),
@@ -262,6 +286,7 @@ fn to_result(app: &DesktopApp, score: i64) -> SearchResult {
             desktop_path: Some(app.desktop_path.clone()),
         },
         conversion: None,
+        matched,
     }
 }
 
@@ -540,6 +565,42 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matched_spans_follow_scoring_bands() {
+        let provider = AppProvider::new_empty();
+        provider.inject(&[
+            ("org.alacritty.Alacritty", "Alacritty"),
+            ("firefox", "Firefox"),
+            ("org.gnome.eog", "Image Viewer"),
+        ]);
+
+        // Prefix band: highlight the first three chars of the title.
+        let hits = provider.search("ala");
+        assert_eq!(hits[0].title, "Alacritty");
+        assert_eq!(hits[0].matched.as_deref(), Some(&[0usize, 1, 2][..]));
+
+        // Exact band — whole title highlighted.
+        let hits = provider.search("firefox");
+        assert_eq!(hits[0].title, "Firefox");
+        assert_eq!(hits[0].matched, Some((0..7).collect::<Vec<usize>>()));
+
+        // Token-band hit (desktop id `eog`): matched via search_blob, not the
+        // title — no highlight, which is honest.
+        let hits = provider.search("eog");
+        assert!(hits.iter().any(|h| h.title == "Image Viewer"));
+        assert!(hits
+            .iter()
+            .all(|h| h.title != "Image Viewer" || h.matched.is_none()));
+
+        // Fuzzy band: sparse matcher indices (a…c…t of Alacritty).
+        let hits = provider.search("act");
+        let alac = hits.iter().find(|h| h.title == "Alacritty").unwrap();
+        let spans = alac.matched.as_deref().unwrap();
+        assert_eq!(spans.len(), 3, "fuzzy span count: {spans:?}");
+        assert_eq!(spans[0], 0, "first fuzzy span anchors at 'A': {spans:?}");
+        assert!(spans[2] < alac.title.chars().count());
     }
 
     #[test]

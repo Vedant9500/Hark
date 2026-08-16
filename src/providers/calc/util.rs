@@ -93,5 +93,6 @@ pub(crate) fn card_result(
             right_title,
             right_badge: right_badge.into(),
         }),
+        matched: None,
     }
 }

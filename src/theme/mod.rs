@@ -115,6 +115,9 @@ impl ThemeManager {
         let theme = Theme::load();
         let ui = self.config.snapshot().ui.clone();
         self.provider.load_from_string(&theme.to_css(&ui));
+        // Row highlight spans read the accent from a thread-local (rows have
+        // no theme access at bind time) — keep it in lockstep with the scheme.
+        crate::ui::rows::set_highlight_accent(theme.primary.clone());
         *self.cached_theme.borrow_mut() = theme;
         self.apply_gen.set(self.apply_gen.get().wrapping_add(1));
     }

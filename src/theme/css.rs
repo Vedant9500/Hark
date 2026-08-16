@@ -23,6 +23,20 @@ fn rgba(hex: &str, alpha: f32) -> String {
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
+/// Gamma-space channel mix of two hex colors → solid `#rrggbb`.
+fn mix_hex(a: &str, b: &str, t: f32) -> String {
+    let chan = |s: &str, i: usize| {
+        let h = s.trim().trim_start_matches('#');
+        f32::from(u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0))
+    };
+    let mut out = String::from("#");
+    for i in [0, 2, 4] {
+        let v = chan(a, i) * (1.0 - t) + chan(b, i) * t;
+        out.push_str(&format!("{:02x}", v.round().clamp(0.0, 255.0) as u8));
+    }
+    out
+}
+
 pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let base = ui.opacity.clamp(0.40, 1.0);
     let primary = ui
@@ -58,14 +72,20 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
     let selected_bg = rgba(primary, 0.18);
+    // Raycast-style selected row: one confident SOLID fill (no accent bar, no
+    // translucency shimmer). Theme-adaptive: lightens the surface on dark
+    // schemes, darkens it on light ones.
+    let row_selected_bg = mix_hex(&theme.surface_container, &theme.on_surface, 0.13);
     let hint = &theme.on_surface_variant;
     let empty = &theme.on_surface_variant;
     let subtitle = &theme.on_surface_variant;
     let on_surface = &theme.on_surface;
     let conv_badge_bg = rgba(&theme.on_surface, 0.08);
     // Placeholder / leading icon are blended text, not `on_surface_variant`
-    // (that hint color measured 1.78:1 against the shell — fails WCAG).
-    // on_surface @0.55 ≈ 5.4:1 on the dark shell; ~4.5:1 on light shells.
+    // (that hint color renders 1.89:1 on the dark shell — fails WCAG).
+    // on_surface @0.55 renders 3.8:1, @0.62 (icon) 4.4:1. Measure contrast on
+    // gamma-space blends: CSS composites alpha in sRGB gamma, not linear
+    // light (a linear-light blend would falsely read ≈5.4:1).
     let placeholder = rgba(&theme.on_surface, 0.55);
     let icon_color = rgba(&theme.on_surface, 0.62);
 
@@ -353,9 +373,14 @@ window.hark-window .hark-results > row:hover {{
 
 window.hark-window .hark-results > row:selected,
 window.hark-window .hark-results > row:selected:hover {{
-  background-color: {selected_bg};
+  background-color: {row_selected_bg};
   border: none;
   outline: none;
+}}
+
+/* Modest legibility lift on selection; the solid fill carries the focus. */
+window.hark-window .hark-results > row:selected .hark-subtitle {{
+  opacity: 1;
 }}
 
 window.hark-window .hark-title {{

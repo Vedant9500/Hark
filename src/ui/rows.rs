@@ -65,10 +65,70 @@ impl IconResolveCache {
 
 thread_local! {
     static ICON_RESOLVE_CACHE: RefCell<IconResolveCache> = RefCell::new(IconResolveCache::new());
+    /// Accent hex used for match-highlight spans. Kept in sync with the
+    /// active scheme by `ThemeManager::apply` so rows never need theme access.
+    static HIGHLIGHT_ACCENT: RefCell<String> = RefCell::new("#7aa2f7".to_string());
 }
 
 pub(crate) fn clear_icon_resolve_cache() {
     ICON_RESOLVE_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+pub(crate) fn set_highlight_accent(hex: String) {
+    HIGHLIGHT_ACCENT.with(|a| *a.borrow_mut() = hex);
+}
+
+/// Wrap the char positions in `matched` with accent-colored Pango spans.
+///
+/// `matched` holds char indices into `title`, produced engine-side. Each
+/// segment is escaped *after* slicing — escaping earlier would shift byte
+/// offsets. Consecutive indices merge into one span; out-of-range indices
+/// are ignored.
+pub(crate) fn highlight_markup(title: &str, matched: &[usize]) -> String {
+    fn flush(
+        out: &mut String,
+        title: &str,
+        plain_start: usize,
+        s: usize,
+        e: usize,
+        accent: &str,
+    ) -> usize {
+        out.push_str(&glib::markup_escape_text(&title[plain_start..s]));
+        out.push_str("<span foreground=\"");
+        out.push_str(accent);
+        out.push_str("\">");
+        out.push_str(&glib::markup_escape_text(&title[s..e]));
+        out.push_str("</span>");
+        e
+    }
+
+    let accent = HIGHLIGHT_ACCENT.with(|a| a.borrow().clone());
+    let mut idxs = matched.to_vec();
+    idxs.sort_unstable();
+    idxs.dedup();
+
+    let mut out = String::with_capacity(title.len() + idxs.len() * 31);
+    let mut plain_start: usize = 0; // byte offset where the current plain run began
+    let mut run: Option<(usize, usize)> = None; // byte range of the current matched run
+    let mut next = 0usize; // position in idxs
+
+    for (byte, ch) in title.char_indices() {
+        let pos = title[..byte].chars().count();
+        if next < idxs.len() && idxs[next] == pos {
+            next += 1;
+            run = Some(match run.take() {
+                Some((s, _)) => (s, byte + ch.len_utf8()),
+                None => (byte, byte + ch.len_utf8()),
+            });
+        } else if let Some((s, e)) = run.take() {
+            plain_start = flush(&mut out, title, plain_start, s, e, &accent);
+        }
+    }
+    if let Some((s, e)) = run {
+        plain_start = flush(&mut out, title, plain_start, s, e, &accent);
+    }
+    out.push_str(&glib::markup_escape_text(&title[plain_start..]));
+    out
 }
 
 pub(crate) struct ResultRowPool {
@@ -292,7 +352,12 @@ impl PooledRow {
             icon_size,
         );
 
-        self.title.set_text(&item.title);
+        match item.matched.as_deref().filter(|m| !m.is_empty()) {
+            Some(matched) => self
+                .title
+                .set_markup(&highlight_markup(&item.title, matched)),
+            None => self.title.set_text(&item.title),
+        }
         self.subtitle.set_text(&item.subtitle);
 
         self.badge.set_text(kind_label(item.kind));
@@ -525,5 +590,65 @@ fn kind_label(kind: ResultKind) -> &'static str {
         ResultKind::Calc => "Calc",
         ResultKind::Conversion => "Convert",
         ResultKind::Command => "Command",
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::{highlight_markup, set_highlight_accent};
+
+    fn accent() -> &'static str {
+        "#7aa2f7"
+    }
+
+    fn sp(s: &str) -> String {
+        format!("<span foreground=\"{}\">{}</span>", accent(), s)
+    }
+
+    #[test]
+    fn consecutive_run_merges_into_one_span() {
+        set_highlight_accent(accent().into());
+        let m = highlight_markup("Alacritty", &[0, 1, 2]);
+        assert_eq!(m, format!("{}critty", sp("Ala")));
+    }
+
+    #[test]
+    fn non_contiguous_runs_stay_separate() {
+        set_highlight_accent(accent().into());
+        // a…c…t of Alacritty → A=0, c=3, t=6
+        let m = highlight_markup("Alacritty", &[0, 3, 6]);
+        assert_eq!(m, format!("{}la{}ri{}ty", sp("A"), sp("c"), sp("t")));
+    }
+
+    #[test]
+    fn markup_metacharacters_are_escaped_per_segment() {
+        set_highlight_accent(accent().into());
+        let m = highlight_markup("a<b & c>d", &[0, 1]);
+        // chars 0,1 are `a`, `<`
+        assert_eq!(m, format!("{}b &amp; c&gt;d", sp("a&lt;")));
+    }
+
+    #[test]
+    fn multibyte_titles_map_char_indices_to_byte_spans() {
+        set_highlight_accent(accent().into());
+        // "日本語ランチャー": chars 0..3 are 日本語 (3 bytes each)
+        let m = highlight_markup("日本語ランチャー", &[0, 1, 2]);
+        assert_eq!(m, format!("{}ランチャー", sp("日本語")));
+        // Run starting after multibyte prefix: "é À ünïcode" chars 2,3 = 'À',' '.
+        let m = highlight_markup("é À ünïcode", &[2, 3]);
+        assert_eq!(m, format!("é {}ünïcode", sp("À ")));
+    }
+
+    #[test]
+    fn out_of_range_and_duplicate_indices_are_ignored() {
+        set_highlight_accent(accent().into());
+        let m = highlight_markup("Zed", &[1, 1, 7]);
+        assert_eq!(m, format!("Z{}d", sp("e")));
+    }
+
+    #[test]
+    fn empty_match_renders_escaped_plain_text() {
+        set_highlight_accent(accent().into());
+        assert_eq!(highlight_markup("5 < 6", &[]), "5 &lt; 6");
     }
 }

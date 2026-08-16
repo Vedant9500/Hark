@@ -218,6 +218,7 @@ impl Engine {
                 icon: Some("preferences-system".into()),
                 action: Action::OpenSettings,
                 conversion: None,
+                matched: None,
             });
         }
 

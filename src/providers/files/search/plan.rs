@@ -447,6 +447,7 @@ pub(super) fn scope_folder_suggestions(
                 icon: Some("folder".into()),
                 action: Action::SetQuery(filled),
                 conversion: None,
+                matched: None,
             }
         })
         .collect();

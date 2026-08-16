@@ -10,7 +10,7 @@ use crate::config::{pretty_path, ExcludeSet, MountInfo, PathStyle};
 use crate::providers::files::index::{expand_user, should_skip_entry, IndexedPath};
 use crate::providers::{Action, ResultKind, SearchResult};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +68,11 @@ pub(super) fn search_glob(
         push_heap(&mut heap, score, item.depth, idx);
     }
 
-    heap_to_results(heap, index, path_style, mounts)
+    // Literal name patterns ("optimization.md in docs") highlight via the
+    // substring helper; true globs ("*.md") contain metacharacters that never
+    // appear in a filename → no highlight, which is honest.
+    let needle = gq.name_pat.as_deref().unwrap_or("");
+    heap_to_results(heap, index, needle, &HashMap::new(), path_style, mounts)
 }
 
 fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
@@ -237,6 +241,7 @@ pub(super) fn search_absolute_glob(
                     icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
                     action: Action::OpenPath(path),
                     conversion: None,
+                    matched: None,
                 });
                 if results.len() >= FILE_RESULT_LIMIT {
                     break;
@@ -286,7 +291,7 @@ pub(super) fn search_absolute_glob(
             if !seen.insert(key) {
                 continue;
             }
-            results.push(indexed_to_result(item, score, path_style, mounts));
+            results.push(indexed_to_result(item, score, None, path_style, mounts));
         }
     }
 
@@ -483,6 +488,7 @@ pub(super) fn maybe_live_relative_glob(
                 icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
                 action: Action::OpenPath(path),
                 conversion: None,
+                matched: None,
             });
         }
     }
@@ -545,6 +551,7 @@ pub(super) fn path_completions(
             icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
             action: Action::OpenPath(path),
             conversion: None,
+            matched: None,
         });
         if results.len() >= 40 {
             break;

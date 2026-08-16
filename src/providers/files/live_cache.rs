@@ -215,6 +215,7 @@ mod tests {
             icon: None,
             action: Action::OpenPath(std::path::PathBuf::from("/tmp")),
             conversion: None,
+            matched: None,
         }
     }
 

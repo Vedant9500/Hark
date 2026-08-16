@@ -551,6 +551,7 @@ pub(crate) fn tz_result(
             right_title,
             right_badge,
         }),
+        matched: None,
     }
 }
 

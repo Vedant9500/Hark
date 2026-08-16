@@ -36,6 +36,32 @@ pub struct SearchResult {
     pub icon: Option<String>,
     pub action: Action,
     pub conversion: Option<ConversionView>,
+    /// Char indices into `title` that matched the query (Raycast-style
+    /// highlight). `None` = the match came from non-title text (keywords,
+    /// desktop id, path) or the title is computed (calc/convert) — render
+    /// without highlight.
+    pub matched: Option<Vec<usize>>,
+}
+
+/// Case-insensitive substring positions (char indices) of `needle` in `title`.
+///
+/// Derived at result-construction time where the query is known, so the UI
+/// never re-runs matching. Returns `None` when the needle is absent or when
+/// lowercasing the title changes its char count (rare Unicode folds) —
+/// indices would not map back onto the original title.
+pub fn title_match_indices(title: &str, needle: &str) -> Option<Vec<usize>> {
+    if needle.is_empty() {
+        return None;
+    }
+    let needle_lower = needle.to_lowercase();
+    let hay = title.to_lowercase();
+    if hay.chars().count() != title.chars().count() {
+        return None;
+    }
+    let start = hay.find(&needle_lower)?;
+    let start_char = hay[..start].chars().count();
+    let len = needle_lower.chars().count();
+    Some((0..len).map(|i| start_char + i).collect())
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +289,7 @@ mod action_panel_tests {
             icon: None,
             action: Action::OpenPath(p),
             conversion: None,
+            matched: None,
         }
     }
 
@@ -295,6 +322,7 @@ mod action_panel_tests {
                 desktop_path: Some(PathBuf::from("/usr/share/applications/x.desktop")),
             },
             conversion: None,
+            matched: None,
         };
         let ids: Vec<_> = secondary_actions(&item).iter().map(|a| a.id).collect();
         assert!(ids.contains(&"reveal_install"));
@@ -314,9 +342,43 @@ mod action_panel_tests {
             icon: None,
             action: Action::Copy("42".into()),
             conversion: None,
+            matched: None,
         };
         let acts = secondary_actions(&item);
         assert_eq!(acts.len(), 1);
         assert_eq!(acts[0].id, "copy");
+    }
+}
+
+#[cfg(test)]
+mod match_index_tests {
+    use super::title_match_indices;
+
+    #[test]
+    fn prefix_and_contains_offsets() {
+        assert_eq!(title_match_indices("Alacritty", "ala"), Some(vec![0, 1, 2]));
+        // Contains: offset counts chars, not bytes.
+        assert_eq!(
+            title_match_indices("héllo wörld", "wörl"),
+            Some(vec![6, 7, 8, 9])
+        );
+    }
+
+    #[test]
+    fn absent_or_empty_needle_is_none() {
+        assert_eq!(title_match_indices("Firefox", "chrome"), None);
+        assert_eq!(title_match_indices("Firefox", ""), None);
+    }
+
+    #[test]
+    fn case_insensitive_both_ways() {
+        assert_eq!(
+            title_match_indices("VSCodium", "codium"),
+            Some(vec![2, 3, 4, 5, 6, 7])
+        );
+        assert_eq!(
+            title_match_indices("vscode", "VSCode"),
+            Some(vec![0, 1, 2, 3, 4, 5])
+        );
     }
 }

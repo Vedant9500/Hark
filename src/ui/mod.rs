@@ -3,7 +3,7 @@ mod dnd;
 mod footer;
 mod open_with;
 mod preview;
-mod rows;
+pub(crate) mod rows;
 mod settings;
 mod thumbnails;
 
@@ -293,6 +293,8 @@ impl Launcher {
         let results: Rc<RefCell<Vec<SearchResult>>> = Rc::new(RefCell::new(Vec::new()));
         let selected: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let suppress_select: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        // Last arrow-key direction (+1 down / -1 up) for scroll lookahead.
+        let nav_dir: Rc<Cell<i32>> = Rc::new(Cell::new(0));
         let ui_cfg0 = engine.config().snapshot().ui.clone();
         let ui_icon_size: Rc<Cell<i32>> = Rc::new(Cell::new(ui_cfg0.icon_size as i32));
         let ui_symbolic: Rc<Cell<bool>> = Rc::new(Cell::new(ui_cfg0.symbolic_icons));
@@ -596,6 +598,25 @@ impl Launcher {
             actions_chip.connect_clicked(move |_| open_action_panel());
         }
 
+        // Right-click a result: select it and open the Action Panel (Raycast's
+        // context-menu analog). Attached to the ListBox so pooled rows share it.
+        {
+            let selected = selected.clone();
+            let open_action_panel = open_action_panel.clone();
+            let list_rc = list.clone();
+            let right = gtk::GestureClick::new();
+            right.set_button(3);
+            right.connect_pressed(move |_, _, _, y| {
+                if let Some(row) = list_rc.row_at_y(y as i32) {
+                    let idx = row.index() as usize;
+                    selected.set(idx);
+                    list_rc.select_row(Some(&row));
+                    open_action_panel();
+                }
+            });
+            list.add_controller(right);
+        }
+
         {
             let engine = engine.clone();
             let window = window.clone();
@@ -625,10 +646,12 @@ impl Launcher {
             let footer_action = footer_action.clone();
             let preview = preview.clone();
             let suppress_select = suppress_select.clone();
+            let nav_dir = nav_dir.clone();
             list.connect_row_selected(move |_, row| {
                 if let Some(row) = row {
                     // Keep keyboard/mouse selection in view even while focus stays on search.
-                    ensure_row_visible(row);
+                    // Consume the arrow direction for one-row scroll lookahead.
+                    ensure_row_visible(row, nav_dir.replace(0));
                     let idx = row.index() as usize;
                     selected.set(idx);
                     if suppress_select.get() {
@@ -683,6 +706,7 @@ impl Launcher {
             let preview = preview.clone();
             let drag_session = drag_session.clone();
             let suppress_select = suppress_select.clone();
+            let nav_dir = nav_dir.clone();
             let ui_icon_size = ui_icon_size.clone();
             let ui_symbolic = ui_symbolic.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
@@ -843,6 +867,7 @@ impl Launcher {
                     Key::Down => {
                         let len = results.borrow().len();
                         if len > 0 {
+                            nav_dir.set(1);
                             let next = (selected.get() + 1) % len;
                             selected.set(next);
                             if let Some(row) = list.row_at_index(next as i32) {
@@ -852,9 +877,22 @@ impl Launcher {
                         }
                         glib::Propagation::Stop
                     }
+                    Key::Right => {
+                        // At end of query, → opens the Action Panel (Raycast
+                        // parity). Mid-text, → keeps moving the caret.
+                        let at_end = search.position() >= search.text().len() as i32
+                            && !action_panel.is_open();
+                        if at_end && !results.borrow().is_empty() {
+                            open_action_panel();
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
+                        }
+                    }
                     Key::Up | Key::ISO_Left_Tab => {
                         let len = results.borrow().len();
                         if len > 0 {
+                            nav_dir.set(-1);
                             let cur = selected.get();
                             let next = if cur == 0 { len - 1 } else { cur - 1 };
                             selected.set(next);
@@ -1288,6 +1326,7 @@ mod tab_complete_tests {
             icon: None,
             action,
             conversion: None,
+            matched: None,
         }
     }
 
@@ -1851,6 +1890,13 @@ fn refresh_results(
     let no_hits = found.is_empty();
     // In compact idle the empty placeholder is not shown (body hidden).
     let show_empty = no_hits && !(compact && query_empty);
+    if show_empty {
+        if query_empty {
+            empty.set_text("Type to search apps, files, math, or conversions");
+        } else {
+            empty.set_markup(&empty_state_markup(query));
+        }
+    }
     empty.set_visible(show_empty);
     empty.set_vexpand(show_empty);
     list.set_visible(!no_hits);
@@ -2245,18 +2291,64 @@ fn apply_deep_hits(
     }
 }
 
+/// Contextual zero-hit state: name the failed query, teach real syntax.
+/// Hints must match actual engine capabilities (`in <folder>`, `*.ext` globs).
+fn empty_state_markup(query: &str) -> String {
+    format!(
+        "No results for <i>“{}”</i>\n<span font_size=\"smaller\" alpha=\"80%\">Try `name in folder` to scope files, `*.ext` for globs, or check spelling</span>",
+        glib::markup_escape_text(query.trim())
+    )
+}
+
 /// Scroll the highlighted result into the list viewport.
 ///
 /// Arrow-key navigation keeps focus on the search entry (so typing continues
 /// uninterrupted). GTK only auto-scrolls ListBox selection when the row has
-/// focus, so we ask the surrounding Viewport to bring the row into view.
-fn ensure_row_visible(row: &ListBoxRow) {
-    if let Some(viewport) = row
+/// focus, so we drive the surrounding Viewport's adjustment ourselves.
+///
+/// `dir` is the last arrow direction (+1 down / -1 up / 0 other). In the
+/// direction of travel we keep a one-row lookahead so the next item peeks
+/// into view before the selection reaches the edge — without nudging on
+/// the opposite edge (which made upward navigation feel drifty).
+// `allocation()` deprecated since GTK 4.12 with no direct replacement for
+// reading child coordinates outside snapshot/rendering — still the right tool.
+#[allow(deprecated)]
+fn ensure_row_visible(row: &ListBoxRow, dir: i32) {
+    let Some(viewport) = row
         .ancestor(Viewport::static_type())
         .and_then(|w| w.downcast::<Viewport>().ok())
-    {
+    else {
+        return;
+    };
+    let alloc = row.allocation();
+    if alloc.height() <= 0 {
+        // Not laid out yet — fall back to GTK's own scroll.
         viewport.scroll_to(row, None);
+        return;
     }
+
+    let adj = match viewport.vadjustment() {
+        Some(adj) => adj,
+        None => {
+            viewport.scroll_to(row, None);
+            return;
+        }
+    };
+    let top = alloc.y() as f64 - adj.value(); // row top in viewport space
+    let bottom = top + alloc.height() as f64;
+    let page = adj.page_size();
+    let peek = (alloc.height() as f64).min(120.0);
+
+    let mut value = adj.value();
+    if bottom > page {
+        // Row below the fold; travelling down also reveals the next row.
+        value += bottom - page + if dir > 0 { peek } else { 0.0 };
+    } else if top < 0.0 {
+        // Row above the fold; travelling up also reveals the previous row.
+        value += top - if dir < 0 { peek } else { 0.0 };
+    }
+    let max = (adj.upper() - page).max(adj.lower());
+    adj.set_value(value.clamp(adj.lower(), max));
 }
 
 fn kind_rank_ui(k: ResultKind) -> u8 {

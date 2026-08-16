@@ -89,6 +89,7 @@ pub(crate) fn fx_result(value: f64, from: &str, to: &str, fx: &FxStore) -> Optio
             right_title: title,
             right_badge: format!("{to} · {meta}"),
         }),
+        matched: None,
     })
 }
 
