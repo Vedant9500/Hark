@@ -1,6 +1,6 @@
 mod battery;
 mod cooking;
-mod currency;
+pub(crate) mod currency;
 mod datetime;
 mod duration;
 mod expr;

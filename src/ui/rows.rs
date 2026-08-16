@@ -5,13 +5,15 @@
 //! ListBox still reserves height for invisible children.
 //!
 //! Each slot keeps both a standard row widget and a conversion card; we
-//! `set_child` the active one. A Stack is avoided because both children can
-//! inflate the row's natural height.
+//! `set_child` the active one — no Stack here because both children can
+//! inflate the row's natural height. The card's right panel *does* use a
+//! two-child Stack (same widget structure, so no height jump) to crossfade
+//! values as they wheel through the fixed hero slot.
 
 use super::dnd::{DragSession, PathDragBinding};
-use crate::providers::{ResultKind, SearchResult};
+use crate::providers::{ConversionView, ResultKind, SearchResult};
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation};
+use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation, Stack};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -151,8 +153,13 @@ struct PooledRow {
     conv_header: Label,
     conv_left_title: Label,
     conv_left_badge: Label,
-    conv_right_title: Label,
-    conv_right_badge: Label,
+    // Right panel crossfader: two identical panels ("a"/"b"), the invisible
+    // one is primed with the incoming value, then made visible to fade.
+    conv_right: Stack,
+    conv_rt_a: Label,
+    conv_rb_a: Label,
+    conv_rt_b: Label,
+    conv_rb_b: Label,
     badge_kind: ResultKind,
     showing_conv: bool,
 }
@@ -166,18 +173,30 @@ impl ResultRowPool {
         Self { slots, attached: 0 }
     }
 
+    /// Bind `items` to the pool. Row 0 of a conversion prediction set renders
+    /// as the fixed hero card; every other row is a standard row. When
+    /// `animate_hero` is set the card's value crossfades (picker wheel),
+    /// fresh query binds stay instant so typing never flickers.
     pub fn apply(
         &mut self,
         list: &ListBox,
         items: &[SearchResult],
         icon_size: i32,
         symbolic_icons: bool,
+        animate_hero: bool,
     ) {
         let n = items.len().min(ROW_POOL_CAP);
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
-            self.slots[i].bind(&items[i], icon_size, symbolic_icons);
+            let as_card = i == 0 && items[i].conversion.is_some();
+            self.slots[i].bind(
+                &items[i],
+                as_card,
+                animate_hero && as_card,
+                icon_size,
+                symbolic_icons,
+            );
         }
 
         while self.attached < n {
@@ -282,11 +301,23 @@ impl PooledRow {
         arrow.add_css_class("hark-conv-arrow");
         arrow.set_valign(gtk::Align::Center);
         arrow.set_halign(gtk::Align::Center);
-        let (right, conv_right_title, conv_right_badge) = conv_panel_widgets(false);
+
+        // Right side: two identical panels in a Stack so wheeling a new value
+        // into the card crossfades value + unit together.
+        let conv_right = Stack::new();
+        conv_right.set_transition_type(gtk::StackTransitionType::Crossfade);
+        conv_right.set_transition_duration(220);
+        conv_right.set_hexpand(true);
+        conv_right.set_halign(gtk::Align::Fill);
+        let (right_a, conv_rt_a, conv_rb_a) = conv_panel_widgets(false);
+        let (right_b, conv_rt_b, conv_rb_b) = conv_panel_widgets(false);
+        conv_right.add_named(&right_a, Some("a"));
+        conv_right.add_named(&right_b, Some("b"));
+        conv_right.set_visible_child_name("a");
 
         panels.append(&left);
         panels.append(&arrow);
-        panels.append(&right);
+        panels.append(&conv_right);
         conv_root.append(&panels);
 
         // Default child: standard layout.
@@ -307,8 +338,11 @@ impl PooledRow {
             conv_header,
             conv_left_title,
             conv_left_badge,
-            conv_right_title,
-            conv_right_badge,
+            conv_right,
+            conv_rt_a,
+            conv_rb_a,
+            conv_rt_b,
+            conv_rb_b,
             badge_kind: ResultKind::File,
             showing_conv: false,
         }
@@ -330,16 +364,27 @@ impl PooledRow {
         self.row.add_css_class("hark-conv-row");
     }
 
-    fn bind(&mut self, item: &SearchResult, icon_size: i32, symbolic_icons: bool) {
-        if let Some(conv) = &item.conversion {
-            self.set_mode_conv();
-            self.conv_header.set_text(kind_label(item.kind));
-            self.conv_left_title.set_text(&conv.left_title);
-            self.conv_left_badge.set_text(&conv.left_badge);
-            self.conv_right_title.set_text(&conv.right_title);
-            self.conv_right_badge.set_text(&conv.right_badge);
-            self.drag.set_path(None);
-            return;
+    /// Row 0 of a conversion prediction set renders as the fixed hero card;
+    /// sibling predictions render as standard rows so the group reads as one
+    /// card plus plain rows, with values wheeling through the card.
+    fn bind(
+        &mut self,
+        item: &SearchResult,
+        as_card: bool,
+        animate: bool,
+        icon_size: i32,
+        symbolic_icons: bool,
+    ) {
+        if as_card {
+            if let Some(conv) = &item.conversion {
+                self.set_mode_conv();
+                self.conv_header.set_text(kind_label(item.kind));
+                self.conv_left_title.set_text(&conv.left_title);
+                self.conv_left_badge.set_text(&conv.left_badge);
+                self.set_conv_right(conv, animate);
+                self.drag.set_path(None);
+                return;
+            }
         }
 
         self.set_mode_std();
@@ -373,6 +418,32 @@ impl PooledRow {
             self.drag.set_path(None);
         }
     }
+
+    /// Point the card's right panel at `conv`. Animated swaps prime the
+    /// invisible Stack side and flip to it (crossfade); instant binds write
+    /// the visible side in place so query refreshes don't shimmer.
+    fn set_conv_right(&self, conv: &ConversionView, animate: bool) {
+        let cur = if self.conv_right.visible_child_name().as_deref() == Some("b") {
+            "b"
+        } else {
+            "a"
+        };
+        let side = match (animate, cur) {
+            (true, "a") => "b",
+            (true, _) => "a",
+            (false, side) => side,
+        };
+        let (t, b) = if side == "b" {
+            (&self.conv_rt_b, &self.conv_rb_b)
+        } else {
+            (&self.conv_rt_a, &self.conv_rb_a)
+        };
+        t.set_text(&conv.right_title);
+        b.set_text(&conv.right_badge);
+        if side != cur {
+            self.conv_right.set_visible_child_name(side);
+        }
+    }
 }
 
 fn conv_panel_widgets(is_left: bool) -> (GtkBox, Label, Label) {
@@ -389,8 +460,19 @@ fn conv_panel_widgets(is_left: bool) -> (GtkBox, Label, Label) {
     let t = Label::new(None);
     t.add_css_class("hark-conv-title");
     t.set_halign(gtk::Align::Start);
-    t.set_wrap(true);
     t.set_xalign(0.0);
+    if is_left {
+        // Long expressions wrap to at most two lines, then ellipsize; the
+        // result side stays single-line so the arrow stays visually centered.
+        t.set_wrap(true);
+        t.set_lines(2);
+        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.set_valign(gtk::Align::Start);
+    } else {
+        t.set_wrap(false);
+        t.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.set_valign(gtk::Align::Center);
+    }
 
     let b = Label::new(None);
     b.add_css_class("hark-conv-badge");
@@ -591,6 +673,21 @@ fn kind_label(kind: ResultKind) -> &'static str {
         ResultKind::Conversion => "Convert",
         ResultKind::Command => "Command",
     }
+}
+
+/// First candidate the active display's icon theme can resolve, else the last
+/// (widest-coverage) name. Headless (tests) falls back the same way.
+pub(crate) fn resolve_icon_name(candidates: &[&'static str]) -> &'static str {
+    let fallback = candidates[candidates.len() - 1];
+    let Some(display) = gtk::gdk::Display::default() else {
+        return fallback;
+    };
+    let theme = gtk::IconTheme::for_display(&display);
+    candidates
+        .iter()
+        .find(|name| theme.has_icon(name))
+        .copied()
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]

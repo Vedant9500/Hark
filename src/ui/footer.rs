@@ -4,12 +4,44 @@ use gtk::{Box as GtkBox, Button, Label, Orientation};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Footer primary cluster: action label plus the copy-trio hint chips shown
+/// only while a calc/conversion row is selected.
+#[derive(Clone)]
+pub(crate) struct FooterPrimary {
+    pub action: Label,
+    pub value_chip: GtkBox,
+    pub formula_chip: GtkBox,
+}
+
+impl FooterPrimary {
+    pub fn new() -> Self {
+        let action = Label::new(Some("Open"));
+        action.add_css_class("hark-footer-action");
+        action.set_halign(gtk::Align::Start);
+
+        let value_chip = action_chip("Value", "Ctrl ↵");
+        let formula_chip = action_chip("Formula", "Ctrl ⇧ ↵");
+        value_chip.set_visible(false);
+        formula_chip.set_visible(false);
+
+        Self {
+            action,
+            value_chip,
+            formula_chip,
+        }
+    }
+}
+
 pub(crate) fn update_footer(
     results: &Rc<RefCell<Vec<SearchResult>>>,
     idx: usize,
-    footer_action: &Label,
+    footer: &FooterPrimary,
 ) {
     let item = results.borrow().get(idx).cloned();
+    let is_calc = matches!(
+        item.as_ref().map(|i| i.kind),
+        Some(ResultKind::Calc | ResultKind::Conversion)
+    );
     let label = match item.as_ref() {
         Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => "Use Scope",
         Some(i) => match i.kind {
@@ -20,7 +52,9 @@ pub(crate) fn update_footer(
         },
         None => "Open",
     };
-    footer_action.set_text(label);
+    footer.action.set_text(label);
+    footer.value_chip.set_visible(is_calc);
+    footer.formula_chip.set_visible(is_calc);
 }
 
 pub(crate) fn keycap_label(text: &str) -> Label {
@@ -48,7 +82,6 @@ pub(crate) fn footer_divider() -> Label {
     l
 }
 
-#[allow(dead_code)]
 pub(crate) fn action_chip(label: &str, keys: &str) -> GtkBox {
     let box_ = GtkBox::new(Orientation::Horizontal, 6);
     box_.add_css_class("hark-action-chip");

@@ -8,11 +8,13 @@ mod settings;
 mod thumbnails;
 
 use crate::engine::{Engine, ExecuteOutcome};
-use crate::providers::{Action, ActionSpec, ResultKind, SearchResult};
+use crate::providers::{
+    formula_text, unformatted_value, Action, ActionSpec, ResultKind, SearchResult,
+};
 use crate::theme::ThemeManager;
 use action_panel::ActionPanel;
 use dnd::DragSession;
-use footer::{action_chip_button, footer_divider, keycap_label, update_footer};
+use footer::{action_chip_button, footer_divider, keycap_label, update_footer, FooterPrimary};
 use gio::prelude::*;
 use gio::Cancellable;
 use gtk::gdk::Key;
@@ -59,7 +61,7 @@ pub struct Launcher {
     stack: Stack,
     settings: SettingsPanel,
     in_settings: Rc<Cell<bool>>,
-    footer_action: Label,
+    footer_action: FooterPrimary,
     preview: Rc<PreviewPanel>,
     deep_gen: Rc<Cell<u64>>,
     /// Pending search debounce timer (cancelled on each keystroke / hide).
@@ -238,13 +240,13 @@ impl Launcher {
         primary.set_hexpand(true);
         primary.set_valign(gtk::Align::Center);
 
-        let footer_action = Label::new(Some("Open"));
-        footer_action.add_css_class("hark-footer-action");
-        footer_action.set_halign(gtk::Align::Start);
+        let footer_action = FooterPrimary::new();
 
         let enter_key = keycap_label("↵");
-        primary.append(&footer_action);
+        primary.append(&footer_action.action);
         primary.append(&enter_key);
+        primary.append(&footer_action.value_chip);
+        primary.append(&footer_action.formula_chip);
 
         let actions_chip = action_chip_button("Actions", "Ctrl K");
         actions_chip.set_halign(gtk::Align::End);
@@ -647,20 +649,51 @@ impl Launcher {
             let preview = preview.clone();
             let suppress_select = suppress_select.clone();
             let nav_dir = nav_dir.clone();
+            let list_sel = list.clone();
+            let row_pool = row_pool.clone();
+            let ui_icon_size = ui_icon_size.clone();
+            let ui_symbolic = ui_symbolic.clone();
             list.connect_row_selected(move |_, row| {
-                if let Some(row) = row {
-                    // Keep keyboard/mouse selection in view even while focus stays on search.
-                    // Consume the arrow direction for one-row scroll lookahead.
-                    ensure_row_visible(row, nav_dir.replace(0));
-                    let idx = row.index() as usize;
-                    selected.set(idx);
+                let Some(row) = row else { return };
+                // Keep keyboard/mouse selection in view even while focus stays on search.
+                // Consume the arrow direction for one-row scroll lookahead.
+                ensure_row_visible(row, nav_dir.replace(0));
+                let idx = row.index() as usize;
+
+                // Conversion prediction set (picker wheel): the hero card is
+                // pinned to row 0. Selecting any plain row wheels that value
+                // into the card (crossfade) and returns selection to the card.
+                if is_conv_set(&results.borrow()) {
+                    if idx != 0 && !suppress_select.get() {
+                        conv_swap_to_front(&mut results.borrow_mut(), idx);
+                        {
+                            let rs = results.borrow();
+                            let mut pool = row_pool.borrow_mut();
+                            pool.apply(&list_sel, &rs, ui_icon_size.get(), ui_symbolic.get(), true);
+                        }
+                        if let Some(card) = row_pool.borrow().row_at(0).cloned() {
+                            suppress_select.set(true);
+                            list_sel.select_row(Some(&card));
+                            suppress_select.set(false);
+                        }
+                    }
+                    selected.set(0);
                     if suppress_select.get() {
                         return;
                     }
-                    update_footer(&results, idx, &footer_action);
-                    let item = results.borrow().get(idx).cloned();
+                    update_footer(&results, 0, &footer_action);
+                    let item = results.borrow().first().cloned();
                     preview.update(item.as_ref());
+                    return;
                 }
+
+                selected.set(idx);
+                if suppress_select.get() {
+                    return;
+                }
+                update_footer(&results, idx, &footer_action);
+                let item = results.borrow().get(idx).cloned();
+                preview.update(item.as_ref());
             });
         }
 
@@ -835,6 +868,31 @@ impl Launcher {
                             }
                             return glib::Propagation::Stop;
                         }
+                        if ctrl
+                            && matches!(
+                                results.borrow().get(selected.get()).map(|i| i.kind),
+                                Some(ResultKind::Calc) | Some(ResultKind::Conversion)
+                            )
+                        {
+                            // Raycast calculator bindings on calc/conversion rows:
+                            // ⌘↵ (Ctrl+Enter) copies the unformatted value,
+                            // ⌘⇧↵ (Ctrl+Shift+Enter) copies question + answer.
+                            // Instant close on copy — no toast, no linger.
+                            let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                            let item = results.borrow().get(selected.get()).cloned();
+                            let text = item.and_then(|it| {
+                                if shift {
+                                    formula_text(&it)
+                                } else {
+                                    unformatted_value(&it)
+                                }
+                            });
+                            if let Some(text) = text {
+                                engine.execute(&Action::Copy(text));
+                                window.set_visible(false);
+                                return glib::Propagation::Stop;
+                            }
+                        }
                         activate_result(
                             &engine,
                             &results,
@@ -865,14 +923,30 @@ impl Launcher {
                         glib::Propagation::Stop
                     }
                     Key::Down => {
-                        let len = results.borrow().len();
-                        if len > 0 {
+                        let conv_next = {
+                            let rs = results.borrow();
+                            is_conv_set(&rs)
+                                .then(|| conv_nav_row(rs.len(), conv_current_rank(&rs), true))
+                        };
+                        if let Some(next) = conv_next {
                             nav_dir.set(1);
-                            let next = (selected.get() + 1) % len;
-                            selected.set(next);
+                            // Picker wheel: ↓ wheels the next ranked target
+                            // into the fixed card; the row-selected handler
+                            // performs the swap and keeps selection on it.
                             if let Some(row) = list.row_at_index(next as i32) {
                                 list.select_row(Some(&row));
                                 search.grab_focus_without_selecting();
+                            }
+                        } else {
+                            let len = results.borrow().len();
+                            if len > 0 {
+                                nav_dir.set(1);
+                                let next = (selected.get() + 1) % len;
+                                selected.set(next);
+                                if let Some(row) = list.row_at_index(next as i32) {
+                                    list.select_row(Some(&row));
+                                    search.grab_focus_without_selecting();
+                                }
                             }
                         }
                         glib::Propagation::Stop
@@ -890,15 +964,28 @@ impl Launcher {
                         }
                     }
                     Key::Up | Key::ISO_Left_Tab => {
-                        let len = results.borrow().len();
-                        if len > 0 {
+                        let conv_next = {
+                            let rs = results.borrow();
+                            is_conv_set(&rs)
+                                .then(|| conv_nav_row(rs.len(), conv_current_rank(&rs), false))
+                        };
+                        if let Some(next) = conv_next {
                             nav_dir.set(-1);
-                            let cur = selected.get();
-                            let next = if cur == 0 { len - 1 } else { cur - 1 };
-                            selected.set(next);
                             if let Some(row) = list.row_at_index(next as i32) {
                                 list.select_row(Some(&row));
                                 search.grab_focus_without_selecting();
+                            }
+                        } else {
+                            let len = results.borrow().len();
+                            if len > 0 {
+                                nav_dir.set(-1);
+                                let cur = selected.get();
+                                let next = if cur == 0 { len - 1 } else { cur - 1 };
+                                selected.set(next);
+                                if let Some(row) = list.row_at_index(next as i32) {
+                                    list.select_row(Some(&row));
+                                    search.grab_focus_without_selecting();
+                                }
                             }
                         }
                         glib::Propagation::Stop
@@ -1311,8 +1398,119 @@ fn complete_path_query(query: &str, path: &std::path::Path) -> String {
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
+mod conv_picker_tests {
+    use super::{conv_current_rank, conv_nav_row, conv_swap_to_front, is_conv_set};
+    use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
+
+    fn conv(id: &str, score: i64) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            title: format!("{id} title"),
+            subtitle: String::new(),
+            kind: ResultKind::Conversion,
+            score,
+            icon: None,
+            action: Action::Copy(id.into()),
+            conversion: Some(ConversionView {
+                left_title: "10 kg".into(),
+                left_badge: "mass".into(),
+                right_title: format!("{id} value"),
+                right_badge: id.into(),
+            }),
+            matched: None,
+        }
+    }
+
+    fn plain(id: &str) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            title: id.into(),
+            subtitle: String::new(),
+            kind: ResultKind::App,
+            score: 0,
+            icon: None,
+            action: Action::LaunchApp {
+                exec: id.into(),
+                terminal: false,
+                desktop_path: None,
+            },
+            conversion: None,
+            matched: None,
+        }
+    }
+
+    fn ids(rs: &[SearchResult]) -> Vec<&str> {
+        rs.iter().map(|r| r.id.as_str()).collect()
+    }
+
+    #[test]
+    fn only_pure_multi_conversion_sets_are_picker_surface() {
+        assert!(is_conv_set(&[conv("a", 3), conv("b", 2)]));
+        // Single exact conversion: card row, but no wheel.
+        assert!(!is_conv_set(&[conv("a", 3)]));
+        // Mixed lists never wheel.
+        assert!(!is_conv_set(&[conv("a", 3), plain("app")]));
+        assert!(!is_conv_set(&[]));
+    }
+
+    #[test]
+    fn wheel_math_down_up_wrap_and_rank_recovery() {
+        // Ranks A > B > C > D (scores 40/30/20/10).
+        let mut rs = vec![conv("A", 40), conv("B", 30), conv("C", 20), conv("D", 10)];
+        assert_eq!(conv_current_rank(&rs), 0);
+        assert_eq!(ids(&rs), ["A", "B", "C", "D"]);
+
+        // ↓: next rank B lives at row 1; swap wheels it into the card.
+        let r = conv_nav_row(4, conv_current_rank(&rs), true);
+        assert_eq!(r, 1);
+        conv_swap_to_front(&mut rs, r);
+        assert_eq!(ids(&rs), ["B", "A", "C", "D"]);
+        assert_eq!(conv_current_rank(&rs), 1, "A still outranks B");
+
+        // ↓ again: C sits at row 2 (after the swapped-in A).
+        let r = conv_nav_row(4, conv_current_rank(&rs), true);
+        assert_eq!(r, 2);
+        conv_swap_to_front(&mut rs, r);
+        assert_eq!(ids(&rs), ["C", "A", "B", "D"]);
+        assert_eq!(conv_current_rank(&rs), 2);
+
+        // ↑ from rank 2: previous rank B is at row 2 now.
+        let r = conv_nav_row(4, conv_current_rank(&rs), false);
+        assert_eq!(r, 2);
+        conv_swap_to_front(&mut rs, r);
+        assert_eq!(ids(&rs), ["B", "A", "C", "D"]);
+        assert_eq!(conv_current_rank(&rs), 1);
+
+        // ↓ to the last rank, then ↓ wraps past the card to rank 0 (row 1).
+        conv_swap_to_front(&mut rs, conv_nav_row(4, 1, true)); // → C
+        conv_swap_to_front(&mut rs, conv_nav_row(4, 2, true)); // → D
+        assert_eq!(conv_current_rank(&rs), 3);
+        assert_eq!(conv_nav_row(4, conv_current_rank(&rs), true), 1);
+
+        // ↑ at rank 0 wraps to the last rank (row len-1).
+        conv_swap_to_front(&mut rs, 1); // back to A
+        assert_eq!(conv_current_rank(&rs), 0);
+        assert_eq!(conv_nav_row(4, 0, false), 3);
+    }
+
+    #[test]
+    fn swap_rejects_card_row_and_out_of_range() {
+        let mut rs = vec![conv("A", 40), conv("B", 30)];
+        conv_swap_to_front(&mut rs, 0); // card row: no-op
+        conv_swap_to_front(&mut rs, 9); // out of range: no-op
+        assert_eq!(ids(&rs), ["A", "B"]);
+        conv_swap_to_front(&mut rs, 1);
+        assert_eq!(ids(&rs), ["B", "A"]);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tab_complete_tests {
-    use super::{complete_path_query, completion_text_for, is_path_shaped_query, search_mode_icon};
+    use super::{
+        chain_is_conversion, complete_path_query, completion_text_for, is_path_shaped_query,
+        looks_like_calc_query, search_mode_icon,
+    };
     use crate::providers::{Action, ResultKind, SearchResult};
     use std::path::PathBuf;
 
@@ -1448,18 +1646,6 @@ mod tab_complete_tests {
         assert_eq!(search_mode_icon("  "), "system-search-symbolic");
         assert_eq!(search_mode_icon("firefox"), "system-search-symbolic");
         assert_eq!(
-            search_mode_icon("25 * 4"),
-            "accessories-calculator-symbolic"
-        );
-        assert_eq!(
-            search_mode_icon("50 eur to usd"),
-            "document-convert-symbolic"
-        );
-        assert_eq!(
-            search_mode_icon("100 lbs in kg"),
-            "document-convert-symbolic"
-        );
-        assert_eq!(
             search_mode_icon("tr hola"),
             "preferences-desktop-locale-symbolic"
         );
@@ -1467,7 +1653,19 @@ mod tab_complete_tests {
             search_mode_icon("translate bonjour"),
             "preferences-desktop-locale-symbolic"
         );
-        assert_eq!(search_mode_icon("now"), "clock-symbolic");
+
+        // Theme-dependent modes are classified here; the concrete icon name is
+        // resolved against the active theme at runtime (headless tests have
+        // no display, so only the classifier is asserted).
+        assert!(looks_like_calc_query("25 * 4"));
+        assert!(looks_like_calc_query("100 lbs in kg"));
+        assert!(!looks_like_calc_query("firefox"));
+        assert!(chain_is_conversion("100 lbs in kg"));
+        assert!(!chain_is_conversion("25 * 4"));
+        assert!(crate::providers::calc::currency::looks_like_currency_query(
+            "50 eur to usd",
+        ));
+        assert!(!crate::providers::calc::currency::looks_like_currency_query("100 lbs in kg"));
     }
 }
 
@@ -1486,7 +1684,7 @@ fn run_secondary_action<F: Fn() + 'static>(
     list: &ListBox,
     row_pool: &Rc<RefCell<ResultRowPool>>,
     empty: &Label,
-    footer_action: &Label,
+    footer_action: &FooterPrimary,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -1626,7 +1824,7 @@ fn rebind_results_from_cache(
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
-    footer_action: &Label,
+    footer_action: &FooterPrimary,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -1638,6 +1836,7 @@ fn rebind_results_from_cache(
     }
     let found = results.borrow().clone();
     let no_hits = found.is_empty();
+    let idx = selected.get().min(found.len().saturating_sub(1));
     empty.set_visible(no_hits);
     empty.set_vexpand(no_hits);
     list.set_visible(!no_hits);
@@ -1647,11 +1846,10 @@ fn rebind_results_from_cache(
         if found.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &found, icon_size, symbolic_icons);
+            pool.apply(list, &found, icon_size, symbolic_icons, false);
         }
     }
 
-    let idx = selected.get().min(found.len().saturating_sub(1));
     selected.set(if found.is_empty() { 0 } else { idx });
 
     if let Some(row) = row_pool.borrow().row_at(selected.get()).cloned() {
@@ -1806,10 +2004,109 @@ fn search_mode_icon(query: &str) -> &'static str {
         lower.as_str(),
         "now" | "time" | "date" | "today" | "tomorrow" | "yesterday" | "utc" | "unix" | "epoch"
     ) {
-        return "clock-symbolic";
+        return mode_clock_icon();
     }
-    // Digits / operators / money / unit markers → calc or conversion.
-    if q.bytes().any(|b| b.is_ascii_digit())
+    if looks_like_calc_query(q) {
+        if crate::providers::calc::currency::looks_like_currency_query(q) {
+            return mode_currency_icon();
+        }
+        if chain_is_conversion(q) {
+            return mode_convert_icon();
+        }
+        return mode_calc_icon();
+    }
+    "system-search-symbolic"
+}
+
+fn chain_is_conversion(q: &str) -> bool {
+    q.contains(" to ") || q.contains(" in ") || q.contains(" as ") || q.contains("->")
+}
+
+// ── Conversion picker wheel ─────────────────────────────────────────────────
+// A prediction set binds as `[selected target] + remaining targets in rank
+// order`. Row 0 is the fixed hero card; ↓/↑ and clicks wheel values through
+// it Apple-timer style (swap-to-front + crossfade). The in-card rank is
+// derived from the data — prediction scores strictly decrease with rank —
+// so no wheel position needs tracking across refreshes.
+
+/// A pure multi-target conversion prediction set (the picker surface).
+fn is_conv_set(rs: &[SearchResult]) -> bool {
+    rs.len() > 1 && rs.iter().all(|r| r.conversion.is_some())
+}
+
+/// Rank of the target currently inside the card: how many remaining targets
+/// outrank it. Recovers the wheel position from any swapped order.
+fn conv_current_rank(rs: &[SearchResult]) -> usize {
+    match rs.first() {
+        Some(cur) => rs[1..].iter().filter(|r| r.score > cur.score).count(),
+        None => 0,
+    }
+}
+
+/// Row holding the next (down) / previous (up) ranked target. Rank r±1 sits
+/// at row r+1 / r in the `[selected] + remaining` layout; at the ends the
+/// wheel wraps past the fixed card (row 0 is never a navigation target).
+fn conv_nav_row(len: usize, rank: usize, down: bool) -> usize {
+    if down {
+        if rank + 1 < len {
+            rank + 1
+        } else {
+            1
+        }
+    } else if rank > 0 {
+        rank
+    } else {
+        len - 1
+    }
+}
+
+/// Wheel one value into the card: move the chosen row's item to index 0 and
+/// re-rank the remaining rows by score, so the list below the card always
+/// reads best-first regardless of how values have cycled through it.
+fn conv_swap_to_front(rs: &mut [SearchResult], row: usize) {
+    if row > 0 && row < rs.len() {
+        rs[..=row].rotate_right(1);
+        rs[1..].sort_by_key(|r| std::cmp::Reverse(r.score));
+    }
+}
+
+// Mode icons resolve candidate chains against the active theme at runtime:
+// no single name ships everywhere (`convert-symbolic` is breeze-only;
+// Adwaita/Papirus have neither it nor a currency glyph).
+fn mode_calc_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "accessories-calculator-symbolic",
+        "view-refresh-symbolic",
+    ])
+}
+
+fn mode_convert_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "convert-symbolic",
+        "emblem-synchronizing-symbolic",
+        "view-refresh-symbolic",
+    ])
+}
+
+fn mode_currency_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "format-currency-symbolic",
+        "convert-symbolic",
+        "emblem-synchronizing-symbolic",
+        "view-refresh-symbolic",
+    ])
+}
+
+fn mode_clock_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "clock-symbolic",
+        "preferences-system-time-symbolic",
+        "view-refresh-symbolic",
+    ])
+}
+
+fn looks_like_calc_query(q: &str) -> bool {
+    q.bytes().any(|b| b.is_ascii_digit())
         || q.contains('+')
         || q.contains('*')
         || q.contains('/')
@@ -1822,13 +2119,6 @@ fn search_mode_icon(query: &str) -> &'static str {
         || q.contains("->")
         || q.chars()
             .any(|c| matches!(c, '$' | '€' | '£' | '¥' | '₹' | '₩' | '₽'))
-    {
-        if q.contains(" to ") || q.contains(" in ") || q.contains(" as ") || q.contains("->") {
-            return "document-convert-symbolic";
-        }
-        return "accessories-calculator-symbolic";
-    }
-    "system-search-symbolic"
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1840,7 +2130,7 @@ fn refresh_results(
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
-    footer_action: &Label,
+    footer_action: &FooterPrimary,
     preview: &Rc<PreviewPanel>,
     deep_gen: &Rc<Cell<u64>>,
     async_pending: &Rc<Cell<u32>>,
@@ -1906,7 +2196,7 @@ fn refresh_results(
         if found.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &found, icon_size, symbolic_icons);
+            pool.apply(list, &found, icon_size, symbolic_icons, false);
         }
     }
 
@@ -2163,7 +2453,7 @@ fn apply_translate_hits(
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
-    footer_action: &Label,
+    footer_action: &FooterPrimary,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -2194,7 +2484,7 @@ fn apply_translate_hits(
         if out.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &out, icon_size, symbolic_icons);
+            pool.apply(list, &out, icon_size, symbolic_icons, false);
         }
     }
     selected.set(0);
@@ -2224,7 +2514,7 @@ fn apply_deep_hits(
     empty: &Label,
     results: &Rc<RefCell<Vec<SearchResult>>>,
     selected: &Rc<Cell<usize>>,
-    footer_action: &Label,
+    footer_action: &FooterPrimary,
     preview: &Rc<PreviewPanel>,
     drag_session: &DragSession,
     suppress_select: &Rc<Cell<bool>>,
@@ -2259,6 +2549,9 @@ fn apply_deep_hits(
     merged.truncate(25);
 
     let no_hits = merged.is_empty();
+    let new_sel = prev_id
+        .and_then(|id| merged.iter().position(|r| r.id == id))
+        .unwrap_or(0);
     empty.set_visible(no_hits);
     empty.set_vexpand(no_hits);
     list.set_visible(!no_hits);
@@ -2267,13 +2560,10 @@ fn apply_deep_hits(
         if merged.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &merged, icon_size, symbolic_icons);
+            pool.apply(list, &merged, icon_size, symbolic_icons, false);
         }
     }
 
-    let new_sel = prev_id
-        .and_then(|id| merged.iter().position(|r| r.id == id))
-        .unwrap_or(0);
     selected.set(new_sel);
     *results.borrow_mut() = merged;
 

@@ -42,6 +42,19 @@ pub(crate) fn normalize_money_query(q: &str) -> Cow<'_, str> {
     Cow::Owned(s)
 }
 
+/// Currency-shaped query for the search-bar mode icon:
+/// `100 usd to inr`, `10 usd to in`, `50 eur as jpy` — the source unit is a
+/// currency code/symbol.
+pub(crate) fn looks_like_currency_query(q: &str) -> bool {
+    [RE_CONVERT.captures(q), RE_CONVERT_PARTIAL.captures(q)]
+        .into_iter()
+        .flatten()
+        .any(|caps| {
+            caps.get(2)
+                .is_some_and(|from| crate::providers::fx::is_currency(from.as_str()))
+        })
+}
+
 pub(crate) fn try_currency(q: &str, fx: &FxStore) -> Option<SearchResult> {
     let caps = RE_CONVERT.captures(q)?;
     let value: f64 = caps.get(1)?.as_str().parse().ok()?;

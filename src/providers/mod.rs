@@ -117,6 +117,32 @@ impl Action {
     }
 }
 
+/// Full equation for a calc/conversion card: `24 * 60 = 1440`, `10 USD = 954.40 INR`.
+pub(crate) fn formula_text(item: &SearchResult) -> Option<String> {
+    let c = item.conversion.as_ref()?;
+    if c.left_title.is_empty() || c.right_title.is_empty() {
+        return None;
+    }
+    Some(format!("{} = {}", c.left_title, c.right_title))
+}
+
+/// Value without unit suffix / decoration: `22.05 lb` → `22.05`, `1440` → `1440`.
+/// Non-numeric right titles (e.g. hex colors) yield None.
+pub(crate) fn unformatted_value(item: &SearchResult) -> Option<String> {
+    let c = item.conversion.as_ref()?;
+    let t = c.right_title.trim();
+    let end = t.find(' ').unwrap_or(t.len());
+    let num = &t[..end];
+    if num.is_empty()
+        || !num
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | ',' | '-' | '+'))
+    {
+        return None;
+    }
+    Some(num.to_string())
+}
+
 /// Secondary actions for the selected result (action panel / `Ctrl+K`).
 ///
 /// Primary Enter still uses `item.action` directly; the panel lists open plus
@@ -259,6 +285,25 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 action: Action::Copy(text),
                 destructive: false,
             });
+            // Raycast trio: ⌘↵ unformatted value, ⌘⇧↵ question + answer.
+            if let Some(v) = unformatted_value(item) {
+                out.push(ActionSpec {
+                    id: "copy_value",
+                    label: "Copy Unformatted Value".into(),
+                    shortcut: Some("Ctrl ↵"),
+                    action: Action::Copy(v),
+                    destructive: false,
+                });
+            }
+            if let Some(f) = formula_text(item) {
+                out.push(ActionSpec {
+                    id: "copy_formula",
+                    label: "Copy Formula".into(),
+                    shortcut: Some("Ctrl Shift ↵"),
+                    action: Action::Copy(f),
+                    destructive: false,
+                });
+            }
         }
         ResultKind::Command => {
             out.push(ActionSpec {
@@ -304,6 +349,82 @@ mod action_panel_tests {
         assert!(ids.contains(&"trash"));
         assert!(ids.contains(&"toggle_preview"));
         assert!(acts.iter().any(|a| a.destructive && a.id == "trash"));
+    }
+
+    fn calc_item(conv: Option<ConversionView>, title: &str) -> SearchResult {
+        SearchResult {
+            id: "calc:t".into(),
+            title: title.into(),
+            subtitle: String::new(),
+            kind: ResultKind::Calc,
+            score: 0,
+            icon: None,
+            action: Action::Copy(title.into()),
+            conversion: conv,
+            matched: None,
+        }
+    }
+
+    #[test]
+    fn calc_actions_include_copy_trio() {
+        let item = calc_item(
+            Some(ConversionView {
+                left_title: "10 USD".into(),
+                left_badge: "USD".into(),
+                right_title: "954.40 INR".into(),
+                right_badge: "INR · ECB".into(),
+            }),
+            "954.40 INR",
+        );
+        let acts = secondary_actions(&item);
+        let ids: Vec<_> = acts.iter().map(|a| a.id).collect();
+        assert!(ids.contains(&"copy"));
+        assert!(ids.contains(&"copy_value"));
+        assert!(ids.contains(&"copy_formula"));
+        let formula = acts.iter().find(|a| a.id == "copy_formula").unwrap();
+        match &formula.action {
+            Action::Copy(t) => assert_eq!(t, "10 USD = 954.40 INR"),
+            _ => panic!("formula action is not Copy"),
+        }
+        let value = acts.iter().find(|a| a.id == "copy_value").unwrap();
+        match &value.action {
+            Action::Copy(t) => assert_eq!(t, "954.40"),
+            _ => panic!("value action is not Copy"),
+        }
+    }
+
+    #[test]
+    fn formula_and_unformatted_edge_cases() {
+        // Bare math row: value equals the result, no unit to strip.
+        let math = calc_item(
+            Some(ConversionView {
+                left_title: "24 * 60".into(),
+                left_badge: "expression".into(),
+                right_title: "1440".into(),
+                right_badge: "result".into(),
+            }),
+            "1440",
+        );
+        assert_eq!(formula_text(&math).as_deref(), Some("24 * 60 = 1440"));
+        assert_eq!(unformatted_value(&math).as_deref(), Some("1440"));
+
+        // Non-numeric right side (hex color): no unformatted value.
+        let hex = calc_item(
+            Some(ConversionView {
+                left_title: "#ff5500".into(),
+                left_badge: "hex".into(),
+                right_title: "FF5500".into(),
+                right_badge: "hex".into(),
+            }),
+            "FF5500",
+        );
+        assert_eq!(unformatted_value(&hex), None);
+
+        // No card → no formula/value actions at all.
+        let plain = calc_item(None, "1440");
+        let ids: Vec<_> = secondary_actions(&plain).iter().map(|a| a.id).collect();
+        assert!(!ids.contains(&"copy_value"));
+        assert!(!ids.contains(&"copy_formula"));
     }
 
     #[test]

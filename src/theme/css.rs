@@ -471,13 +471,33 @@ window.hark-window .hark-conv-arrow {{
   opacity: 0.7;
   padding: 0 10px;
   min-width: 36px;
+  transition: color 140ms ease, opacity 140ms ease;
 }}
 
+window.hark-window .hark-results > row.hark-conv-row:selected .hark-conv-arrow,
+window.hark-window .hark-results > row.hark-conv-row:hover .hark-conv-arrow {{
+  color: {primary};
+  opacity: 1.0;
+}}
+
+/* Answer is the hero: right panel dominates, left expression reads as muted
+   context. Tabular figures stop digit jitter while typing. */
 window.hark-window .hark-conv-title {{
   color: {on_surface};
-  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.2px;
+  font-feature-settings: "tnum" 1;
+}}
+
+window.hark-window .hark-conv-left .hark-conv-title {{
+  color: {subtitle};
+  font-size: 16px;
+  font-weight: 500;
+}}
+
+window.hark-window .hark-conv-right .hark-conv-title {{
+  font-size: 26px;
+  font-weight: 700;
 }}
 
 window.hark-window .hark-conv-badge {{
@@ -488,6 +508,7 @@ window.hark-window .hark-conv-badge {{
   font-size: 11px;
   font-weight: 500;
   opacity: 0.95;
+  font-feature-settings: "tnum" 1;
 }}
 
 /* --- Footer (Raycast action bar) --- */

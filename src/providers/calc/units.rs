@@ -42,7 +42,11 @@ pub(crate) fn try_conversion(q: &str) -> Option<SearchResult> {
     unit_result(value, &from, &to)
 }
 
-/// Predict incomplete targets: `10kg to pou` → pounds, `100m to ki` → km
+/// Predict incomplete targets: `10kg to pou` → pounds, `100m to ki` → km.
+///
+/// One result per predicted target, best first. Scores strictly decrease
+/// with rank — the UI derives its picker-wheel position from that. Row 0
+/// renders as the fixed hero card; ↓/↑ wheels the other targets through it.
 pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
     let caps = RE_CONVERT_PARTIAL.captures(q)?;
     let value: f64 = super::util::parse_qty_number(caps.get(1)?.as_str())?;
@@ -69,12 +73,8 @@ pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
     let mut out = Vec::new();
     for (i, to) in targets.into_iter().enumerate() {
         if let Some(mut r) = unit_result(value, &from, &to) {
-            // Rank best prediction first
+            // Rank best prediction first.
             r.score = 10_000 - (i as i64 * 10);
-            // Show predicted unit name in subtitle when partial
-            if !to_prefix.is_empty() && !to_prefix.eq_ignore_ascii_case(&to) {
-                r.subtitle = format!("{} → predicted “{}”", r.subtitle, unit_display_name(&to));
-            }
             out.push(r);
         }
     }
@@ -190,30 +190,6 @@ pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<Str
         return ranked;
     }
     out
-}
-
-pub(crate) fn unit_display_name(canon: &str) -> String {
-    match canon {
-        "lb" => "pounds".into(),
-        "kg" => "kilograms".into(),
-        "g" => "grams".into(),
-        "oz" => "ounces".into(),
-        "mi" => "miles".into(),
-        "km" => "kilometers".into(),
-        "ft" => "feet".into(),
-        "in" => "inches".into(),
-        "m" => "meters".into(),
-        "cm" => "centimeters".into(),
-        "gal" => "gallons".into(),
-        "l" => "liters".into(),
-        "ml" => "milliliters".into(),
-        "c" => "celsius".into(),
-        "f" => "fahrenheit".into(),
-        "k" => "kelvin".into(),
-        "mph" => "mph".into(),
-        "km/h" => "km/h".into(),
-        other => other.to_string(),
-    }
 }
 
 pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
@@ -554,7 +530,7 @@ pub(crate) fn to_base(unit: &str) -> Option<(f64, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::try_conversion;
+    use super::{try_conversion, try_conversion_predict};
 
     #[test]
     fn fractional_quantity_converts() {
@@ -563,5 +539,23 @@ mod tests {
         assert_eq!(r.title, "157.725 ml");
         let r = try_conversion("1/2 cup to ml").expect("fraction");
         assert_eq!(r.title, "118.294 ml");
+    }
+
+    #[test]
+    fn predictions_are_ranked_rows_for_the_picker() {
+        let preds = try_conversion_predict("10 kg to ").expect("predictions");
+        assert!(preds.len() > 1, "need multiple predicted rows");
+        // Every prediction carries a conversion view: row 0 becomes the fixed
+        // hero card and the set as a whole is what the picker detects.
+        for r in &preds {
+            assert!(r.conversion.is_some(), "missing card view on {}", r.id);
+        }
+        assert!(
+            preds[0].score > preds[1].score,
+            "best prediction ranks first; scores must strictly decrease so the UI can derive rank"
+        );
+        // Exact conversions keep a single result.
+        let exact = try_conversion("10 kg to lb").expect("exact");
+        assert!(exact.conversion.is_some());
     }
 }
