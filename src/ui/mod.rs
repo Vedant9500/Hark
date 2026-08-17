@@ -35,8 +35,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "layer-shell")]
 use std::time::{Duration, Instant};
 
-/// Compact fixed outer width. Preview never grows the window — it takes
-/// horizontal space from the list column instead.
+/// Compact fixed outer width. When the media preview opens, the window widens
+/// by PREVIEW_WIDTH + separator (see `preview.set_visibility_cb` below).
 const WINDOW_WIDTH: i32 = 720;
 const WINDOW_MAX_HEIGHT: i32 = 520;
 /// Extra transparent margin around the rounded shell (for soft drop-shadow).
@@ -213,8 +213,24 @@ impl Launcher {
         // Fixed 25-row pool: update in place on search (Phase 2).
         let row_pool = Rc::new(RefCell::new(ResultRowPool::new(&drag_session)));
 
-        let preview = Rc::new(PreviewPanel::new(drag_session.clone()));
+        let preview = Rc::new(PreviewPanel::new(drag_session.clone(), theme.is_light()));
         // Preview pane only appears for media (images / video / audio).
+
+        // Widen the window around the preview instead of squeezing the results
+        // column. Preview panel + its separator eat PREVIEW_WIDTH + 1px when shown.
+        {
+            let shell = shell.clone();
+            let window = window.clone();
+            preview.set_visibility_cb(Box::new(move |vis| {
+                let width = if vis {
+                    WINDOW_WIDTH + 280 + 1
+                } else {
+                    WINDOW_WIDTH
+                };
+                shell.set_size_request(width, -1);
+                window.set_size_request(width, -1);
+            }));
+        }
 
         body.append(&list_col);
         body.append(preview.separator());

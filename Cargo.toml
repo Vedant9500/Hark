@@ -45,6 +45,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 chrono-tz = { version = "0.10", default-features = true, features = ["filter-by-regex"] }
 # Blocking HTTP for FX / translate workers (no curl process spawn).
 ureq = { version = "2.12", default-features = true }
+# Syntax-highlighted code preview (GtkSourceView 5).
+sourceview5 = "0.9"
+# Audio ID3/MP4/Vorbis tag + embedded-art reading (pure Rust).
+lofty = "0.25"
 
 [profile.release]
 lto = true

@@ -98,6 +98,7 @@ Uninstall:
 Requirements:
   - Linux ${ARCH}
   - GTK 4 runtime (libgtk-4)
+  - GtkSourceView 5 runtime (libgtksourceview-5, code previews)
   - Recommended for Hyprland: gtk4-layer-shell
 
 Then:

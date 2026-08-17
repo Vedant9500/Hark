@@ -23,20 +23,6 @@ fn rgba(hex: &str, alpha: f32) -> String {
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
-/// Gamma-space channel mix of two hex colors → solid `#rrggbb`.
-fn mix_hex(a: &str, b: &str, t: f32) -> String {
-    let chan = |s: &str, i: usize| {
-        let h = s.trim().trim_start_matches('#');
-        f32::from(u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0))
-    };
-    let mut out = String::from("#");
-    for i in [0, 2, 4] {
-        let v = chan(a, i) * (1.0 - t) + chan(b, i) * t;
-        out.push_str(&format!("{:02x}", v.round().clamp(0.0, 255.0) as u8));
-    }
-    out
-}
-
 pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let base = ui.opacity.clamp(0.40, 1.0);
     let primary = ui
@@ -72,10 +58,12 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
     let selected_bg = rgba(primary, 0.18);
-    // Raycast-style selected row: one confident SOLID fill (no accent bar, no
-    // translucency shimmer). Theme-adaptive: lightens the surface on dark
-    // schemes, darkens it on light ones.
-    let row_selected_bg = mix_hex(&theme.surface_container, &theme.on_surface, 0.13);
+    // Selected row: a translucent wash just a step above hover so the active
+    // item reads without shouting. Same visual language as hover (an
+    // `on_surface` alpha fill), but stronger — hover @0.08, selection @0.12.
+    // Deliberately NOT a bright solid fill: over a semi-transparent shell that
+    // reads as a glowing block rather than a focused row.
+    let row_selected_bg = rgba(&theme.on_surface, 0.12);
     let hint = &theme.on_surface_variant;
     let empty = &theme.on_surface_variant;
     let subtitle = &theme.on_surface_variant;
@@ -97,6 +85,7 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let badge_fs = fs(11.0);
     let preview_title_fs = fs(13.0);
     let preview_meta_fs = fs(11.0);
+    let preview_code_fs = fs(11.0);
     let empty_fs = fs(12.0);
 
     format!(
@@ -313,6 +302,20 @@ window.hark-window .hark-preview-meta {{
 
 window.hark-window .hark-preview-meta-block {{
   padding: 4px 2px 0 2px;
+}}
+
+window.hark-window .hark-preview-code-scroll {{
+  background-color: transparent;
+}}
+
+window.hark-window .hark-preview-code {{
+  font-family: monospace;
+  font-size: {preview_code_fs};
+  background-color: transparent;
+}}
+
+window.hark-window .hark-preview-code text {{
+  color: {on_surface};
 }}
 
 window.hark-window .hark-preview-picture {{
@@ -1060,6 +1063,37 @@ mod tests {
         let css = render(&theme, &ui);
         assert!(css.contains("box-shadow: inset 0 1px 0 0"));
         assert!(css.contains("window.hark-window .hark-shell"));
+    }
+
+    #[test]
+    fn test_selected_row_stronger_than_hover() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        let alpha_of = |rule: &str| -> f32 {
+            let bg = rule.split("background-color:").nth(1).unwrap();
+            let start = bg.rfind(',').unwrap() + 1;
+            let end = bg.find(')').unwrap();
+            bg[start..end].trim().parse().unwrap()
+        };
+        let hover_rule = css
+            .split("window.hark-window .hark-results > row:hover {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        let sel_rule = css
+            .split("window.hark-window .hark-results > row:selected,")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        // Same on_surface wash language as hover, but a clear step stronger so
+        // the active row is distinguishable without reading as a bright block.
+        assert!(sel_rule.contains("background-color: rgba("), "{sel_rule}");
+        assert!(alpha_of(sel_rule) > alpha_of(hover_rule), "{sel_rule}");
     }
 
     #[test]

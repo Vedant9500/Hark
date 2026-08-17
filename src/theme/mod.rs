@@ -122,6 +122,12 @@ impl ThemeManager {
         self.apply_gen.set(self.apply_gen.get().wrapping_add(1));
     }
 
+    /// True when the cached theme is light (used to pick a matching
+    /// GtkSourceView style scheme so the code preview is theme-aware).
+    pub fn is_light(&self) -> bool {
+        css::is_light_theme(&self.cached_theme.borrow().surface_container)
+    }
+
     /// UI-only refresh: reuse cached scheme colours, re-read config UI knobs.
     /// Debounced so rapid appearance steppers share one CSS inject.
     pub fn reload(self: &Rc<Self>) {

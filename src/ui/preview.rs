@@ -5,7 +5,11 @@ use gtk::gdk::{self, Texture};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::glib;
 use gtk::prelude::*;
-use gtk::{Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, Separator, Stack};
+use gtk::{Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, ScrolledWindow, Separator, Stack};
+use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::prelude::Accessor;
+use sourceview5::prelude::*;
+use sourceview5::{LanguageManager, StyleSchemeManager, View};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +19,8 @@ use std::time::{Duration, SystemTime};
 
 /// Max image file size we'll try to decode (bytes).
 const MAX_IMAGE_BYTES: u64 = 40 * 1024 * 1024;
+/// Max source-file size we'll show in the code preview (bytes).
+const MAX_CODE_BYTES: u64 = 2 * 1024 * 1024;
 /// Preview panel width.
 pub const PREVIEW_WIDTH: i32 = 280;
 /// Image frame inside the panel (4:3).
@@ -80,7 +86,7 @@ impl MediaKind {
     fn is_previewable(self) -> bool {
         matches!(
             self,
-            MediaKind::Image | MediaKind::Video | MediaKind::Audio | MediaKind::Document
+            MediaKind::Image | MediaKind::Video | MediaKind::Audio | MediaKind::Document | MediaKind::Code
         )
     }
 }
@@ -98,6 +104,10 @@ pub struct PreviewPanel {
     image_title: Label,
     image_meta: Label,
     image_dims: Label,
+    code_view: View,
+    code_title: Label,
+    code_meta: Label,
+    code_dims: Label,
     gen: Rc<Cell<u64>>,
     last_path: Rc<RefCell<Option<PathBuf>>>,
     /// Path → decoded preview texture (LRU via `cache_order`).
@@ -111,10 +121,12 @@ pub struct PreviewPanel {
     drag: PathDragBinding,
     /// User forced the panel off (Ctrl+P / Toggle Preview) until toggled back.
     user_hidden: Rc<Cell<bool>>,
+    /// Notify the launcher when panel visibility changes (window widening).
+    on_visibility: Rc<RefCell<Option<Box<dyn Fn(bool)>>>>,
 }
 
 impl PreviewPanel {
-    pub fn new(drag_session: DragSession) -> Self {
+    pub fn new(drag_session: DragSession, is_light: bool) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("hark-preview");
         root.set_size_request(PREVIEW_WIDTH, -1);
@@ -228,6 +240,72 @@ impl PreviewPanel {
         image_view.append(&meta_block);
         stack.add_named(&image_view, Some("image"));
 
+        // Syntax-highlighted code preview (GtkSourceView 5).
+        let code_view = View::new();
+        code_view.add_css_class("hark-preview-code");
+        code_view.set_show_line_numbers(true);
+        code_view.set_editable(false);
+        code_view.set_cursor_visible(false);
+        code_view.set_monospace(true);
+        code_view.set_wrap_mode(gtk::WrapMode::Char);
+        code_view.set_hexpand(true);
+        code_view.set_vexpand(true);
+        if let Ok(buf) = code_view.buffer().downcast::<sourceview5::Buffer>() {
+            buf.set_highlight_syntax(true);
+            // Theme-aware syntax colors: pick a built-in scheme matching the
+            // current theme's lightness so dark themes don't show a white
+            // background / dark text from GtkSourceView's default "classic" scheme.
+            let mgr = StyleSchemeManager::default();
+            let id = if is_light { "Adwaita" } else { "Adwaita-dark" };
+            if let Some(scheme) = mgr.scheme(id) {
+                buf.set_style_scheme(Some(&scheme));
+            }
+        }
+
+        let code_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .min_content_height(120)
+            .max_content_height(380)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        code_scroll.add_css_class("hark-preview-code-scroll");
+        code_scroll.set_child(Some(&code_view));
+
+        let code_title = Label::new(None);
+        code_title.add_css_class("hark-preview-title");
+        code_title.set_halign(Align::Start);
+        code_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        code_title.set_xalign(0.0);
+
+        let code_dims = Label::new(None);
+        code_dims.add_css_class("hark-preview-meta");
+        code_dims.set_halign(Align::Start);
+        code_dims.set_xalign(0.0);
+
+        let code_meta = Label::new(None);
+        code_meta.add_css_class("hark-preview-meta");
+        code_meta.set_halign(Align::Start);
+        code_meta.set_wrap(true);
+        code_meta.set_xalign(0.0);
+
+        let code_meta_block = GtkBox::new(Orientation::Vertical, 2);
+        code_meta_block.add_css_class("hark-preview-meta-block");
+        code_meta_block.append(&code_title);
+        code_meta_block.append(&code_dims);
+        code_meta_block.append(&code_meta);
+
+        let code_view_box = GtkBox::new(Orientation::Vertical, 8);
+        code_view_box.add_css_class("hark-preview-body");
+        code_view_box.set_hexpand(true);
+        code_view_box.set_vexpand(true);
+        code_view_box.append(&code_scroll);
+        code_view_box.append(&Separator::new(Orientation::Horizontal));
+        code_view_box.append(&code_meta_block);
+        stack.add_named(&code_view_box, Some("code"));
+
         stack.set_visible_child_name("icon");
         root.append(&stack);
 
@@ -248,6 +326,10 @@ impl PreviewPanel {
             image_title,
             image_meta,
             image_dims,
+            code_view,
+            code_title,
+            code_meta,
+            code_dims,
             gen: Rc::new(Cell::new(0)),
             last_path: Rc::new(RefCell::new(None)),
             cache: Rc::new(RefCell::new(HashMap::new())),
@@ -257,6 +339,7 @@ impl PreviewPanel {
             worker_busy: Rc::new(Cell::new(false)),
             drag,
             user_hidden: Rc::new(Cell::new(false)),
+            on_visibility: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -270,8 +353,19 @@ impl PreviewPanel {
 
     fn set_panel_visible(&self, visible: bool) {
         let vis = visible && !self.user_hidden.get();
+        if vis != self.root.is_visible() {
+            if let Some(cb) = self.on_visibility.borrow().as_ref() {
+                cb(vis);
+            }
+        }
         self.root.set_visible(vis);
         self.sep.set_visible(vis);
+    }
+
+    /// Register a callback fired whenever the panel toggles between shown/hidden
+    /// (used by the launcher to widen/narrow the window around the preview).
+    pub fn set_visibility_cb(&self, cb: Box<dyn Fn(bool)>) {
+        *self.on_visibility.borrow_mut() = Some(cb);
     }
 
     /// Flip user hide flag. Returns `true` when the panel is now user-hidden.
@@ -279,8 +373,7 @@ impl PreviewPanel {
         let next = !self.user_hidden.get();
         self.user_hidden.set(next);
         if next {
-            self.root.set_visible(false);
-            self.sep.set_visible(false);
+            self.set_panel_visible(false);
         }
         next
     }
@@ -354,7 +447,19 @@ impl PreviewPanel {
             return;
         }
 
-        // Audio / non-PDF documents stay icon + metadata.
+        // Code files: syntax-highlighted source preview.
+        if media == MediaKind::Code {
+            self.queue_code_load(path, item.title.clone(), meta, fp);
+            return;
+        }
+
+        // Audio: ID3/Vorbis/MP4 tags + duration + embedded art.
+        if media == MediaKind::Audio {
+            self.queue_audio_load(path, item.clone(), meta, fp);
+            return;
+        }
+
+        // Non-PDF documents stay icon + metadata.
         self.cancel_debounce();
         self.gen.set(self.gen.get().wrapping_add(1));
         *self.last_path.borrow_mut() = Some(path.clone());
@@ -366,7 +471,6 @@ impl PreviewPanel {
             .unwrap_or_else(|| icon_for_media(media));
         let detail = match media {
             MediaKind::Video => format!("Video file\n{meta}"),
-            MediaKind::Audio => format!("Audio file\n{meta}"),
             MediaKind::Document => format!("Document\n{meta}"),
             _ => meta,
         };
@@ -388,18 +492,19 @@ impl PreviewPanel {
         meta: Option<&str>,
     ) {
         self.picture.set_paintable(Option::<&gdk::Paintable>::None);
-        self.icon.set_icon_name(Some(resolve_icon_name(icon)));
-        self.icon_type.set_text(badge);
-        self.icon_title.set_text(title);
-        self.icon_sub.set_text(subtitle);
-        if let Some(m) = meta {
-            self.icon_meta.set_text(m);
-            self.icon_meta.set_visible(true);
-        } else {
-            self.icon_meta.set_text("");
-            self.icon_meta.set_visible(false);
-        }
-        self.stack.set_visible_child_name("icon");
+        Self::show_icon_preview_shared(
+            &self.icon,
+            &self.icon_type,
+            &self.icon_title,
+            &self.icon_sub,
+            &self.icon_meta,
+            &self.stack,
+            icon,
+            badge,
+            title,
+            subtitle,
+            meta,
+        );
     }
 
     fn show_image_chrome(&self, title: &str, meta: &str, dims: &str) {
@@ -407,6 +512,35 @@ impl PreviewPanel {
         self.image_meta.set_text(meta);
         self.image_dims.set_text(dims);
         self.stack.set_visible_child_name("image");
+    }
+
+    /// Shared icon-view renderer used by both `show_icon_preview` and the
+    /// audio worker (which only has borrowed widget handles).
+    fn show_icon_preview_shared(
+        icon: &Image,
+        icon_type: &Label,
+        icon_title: &Label,
+        icon_sub: &Label,
+        icon_meta: &Label,
+        stack: &Stack,
+        icon_name: &str,
+        badge: &str,
+        title: &str,
+        subtitle: &str,
+        meta: Option<&str>,
+    ) {
+        icon.set_icon_name(Some(resolve_icon_name(icon_name)));
+        icon_type.set_text(badge);
+        icon_title.set_text(title);
+        icon_sub.set_text(subtitle);
+        if let Some(m) = meta {
+            icon_meta.set_text(m);
+            icon_meta.set_visible(true);
+        } else {
+            icon_meta.set_text("");
+            icon_meta.set_visible(false);
+        }
+        stack.set_visible_child_name("icon");
     }
 
     /// Cache hit only when path *and* filesystem fingerprint match.
@@ -566,6 +700,248 @@ impl PreviewPanel {
         *self.debounce.borrow_mut() = Some(id);
     }
 
+    /// Load a source file off-main-thread, then render it with GtkSourceView.
+    /// Same debounce/latest-wins pattern as image loads.
+    fn queue_code_load(&self, path: PathBuf, title: String, meta: String, fp: FileFp) {
+        if fp.len > MAX_CODE_BYTES {
+            self.cancel_debounce();
+            self.gen.set(self.gen.get().wrapping_add(1));
+            *self.last_path.borrow_mut() = Some(path);
+            *self.inflight.borrow_mut() = None;
+            self.show_code_chrome(&title, &meta, "File too large to preview");
+            return;
+        }
+
+        self.show_code_chrome(&title, &meta, "Loading…");
+        self.cancel_debounce();
+        let gen = self.gen.get().wrapping_add(1);
+        self.gen.set(gen);
+        *self.last_path.borrow_mut() = Some(path.clone());
+        *self.inflight.borrow_mut() = None;
+
+        let gen_cell = self.gen.clone();
+        let last_path = self.last_path.clone();
+        let debounce = self.debounce.clone();
+        let path_check = path;
+
+        let view = self.code_view.clone();
+        let dims = self.code_dims.clone();
+        let stack = self.stack.clone();
+
+        let id = glib::timeout_add_local(LOAD_DEBOUNCE, move || {
+            *debounce.borrow_mut() = None;
+            if gen_cell.get() != gen || last_path.borrow().as_ref() != Some(&path_check) {
+                return glib::ControlFlow::Break;
+            }
+            let (tx, rx) = async_channel::bounded::<Option<String>>(1);
+            let path_worker = path_check.clone();
+            std::thread::spawn(move || {
+                let text = std::fs::read_to_string(&path_worker).ok();
+                let _ = tx.send_blocking(text);
+            });
+            let gen_cell2 = gen_cell.clone();
+            let last_path2 = last_path.clone();
+            let path_check2 = path_check.clone();
+            let view = view.clone();
+            let dims = dims.clone();
+            let stack = stack.clone();
+            let meta2 = meta.clone();
+            glib::spawn_future_local(async move {
+                let text = rx.recv().await.ok().flatten();
+                if gen_cell2.get() != gen
+                    || last_path2.borrow().as_ref() != Some(&path_check2)
+                {
+                    return;
+                }
+                let Some(text) = text else {
+                    dims.set_text("Could not load file");
+                    stack.set_visible_child_name("code");
+                    return;
+                };
+                let lines = text.lines().count();
+                view.buffer().set_text(&text);
+                if let Some(lang) = guess_language(&path_check2) {
+                    if let Ok(buf) = view.buffer().downcast::<sourceview5::Buffer>() {
+                        buf.set_language(Some(&lang));
+                    }
+                }
+                let lines_label = if lines > 0 {
+                    format!("{lines} line{} · {meta2}", if lines == 1 { "" } else { "s" })
+                } else {
+                    meta2
+                };
+                dims.set_text(&lines_label);
+                stack.set_visible_child_name("code");
+            });
+            glib::ControlFlow::Break
+        });
+        *self.debounce.borrow_mut() = Some(id);
+    }
+
+    fn show_code_chrome(&self, title: &str, meta: &str, dims: &str) {
+        self.code_title.set_text(title);
+        self.code_meta.set_text(meta);
+        self.code_dims.set_text(dims);
+        self.stack.set_visible_child_name("code");
+    }
+
+    /// Probe audio tags + embedded art off-main, then render album art (when
+    /// present) through the picture pipeline or fall back to icon + metadata.
+    fn queue_audio_load(&self, path: PathBuf, item: SearchResult, meta: String, _fp: FileFp) {
+        self.cancel_debounce();
+        let gen = self.gen.get().wrapping_add(1);
+        self.gen.set(gen);
+        *self.last_path.borrow_mut() = Some(path.clone());
+        *self.inflight.borrow_mut() = None;
+
+        let gen_cell = self.gen.clone();
+        let last_path = self.last_path.clone();
+        let debounce = self.debounce.clone();
+        let path_check = path.clone();
+
+        let picture = self.picture.clone();
+        let dims = self.image_dims.clone();
+        let stack = self.stack.clone();
+        let image_title = self.image_title.clone();
+        let image_meta = self.image_meta.clone();
+        let icon = self.icon.clone();
+        let icon_title = self.icon_title.clone();
+        let icon_sub = self.icon_sub.clone();
+        let icon_meta = self.icon_meta.clone();
+        let icon_type = self.icon_type.clone();
+        let item2 = item.clone();
+
+        let id = glib::timeout_add_local(LOAD_DEBOUNCE, move || {
+            *debounce.borrow_mut() = None;
+            if gen_cell.get() != gen || last_path.borrow().as_ref() != Some(&path_check) {
+                return glib::ControlFlow::Break;
+            }
+            let (tx, rx) = async_channel::bounded::<Option<AudioMeta>>(1);
+            let path_worker = path_check.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send_blocking(read_audio_meta(&path_worker));
+            });
+            let gen_cell2 = gen_cell.clone();
+            let last_path2 = last_path.clone();
+            let path_check2 = path_check.clone();
+            let meta2 = meta.clone();
+            let picture = picture.clone();
+            let dims = dims.clone();
+            let stack = stack.clone();
+            let image_title = image_title.clone();
+            let image_meta = image_meta.clone();
+            let icon = icon.clone();
+            let icon_title = icon_title.clone();
+            let icon_sub = icon_sub.clone();
+            let icon_meta = icon_meta.clone();
+            let icon_type = icon_type.clone();
+            let item2 = item2.clone();
+            glib::spawn_future_local(async move {
+                let info = rx.recv().await.ok().flatten();
+                if gen_cell2.get() != gen
+                    || last_path2.borrow().as_ref() != Some(&path_check2)
+                {
+                    return;
+                }
+                match info {
+                    Some(mut info) if info.cover.is_some() => {
+                        // Album art → picture pipeline.
+                        let dims_label = info.dims_label.clone();
+                        let px = info.cover.take();
+                        if let Some(px) = px {
+                            if let Some(tex) = texture_from_pixels(px) {
+                                image_title.set_text(&info.headline);
+                                image_meta.set_text(&info.meta_line);
+                                dims.set_text(&dims_label);
+                                picture.set_paintable(Some(&tex));
+                                stack.set_visible_child_name("image");
+                                return;
+                            }
+                        }
+                        Self::audio_icon_fallback(
+                            &icon,
+                            &icon_title,
+                            &icon_sub,
+                            &icon_meta,
+                            &icon_type,
+                            &item2,
+                            &info,
+                            &meta2,
+                            &stack,
+                        );
+                    }
+                    Some(info) => {
+                        Self::audio_icon_fallback(
+                            &icon,
+                            &icon_title,
+                            &icon_sub,
+                            &icon_meta,
+                            &icon_type,
+                            &item2,
+                            &info,
+                            &meta2,
+                            &stack,
+                        );
+                    }
+                    None => {
+                        let badge = "Audio";
+                        let icon_name = item2
+                            .icon
+                            .as_deref()
+                            .unwrap_or_else(|| icon_for_media(MediaKind::Audio));
+                        let detail = format!("Audio file\n{meta2}");
+                        Self::show_icon_preview_shared(
+                            &icon,
+                            &icon_type,
+                            &icon_title,
+                            &icon_sub,
+                            &icon_meta,
+                            &stack,
+                            icon_name,
+                            badge,
+                            &item2.title,
+                            &item2.subtitle,
+                            Some(&detail),
+                        );
+                    }
+                }
+            });
+            glib::ControlFlow::Break
+        });
+        *self.debounce.borrow_mut() = Some(id);
+    }
+
+    fn audio_icon_fallback(
+        icon: &Image,
+        icon_title: &Label,
+        icon_sub: &Label,
+        icon_meta: &Label,
+        icon_type: &Label,
+        item: &SearchResult,
+        info: &AudioMeta,
+        meta: &str,
+        stack: &Stack,
+    ) {
+        let icon_name = item
+            .icon
+            .as_deref()
+            .unwrap_or_else(|| icon_for_media(MediaKind::Audio));
+        Self::show_icon_preview_shared(
+            icon,
+            icon_type,
+            icon_title,
+            icon_sub,
+            icon_meta,
+            stack,
+            icon_name,
+            "Audio",
+            &info.headline,
+            &info.sub_line,
+            Some(&info.meta_line),
+        );
+        let _ = meta;
+    }
+
     /// At most one decode thread. Latest `inflight` wins; never stacks workers.
     /// If a debounce is still pending when a job finishes, wait for it (user still scrolling).
     #[allow(clippy::too_many_arguments)]
@@ -701,6 +1077,119 @@ struct DecodedPixels {
     has_alpha: bool,
     pixels: Vec<u8>,
     dims_label: String,
+}
+
+/// Off-main audio tag/art probe result (Send-safe, owns no GObject).
+struct AudioMeta {
+    /// `"Title — Artist"` (or fallbacks) for the headline label.
+    headline: String,
+    /// `"Artist · Album"` (or fallback) for the subtitle line.
+    sub_line: String,
+    /// `"3:24 · 8.1 MB · MP3"` merged meta string.
+    meta_line: String,
+    /// Decoded embedded cover art (already scaled), if the file has one.
+    cover: Option<DecodedPixels>,
+    /// `"3:24"` label for the picture view dims line.
+    dims_label: String,
+}
+
+/// Best-effort audio tag probe. Never fails the preview path — returns `None`
+/// only for genuinely unreadable/empty files.
+fn read_audio_meta(path: &Path) -> Option<AudioMeta> {
+    let file = lofty::read_from_path(path).ok()?;
+    let properties = file.properties().clone();
+    let duration = properties.duration();
+
+    let tag = file.primary_tag().or_else(|| file.first_tag());
+    let title = tag.and_then(Accessor::title).map(|s| s.to_string());
+    let artist = tag.and_then(Accessor::artist).map(|s| s.to_string());
+    let album = tag.and_then(Accessor::album).map(|s| s.to_string());
+
+    let duration_label = if duration.is_zero() {
+        String::new()
+    } else {
+        format_duration(duration)
+    };
+
+    let headline = title.clone().unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Audio".into())
+    });
+
+    let sub_line = match (&artist, &album) {
+        (Some(a), Some(al)) => format!("{a} · {al}"),
+        (Some(a), None) => a.clone(),
+        (None, Some(al)) => al.clone(),
+        _ => String::new(),
+    };
+
+    // "3:24 · 8.1 MB · MP3" (duration first when present).
+    let mut parts: Vec<String> = Vec::with_capacity(3);
+    if !duration_label.is_empty() {
+        parts.push(duration_label.clone());
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    parts.push(format_size(size));
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        parts.push(ext.to_ascii_uppercase());
+    }
+    let meta_line = parts.join(" · ");
+
+    // Embedded cover art (first picture), decoded + scaled off-main.
+    let cover = tag
+        .and_then(|t| t.pictures().first())
+        .and_then(|pic| decode_picture_bytes(pic.data(), pic.mime_type()));
+
+    Some(AudioMeta {
+        headline,
+        sub_line,
+        meta_line,
+        cover,
+        dims_label: if duration_label.is_empty() {
+            "Audio".into()
+        } else {
+            format!("Audio · {duration_label}")
+        },
+    })
+}
+
+/// Decode raw album-art bytes (JPEG/PNG/…) into scaled preview pixels.
+fn decode_picture_bytes(data: &[u8], mime: Option<&lofty::picture::MimeType>) -> Option<DecodedPixels> {
+    use std::io::Cursor;
+    let pixbuf = match mime {
+        Some(m) => {
+            let loader = gtk::gdk_pixbuf::PixbufLoader::with_mime_type(m.as_str()).ok()?;
+            loader.write(data).ok()?;
+            loader.close().ok()?;
+            loader.pixbuf()?
+        }
+        None => Pixbuf::from_read(Cursor::new(data.to_vec())).ok()?,
+    };
+    let scaled = pixbuf.scale_simple(DECODE_MAX_PX, DECODE_MAX_PX, gtk::gdk_pixbuf::InterpType::Bilinear)?;
+    let mut px = pixbuf_to_pixels(&scaled)?;
+    px.dims_label = String::new();
+    Some(px)
+}
+
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// Best-effort language detection for the code preview (extension-based).
+fn guess_language(path: &Path) -> Option<sourceview5::Language> {
+    let filename = path.file_name().and_then(|s| s.to_str())?;
+    let mgr = LanguageManager::default();
+    mgr.guess_language(Some(filename), None)
 }
 
 /// Unified off-main decode for images, video first-frame, and PDF page 1.
