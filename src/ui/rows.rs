@@ -12,6 +12,7 @@
 
 use super::dnd::{DragSession, PathDragBinding};
 use crate::providers::{ConversionView, ResultKind, SearchResult};
+use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Image, Label, ListBox, ListBoxRow, Orientation, Stack};
 use std::cell::RefCell;
@@ -164,6 +165,25 @@ struct PooledRow {
     showing_conv: bool,
 }
 
+/// Direction-aware hero animation. `None` = instant (typing), `SlideUp`
+/// = ↓ arrow, `SlideDown` = ↑ arrow, `Crossfade` = mouse click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeroAnim {
+    SlideUp,
+    SlideDown,
+    Crossfade,
+}
+
+impl HeroAnim {
+    pub(crate) fn from_dir(dir: i32) -> Self {
+        match dir {
+            d if d > 0 => Self::SlideUp,
+            d if d < 0 => Self::SlideDown,
+            _ => Self::Crossfade,
+        }
+    }
+}
+
 impl ResultRowPool {
     pub fn new(drag_session: &DragSession) -> Self {
         let mut slots = Vec::with_capacity(ROW_POOL_CAP);
@@ -175,15 +195,16 @@ impl ResultRowPool {
 
     /// Bind `items` to the pool. Row 0 of a conversion prediction set renders
     /// as the fixed hero card; every other row is a standard row. When
-    /// `animate_hero` is set the card's value crossfades (picker wheel),
-    /// fresh query binds stay instant so typing never flickers.
+    /// `hero_anim` is `Some` the card's value animates (picker wheel) with
+    /// direction-aware slide; fresh query binds stay instant so typing never
+    /// flickers.
     pub fn apply(
         &mut self,
         list: &ListBox,
         items: &[SearchResult],
         icon_size: i32,
         symbolic_icons: bool,
-        animate_hero: bool,
+        hero_anim: Option<HeroAnim>,
     ) {
         let n = items.len().min(ROW_POOL_CAP);
 
@@ -193,7 +214,7 @@ impl ResultRowPool {
             self.slots[i].bind(
                 &items[i],
                 as_card,
-                animate_hero && as_card,
+                if as_card { hero_anim } else { None },
                 icon_size,
                 symbolic_icons,
             );
@@ -371,7 +392,7 @@ impl PooledRow {
         &mut self,
         item: &SearchResult,
         as_card: bool,
-        animate: bool,
+        hero_anim: Option<HeroAnim>,
         icon_size: i32,
         symbolic_icons: bool,
     ) {
@@ -381,7 +402,7 @@ impl PooledRow {
                 self.conv_header.set_text(kind_label(item.kind));
                 self.conv_left_title.set_text(&conv.left_title);
                 self.conv_left_badge.set_text(&conv.left_badge);
-                self.set_conv_right(conv, animate);
+                self.set_conv_right(conv, hero_anim);
                 self.drag.set_path(None);
                 return;
             }
@@ -420,28 +441,51 @@ impl PooledRow {
     }
 
     /// Point the card's right panel at `conv`. Animated swaps prime the
-    /// invisible Stack side and flip to it (crossfade); instant binds write
-    /// the visible side in place so query refreshes don't shimmer.
-    fn set_conv_right(&self, conv: &ConversionView, animate: bool) {
+    /// invisible Stack side and flip to it; instant binds write the visible
+    /// side in place so query refreshes don't shimmer.
+    ///
+    /// Direction-aware: ↓ → SlideUp, ↑ → SlideDown, mouse → Crossfade.
+    fn set_conv_right(&self, conv: &ConversionView, hero_anim: Option<HeroAnim>) {
         let cur = if self.conv_right.visible_child_name().as_deref() == Some("b") {
             "b"
         } else {
             "a"
         };
-        let side = match (animate, cur) {
-            (true, "a") => "b",
-            (true, _) => "a",
-            (false, side) => side,
+        let (target_side, should_flip) = match hero_anim {
+            None => (cur, false),
+            Some(_) => (if cur == "a" { "b" } else { "a" }, true),
         };
-        let (t, b) = if side == "b" {
+        // Configure transition before flipping.
+        if let Some(anim) = hero_anim {
+            let (ty, dur) = match anim {
+                HeroAnim::SlideUp => (gtk::StackTransitionType::SlideUp, 180),
+                HeroAnim::SlideDown => (gtk::StackTransitionType::SlideDown, 180),
+                HeroAnim::Crossfade => (gtk::StackTransitionType::Crossfade, 160),
+            };
+            self.conv_right.set_transition_type(ty);
+            self.conv_right.set_transition_duration(dur as u32);
+        }
+        let (t, b) = if target_side == "b" {
             (&self.conv_rt_b, &self.conv_rb_b)
         } else {
             (&self.conv_rt_a, &self.conv_rb_a)
         };
         t.set_text(&conv.right_title);
         b.set_text(&conv.right_badge);
-        if side != cur {
-            self.conv_right.set_visible_child_name(side);
+        if should_flip && target_side != cur {
+            self.conv_right.set_visible_child_name(target_side);
+        }
+        // Bump the whole card for a subtle `pop` — makes instant-adjacent
+        // swaps read as intentional, not a glitch. GTK CSS handles the
+        // keyframe; we just toggle the class. Remove-then-add forces the
+        // keyframe to retrigger on rapid repeated presses.
+        if hero_anim.is_some() {
+            self.conv_root.remove_css_class("hark-conv-swap");
+            self.conv_root.add_css_class("hark-conv-swap");
+            let root = self.conv_root.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(220), move || {
+                root.remove_css_class("hark-conv-swap");
+            });
         }
     }
 }

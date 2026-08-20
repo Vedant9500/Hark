@@ -198,6 +198,19 @@ window.hark-window .hark-search.hark-search-busy image:last-child {{
   animation: hark-icon-spin 1.1s linear infinite;
 }}
 
+/* Hero card picker wheel: direction-aware slide (GTK Stack) + subtle pop so the
+   value change reads as intentional, not a flicker. Stack handles slide/crossfade;
+   the card container gets a quick opacity pop via class toggled from Rust. */
+@keyframes hark-card-pop {{
+  0% {{ opacity: 0.86; }}
+  100% {{ opacity: 1; }}
+}}
+@keyframes hark-arrow-nudge {{
+  0% {{ opacity: 0.7; }}
+  50% {{ opacity: 1; }}
+  100% {{ opacity: 0.7; }}
+}}
+
 /* Separators between search / body / footer */
 window.hark-window .hark-sep {{
   background-color: {border_soft};
@@ -441,6 +454,14 @@ window.hark-window .hark-conv-card {{
   border-radius: 12px;
   padding: 10px 14px 14px 14px;
   margin: 0 2px;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}}
+
+window.hark-window .hark-conv-card.hark-conv-swap {{
+  animation: hark-card-pop 200ms ease;
+}}
+window.hark-window .hark-conv-card.hark-conv-swap .hark-conv-arrow {{
+  animation: hark-arrow-nudge 200ms ease;
 }}
 
 window.hark-window .hark-results > row.hark-conv-row:selected .hark-conv-card,

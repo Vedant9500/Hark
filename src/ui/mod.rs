@@ -25,7 +25,7 @@ use gtk::{
     ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack, Viewport,
 };
 use preview::PreviewPanel;
-use rows::ResultRowPool;
+use rows::{HeroAnim, ResultRowPool};
 use settings::SettingsPanel;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -672,20 +672,23 @@ impl Launcher {
             list.connect_row_selected(move |_, row| {
                 let Some(row) = row else { return };
                 // Keep keyboard/mouse selection in view even while focus stays on search.
-                // Consume the arrow direction for one-row scroll lookahead.
-                ensure_row_visible(row, nav_dir.replace(0));
+                // Consume the arrow direction for one-row scroll lookahead AND for
+                // direction-aware hero animation (↓=slide-up, ↑=slide-down, click=crossfade).
+                let dir = nav_dir.replace(0);
+                ensure_row_visible(row, dir);
                 let idx = row.index() as usize;
 
                 // Conversion prediction set (picker wheel): the hero card is
                 // pinned to row 0. Selecting any plain row wheels that value
-                // into the card (crossfade) and returns selection to the card.
+                // into the card (directional slide) and returns selection to the card.
                 if is_conv_set(&results.borrow()) {
                     if idx != 0 && !suppress_select.get() {
                         conv_swap_to_front(&mut results.borrow_mut(), idx);
                         {
                             let rs = results.borrow();
                             let mut pool = row_pool.borrow_mut();
-                            pool.apply(&list_sel, &rs, ui_icon_size.get(), ui_symbolic.get(), true);
+                            let anim = Some(HeroAnim::from_dir(dir));
+                            pool.apply(&list_sel, &rs, ui_icon_size.get(), ui_symbolic.get(), anim);
                         }
                         if let Some(card) = row_pool.borrow().row_at(0).cloned() {
                             suppress_select.set(true);
@@ -1471,40 +1474,43 @@ mod conv_picker_tests {
 
     #[test]
     fn wheel_math_down_up_wrap_and_rank_recovery() {
-        // Ranks A > B > C > D (scores 40/30/20/10).
+        // Ranks A > B > C > D (scores 40/30/20/10). Wheel is now cyclic
+        // — the list under the hero always previews the next stops.
         let mut rs = vec![conv("A", 40), conv("B", 30), conv("C", 20), conv("D", 10)];
         assert_eq!(conv_current_rank(&rs), 0);
         assert_eq!(ids(&rs), ["A", "B", "C", "D"]);
 
-        // ↓: next rank B lives at row 1; swap wheels it into the card.
+        // ↓: next circular target B at row 1.
         let r = conv_nav_row(4, conv_current_rank(&rs), true);
         assert_eq!(r, 1);
         conv_swap_to_front(&mut rs, r);
-        assert_eq!(ids(&rs), ["B", "A", "C", "D"]);
+        assert_eq!(ids(&rs), ["B", "C", "D", "A"]);
         assert_eq!(conv_current_rank(&rs), 1, "A still outranks B");
 
-        // ↓ again: C sits at row 2 (after the swapped-in A).
+        // ↓ again: C is now at row 1 (directly under hero).
         let r = conv_nav_row(4, conv_current_rank(&rs), true);
-        assert_eq!(r, 2);
+        assert_eq!(r, 1);
         conv_swap_to_front(&mut rs, r);
-        assert_eq!(ids(&rs), ["C", "A", "B", "D"]);
+        assert_eq!(ids(&rs), ["C", "D", "A", "B"]);
         assert_eq!(conv_current_rank(&rs), 2);
 
-        // ↑ from rank 2: previous rank B is at row 2 now.
+        // ↑ from C: previous circular target B is at last row.
         let r = conv_nav_row(4, conv_current_rank(&rs), false);
-        assert_eq!(r, 2);
+        assert_eq!(r, 3);
         conv_swap_to_front(&mut rs, r);
-        assert_eq!(ids(&rs), ["B", "A", "C", "D"]);
+        assert_eq!(ids(&rs), ["B", "C", "D", "A"]);
         assert_eq!(conv_current_rank(&rs), 1);
 
-        // ↓ to the last rank, then ↓ wraps past the card to rank 0 (row 1).
+        // ↓ through D then wrap to A.
         conv_swap_to_front(&mut rs, conv_nav_row(4, 1, true)); // → C
         conv_swap_to_front(&mut rs, conv_nav_row(4, 2, true)); // → D
+        assert_eq!(ids(&rs), ["D", "A", "B", "C"]);
         assert_eq!(conv_current_rank(&rs), 3);
         assert_eq!(conv_nav_row(4, conv_current_rank(&rs), true), 1);
 
-        // ↑ at rank 0 wraps to the last rank (row len-1).
-        conv_swap_to_front(&mut rs, 1); // back to A
+        // ↓ wraps to A, ↑ at A wraps to D.
+        conv_swap_to_front(&mut rs, 1); // D → A
+        assert_eq!(ids(&rs), ["A", "B", "C", "D"]);
         assert_eq!(conv_current_rank(&rs), 0);
         assert_eq!(conv_nav_row(4, 0, false), 3);
     }
@@ -1862,7 +1868,7 @@ fn rebind_results_from_cache(
         if found.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &found, icon_size, symbolic_icons, false);
+            pool.apply(list, &found, icon_size, symbolic_icons, None);
         }
     }
 
@@ -2039,11 +2045,12 @@ fn chain_is_conversion(q: &str) -> bool {
 }
 
 // ── Conversion picker wheel ─────────────────────────────────────────────────
-// A prediction set binds as `[selected target] + remaining targets in rank
-// order`. Row 0 is the fixed hero card; ↓/↑ and clicks wheel values through
-// it Apple-timer style (swap-to-front + crossfade). The in-card rank is
-// derived from the data — prediction scores strictly decrease with rank —
-// so no wheel position needs tracking across refreshes.
+// A prediction set binds as a circular queue in rank order. Row 0 is the
+// fixed hero card; ↓/↑ and clicks wheel values through it picker-wheel
+// style (rotate + directional slide). The queue order is the initial
+// engine rank (score descending); rotations preserve that circular order
+// so the row directly under the hero is always the next ↓ target —
+// fixing the "list doesn't match next card" confusion.
 
 /// A pure multi-target conversion prediction set (the picker surface).
 fn is_conv_set(rs: &[SearchResult]) -> bool {
@@ -2051,7 +2058,9 @@ fn is_conv_set(rs: &[SearchResult]) -> bool {
 }
 
 /// Rank of the target currently inside the card: how many remaining targets
-/// outrank it. Recovers the wheel position from any swapped order.
+/// outrank it. Kept for diagnostics; wheel navigation no longer uses rank
+/// (it is circular), but the value still recovers position in the original
+/// sorted order.
 fn conv_current_rank(rs: &[SearchResult]) -> usize {
     match rs.first() {
         Some(cur) => rs[1..].iter().filter(|r| r.score > cur.score).count(),
@@ -2059,30 +2068,27 @@ fn conv_current_rank(rs: &[SearchResult]) -> usize {
     }
 }
 
-/// Row holding the next (down) / previous (up) ranked target. Rank r±1 sits
-/// at row r+1 / r in the `[selected] + remaining` layout; at the ends the
-/// wheel wraps past the fixed card (row 0 is never a navigation target).
-fn conv_nav_row(len: usize, rank: usize, down: bool) -> usize {
-    if down {
-        if rank + 1 < len {
-            rank + 1
-        } else {
-            1
-        }
-    } else if rank > 0 {
-        rank
+/// Row holding the next (down) / previous (up) target in the circular
+/// queue. `rank` is ignored — the wheel is now strictly cyclic so ↓ is
+/// always row 1 and ↑ is always the last row; this keeps the visual list
+/// in sync with what the next key press will show.
+fn conv_nav_row(len: usize, _rank: usize, down: bool) -> usize {
+    if len <= 1 {
+        0
+    } else if down {
+        1
     } else {
         len - 1
     }
 }
 
-/// Wheel one value into the card: move the chosen row's item to index 0 and
-/// re-rank the remaining rows by score, so the list below the card always
-/// reads best-first regardless of how values have cycled through it.
+/// Wheel one value into the card: rotate the circular queue so the chosen
+/// row becomes the hero. This preserves the original rank order circularly,
+/// so the list under the hero always previews the next wheel stops in
+/// sequence (cyclic), not a re-sorted best-first list.
 fn conv_swap_to_front(rs: &mut [SearchResult], row: usize) {
     if row > 0 && row < rs.len() {
-        rs[..=row].rotate_right(1);
-        rs[1..].sort_by_key(|r| std::cmp::Reverse(r.score));
+        rs.rotate_left(row);
     }
 }
 
@@ -2212,7 +2218,7 @@ fn refresh_results(
         if found.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &found, icon_size, symbolic_icons, false);
+            pool.apply(list, &found, icon_size, symbolic_icons, None);
         }
     }
 
@@ -2500,7 +2506,7 @@ fn apply_translate_hits(
         if out.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &out, icon_size, symbolic_icons, false);
+            pool.apply(list, &out, icon_size, symbolic_icons, None);
         }
     }
     selected.set(0);
@@ -2576,7 +2582,7 @@ fn apply_deep_hits(
         if merged.is_empty() {
             pool.clear(list);
         } else {
-            pool.apply(list, &merged, icon_size, symbolic_icons, false);
+            pool.apply(list, &merged, icon_size, symbolic_icons, None);
         }
     }
 
