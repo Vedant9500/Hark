@@ -129,11 +129,13 @@ impl PreviewPanel {
     pub fn new(drag_session: DragSession, is_light: bool) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("hark-preview");
-        root.set_size_request(PREVIEW_WIDTH, -1);
+        root.set_size_request(PREVIEW_WIDTH, 380);
         root.set_width_request(PREVIEW_WIDTH);
+        root.set_height_request(380);
         root.set_hexpand(false);
         root.set_vexpand(true);
         root.set_halign(Align::Fill);
+        root.set_valign(gtk::Align::Fill);
         // Hidden until a media result is selected.
         root.set_visible(false);
 

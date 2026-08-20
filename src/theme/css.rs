@@ -41,13 +41,13 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
         (
             rgba(&theme.outline_variant, 0.85),
             rgba(&theme.outline_variant, 0.60),
-            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
+            "box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18), inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
         )
     } else {
         (
             rgba(&theme.outline_variant, 0.75),
             rgba(&theme.outline_variant, 0.50),
-            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
+            "box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42), inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
         )
     };
 
@@ -223,7 +223,10 @@ window.hark-window .hark-sep {{
 window.hark-window .hark-body {{
   padding: 6px 8px;
   background-color: transparent;
-  min-height: 120px;
+  /* 16:9 window 720×405 → body ~315px (405-90 header/footer).
+     Keeps aspect correct, no cinematic wide empty. */
+  min-height: 315px;
+  transition: min-height 180ms ease;
 }}
 
 /* Compact idle: body is hidden; kill min-height so shell hugs search+footer */
@@ -755,8 +758,15 @@ window.hark-window .hark-hint {{
 window.hark-window .hark-empty {{
   color: {empty};
   font-size: 13px;
-  padding: 36px 16px;
-  opacity: 0.75;
+  padding: 32px 24px;
+  opacity: 0.9;
+  min-height: 160px;
+  transition: opacity 140ms ease;
+  line-height: 1.5;
+}}
+
+window.hark-window .hark-results {{
+  transition: opacity 140ms ease;
 }}
 
 window.hark-window scrolledwindow {{
@@ -1082,7 +1092,7 @@ mod tests {
         let theme = Theme::fallback();
         let ui = UiThemeConfig::default();
         let css = render(&theme, &ui);
-        assert!(css.contains("box-shadow: inset 0 1px 0 0"));
+        assert!(css.contains("inset 0 1px 0 0"));
         assert!(css.contains("window.hark-window .hark-shell"));
     }
 

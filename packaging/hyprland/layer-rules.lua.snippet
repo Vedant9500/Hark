@@ -12,6 +12,10 @@ hl.layer_rule({
     match        = { namespace = "hark" },
     animation    = "popin 80%",
     blur         = true,
-    ignore_alpha = 0.35,
+    ignore_alpha = 0.38,
     xray         = false,
+    -- Outer shadow is CSS (shell 0 16/20px), not compositor, so it
+    -- follows the rounded card. Keep blur but disable compositor shadow
+    -- lag on resize.
+    shadow       = false,
 })

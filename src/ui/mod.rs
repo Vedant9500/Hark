@@ -38,15 +38,21 @@ use std::time::{Duration, Instant};
 /// Compact fixed outer width. When the media preview opens, the window widens
 /// by PREVIEW_WIDTH + separator (see `preview.set_visibility_cb` below).
 const WINDOW_WIDTH: i32 = 720;
-const WINDOW_MAX_HEIGHT: i32 = 520;
+const EXPANDED_WINDOW_HEIGHT: i32 = 405; // 720*9/16 = 405 for 16:9
+const COMPACT_WINDOW_HEIGHT: i32 = 110;
 /// Extra transparent margin around the rounded shell (for soft drop-shadow).
 /// Keep at 0 — a non-zero square inset reads as "padding" on Sway/Hyprland
 /// because the layer surface is rectangular while the card is rounded.
 const SHELL_INSET: i32 = 0;
 /// Debounce keystrokes before search + async deep (cuts typing CPU spikes).
-const SEARCH_DEBOUNCE_MS: u64 = 40;
+/// 40ms felt jumpy — every intermediate prefix like `1` → `10` flashed
+/// `No results for "1"`. 75ms coalesces fast typing while staying snappy.
+const SEARCH_DEBOUNCE_MS: u64 = 75;
 /// Auto-detect translate queries: longer settle so paste/IME does not spawn workers per glyph.
 const TRANSLATE_DEBOUNCE_MS: u64 = 180;
+/// Delay before showing `No results` when stale results exist — keeps the
+/// old list visible during rapid typing instead of flashing empty.
+const EMPTY_STALE_DELAY_MS: u64 = 140;
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -82,6 +88,11 @@ pub struct Launcher {
     body: GtkBox,
     body_revealer: gtk::Revealer,
     footer_sep: gtk::Separator,
+    shell: GtkBox,
+    /// Previous non-empty query for stale-retain gate (prevents `1` → `10` flash).
+    prev_query: Rc<RefCell<String>>,
+    /// Delayed empty display when stale results are kept.
+    empty_delay: Rc<RefCell<Option<glib::SourceId>>>,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
 }
@@ -110,9 +121,9 @@ impl Launcher {
         let shell = GtkBox::new(Orientation::Vertical, 0);
         shell.add_css_class("hark-shell");
         shell.set_hexpand(true);
-        shell.set_vexpand(false);
+        shell.set_vexpand(true);
         shell.set_halign(gtk::Align::Fill);
-        shell.set_valign(gtk::Align::Start);
+        shell.set_valign(gtk::Align::Fill);
         shell.set_size_request(WINDOW_WIDTH, -1);
         // Clip children to the rounded shell allocation (border-radius aware).
         shell.set_overflow(gtk::Overflow::Hidden);
@@ -129,8 +140,8 @@ impl Launcher {
         // ========== SEARCH VIEW ==========
         let search_view = GtkBox::new(Orientation::Vertical, 0);
         search_view.set_hexpand(true);
-        search_view.set_vexpand(false);
-        search_view.set_valign(gtk::Align::Start);
+        search_view.set_vexpand(true);
+        search_view.set_valign(gtk::Align::Fill);
 
         let header = GtkBox::new(Orientation::Vertical, 0);
         header.add_css_class("hark-header");
@@ -157,7 +168,7 @@ impl Launcher {
         let body_revealer = gtk::Revealer::new();
         body_revealer.add_css_class("hark-body-revealer");
         body_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-        body_revealer.set_transition_duration(120);
+        body_revealer.set_transition_duration(150);
         body_revealer.set_hexpand(true);
         body_revealer.set_vexpand(false);
         body_revealer.set_reveal_child(true);
@@ -176,8 +187,8 @@ impl Launcher {
         let scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Never)
             .vscrollbar_policy(PolicyType::External)
-            .min_content_height(120)
-            .max_content_height(WINDOW_MAX_HEIGHT - 140)
+            .min_content_height(260)
+            .max_content_height(320)
             .propagate_natural_height(true)
             .hexpand(true)
             .vexpand(true)
@@ -196,6 +207,8 @@ impl Launcher {
         empty.add_css_class("hark-empty");
         empty.set_halign(gtk::Align::Center);
         empty.set_valign(gtk::Align::Center);
+        empty.set_justify(gtk::Justification::Center);
+        empty.set_wrap(true);
         empty.set_hexpand(true);
         // Only expand when it's the sole content (no results); otherwise it
         // steals vertical space under the list.
@@ -216,19 +229,16 @@ impl Launcher {
         let preview = Rc::new(PreviewPanel::new(drag_session.clone(), theme.is_light()));
         // Preview pane only appears for media (images / video / audio).
 
-        // Widen the window around the preview instead of squeezing the results
-        // column. Preview panel + its separator eat PREVIEW_WIDTH + 1px when shown.
+        // Preview now lives inside constant 1001×470 surface — no window
+        // widen. List expands to 1001 when preview hidden, 720+280 when shown.
         {
-            let shell = shell.clone();
-            let window = window.clone();
-            preview.set_visibility_cb(Box::new(move |vis| {
-                let width = if vis {
-                    WINDOW_WIDTH + 280 + 1
-                } else {
-                    WINDOW_WIDTH
-                };
-                shell.set_size_request(width, -1);
-                window.set_size_request(width, -1);
+            let _shell = shell.clone();
+            let _window = window.clone();
+            preview.set_visibility_cb(Box::new(move |_vis| {
+                // No window resize here — window stays 1001×470 (expanded) or
+                // 720×110 (compact) via apply_body_chrome. Preview just
+                // toggles its own visibility inside fixed surface, so no
+                // texture expansion ghost on gemi→gemin.
             }));
         }
 
@@ -294,6 +304,8 @@ impl Launcher {
                 &body_revealer,
                 &footer_sep,
                 Some(&scroll),
+                Some(&window),
+                Some(&shell),
             );
         }
 
@@ -327,6 +339,8 @@ impl Launcher {
         let async_pending: Rc<Cell<u32>> = Rc::new(Cell::new(0));
         let session_queries: Rc<RefCell<VecDeque<String>>> =
             Rc::new(RefCell::new(VecDeque::with_capacity(12)));
+        let prev_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+        let empty_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
         {
             let engine = engine.clone();
@@ -351,8 +365,15 @@ impl Launcher {
             let scroll_c = scroll.clone();
             let session_queries = session_queries.clone();
             let async_pending = async_pending.clone();
+            let empty_delay_search = empty_delay.clone();
+            let prev_query_search = prev_query.clone();
+            let window_c = window.clone();
+            let shell_c = shell.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
+                    id.remove();
+                }
+                if let Some(id) = empty_delay_search.borrow_mut().take() {
                     id.remove();
                 }
                 let q = entry.text().to_string();
@@ -363,6 +384,8 @@ impl Launcher {
                 entry.set_primary_icon_name(Some(search_mode_icon(&q)));
                 update_search_icons(entry, &async_pending);
                 // Expand/collapse body immediately (don't wait for search debounce).
+                // This stays instant for compact idle → typing, but no longer
+                // forces a window resize on every keystroke (see apply_body_chrome).
                 apply_body_chrome(
                     ui_compact.get(),
                     q.trim().is_empty(),
@@ -370,6 +393,8 @@ impl Launcher {
                     &body_revealer_c,
                     &footer_sep_c,
                     Some(&scroll_c),
+                    Some(&window_c),
+                    Some(&shell_c),
                 );
                 let engine = engine.clone();
                 let list = list.clone();
@@ -392,6 +417,10 @@ impl Launcher {
                 let footer_sep_c = footer_sep_c.clone();
                 let scroll_c = scroll_c.clone();
                 let async_pending = async_pending.clone();
+                let prev_query_c = prev_query_search.clone();
+                let empty_delay_c = empty_delay_search.clone();
+                let window_tc = window_c.clone();
+                let shell_tc = shell_c.clone();
                 // Longer settle only for auto script paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -423,6 +452,10 @@ impl Launcher {
                             &body_revealer_c,
                             &footer_sep_c,
                             Some(&scroll_c),
+                            &prev_query_c,
+                            &empty_delay_c,
+                            Some(&window_tc),
+                            Some(&shell_tc),
                         );
                         glib::ControlFlow::Break
                     });
@@ -477,6 +510,10 @@ impl Launcher {
             let footer_sep_cs = footer_sep.clone();
             let scroll_cs = scroll.clone();
             let async_pending_cs = async_pending.clone();
+            let prev_query_cs = prev_query.clone();
+            let empty_delay_cs = empty_delay.clone();
+            let window_cs = window.clone();
+            let shell_cs = shell.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
@@ -508,6 +545,10 @@ impl Launcher {
                     &body_revealer_cs,
                     &footer_sep_cs,
                     Some(&scroll_cs),
+                    &prev_query_cs,
+                    &empty_delay_cs,
+                    Some(&window_cs),
+                    Some(&shell_cs),
                 );
             })
         };
@@ -1200,6 +1241,9 @@ impl Launcher {
             body,
             body_revealer,
             footer_sep,
+            shell,
+            prev_query,
+            empty_delay,
             theme: theme.clone(),
         }
     }
@@ -1250,6 +1294,10 @@ impl Launcher {
             &self.body_revealer,
             &self.footer_sep,
             None,
+            &self.prev_query,
+            &self.empty_delay,
+            Some(&self.window),
+            Some(&self.shell),
         );
         self.settings.refresh_status();
         self.window.set_visible(true);
@@ -1269,11 +1317,15 @@ impl Launcher {
         if let Some(id) = self.search_debounce.borrow_mut().take() {
             id.remove();
         }
+        if let Some(id) = self.empty_delay.borrow_mut().take() {
+            id.remove();
+        }
         self.deep_gen.set(self.deep_gen.get().wrapping_add(1));
         self.async_pending.set(0);
         self.search.remove_css_class("hark-search-busy");
         self.search.set_secondary_icon_name(None);
         self.session_queries.borrow_mut().clear();
+        self.prev_query.borrow_mut().clear();
         self.preview.clear();
     }
 }
@@ -1957,36 +2009,63 @@ fn apply_body_chrome(
     body_revealer: &gtk::Revealer,
     footer_sep: &gtk::Separator,
     scroll: Option<&ScrolledWindow>,
+    window: Option<&ApplicationWindow>,
+    shell: Option<&GtkBox>,
 ) {
     // Compact + idle query → search bar + footer only (no middle body).
     let show_body = !(compact && query_empty);
-    // Animated expand/collapse (SlideDown, 120ms) — no 0ms layout snap.
-    body_revealer.set_reveal_child(show_body);
-    // Keep a hairline above the footer when body is hidden (compact bar look).
+    let was_shown = body_revealer.reveals_child();
     footer_sep.set_visible(true);
-    if show_body {
-        body.remove_css_class("hark-body-collapsed");
-        body.set_vexpand(true);
-        if let Some(s) = scroll {
-            s.set_min_content_height(120);
-            s.set_vexpand(true);
+    if was_shown != show_body {
+        // Animated expand/collapse (SlideDown, 150ms) — no 0ms layout snap.
+        body_revealer.set_reveal_child(show_body);
+        if show_body {
+            body.remove_css_class("hark-body-collapsed");
+            body.set_vexpand(true);
+            if let Some(s) = scroll {
+                s.set_min_content_height(260);
+                s.set_vexpand(true);
+            }
+        } else {
+            body.add_css_class("hark-body-collapsed");
+            body.set_vexpand(false);
+            if let Some(s) = scroll {
+                s.set_min_content_height(0);
+                s.set_vexpand(false);
+            }
         }
     } else {
-        body.add_css_class("hark-body-collapsed");
-        body.set_vexpand(false);
-        if let Some(s) = scroll {
-            s.set_min_content_height(0);
-            s.set_vexpand(false);
+        // Staying expanded/collapsed: keep stable min but allow natural
+        // height to follow content (e.g. 7 rows `res` → 1 row `gemi`).
+        // Don't force window resize; just ensure body reflects current mode.
+        if show_body {
+            body.remove_css_class("hark-body-collapsed");
+            if let Some(s) = scroll {
+                s.set_min_content_height(260);
+            }
         }
     }
-    // Force the window/shell to re-measure after hide/show (layer-shell surfaces
-    // often keep the previous allocation until a size request refresh).
-    if let Some(toplevel) = body.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
-        // Natural height: drop any previous fixed height from expanded state.
-        toplevel.set_default_size(toplevel.default_size().0.max(1), -1);
-        toplevel.queue_resize();
+    // Variable height when expanded — window+shell follow content
+    // (header+body+footer) to avoid awkward 470h empty gap for 4 rows
+    // like `ge`. Both are set together to same size so no transparent
+    // gap (ghost) appears between window and shell. Window stays 1001
+    // wide when expanded (list 720+preview 280) so preview show/hide
+    // doesn't widen window — gemi→gemin no resize ghost.
+    let target_w = WINDOW_WIDTH;
+    let target_h = if show_body {
+        EXPANDED_WINDOW_HEIGHT
     } else {
-        body.queue_resize();
+        COMPACT_WINDOW_HEIGHT
+    };
+    if let Some(win) = window {
+        win.set_size_request(target_w, target_h);
+    }
+    if let Some(sh) = shell {
+        sh.set_size_request(target_w, target_h);
+    }
+    body.queue_resize();
+    if let Some(sh) = shell {
+        sh.queue_resize();
     }
 }
 
@@ -2166,10 +2245,18 @@ fn refresh_results(
     body_revealer: &gtk::Revealer,
     footer_sep: &gtk::Separator,
     scroll: Option<&ScrolledWindow>,
+    prev_query: &Rc<RefCell<String>>,
+    empty_delay: &Rc<RefCell<Option<glib::SourceId>>>,
+    window: Option<&ApplicationWindow>,
+    shell: Option<&GtkBox>,
 ) {
     // Never rebind rows mid-drag — that would cancel the DnD session.
     if drag_session.is_active() {
         return;
+    }
+    // Cancel any pending delayed empty from a previous intermediate prefix.
+    if let Some(id) = empty_delay.borrow_mut().take() {
+        id.remove();
     }
     let icon_size = ui_icon_size.get();
     let symbolic_icons = ui_symbolic.get();
@@ -2183,6 +2270,8 @@ fn refresh_results(
         body_revealer,
         footer_sep,
         scroll,
+        window,
+        shell,
     );
 
     // Invalidate any in-flight async deep/translate for a previous query.
@@ -2200,42 +2289,126 @@ fn refresh_results(
         engine.search(query)
     };
     let no_hits = found.is_empty();
-    // In compact idle the empty placeholder is not shown (body hidden).
-    let show_empty = no_hits && !(compact && query_empty);
-    if show_empty {
-        if query_empty {
-            empty.set_text("Type to search apps, files, math, or conversions");
-        } else {
-            empty.set_markup(&empty_state_markup(query));
-        }
-    }
-    empty.set_visible(show_empty);
-    empty.set_vexpand(show_empty);
-    list.set_visible(!no_hits);
+    let prev_had = !results.borrow().is_empty();
 
-    {
-        let mut pool = row_pool.borrow_mut();
-        if found.is_empty() {
-            pool.clear(list);
-        } else {
-            pool.apply(list, &found, icon_size, symbolic_icons, None);
-        }
-    }
-
-    selected.set(0);
-    *results.borrow_mut() = found;
-
-    if let Some(row) = row_pool.borrow().row_at(0).cloned() {
-        suppress_select.set(true);
-        list.select_row(Some(&row));
-        suppress_select.set(false);
-        update_footer(results, 0, footer_action);
-        let item = results.borrow().first().cloned();
-        preview.update(item.as_ref());
+    // Stale-retain: intermediate prefixes like `1` in `win 10` often yield
+    // 0 hits for 40-80ms then `10` yields hits. Flashing `No results for "1"`
+    // feels jumpy. Keep the previous list visible for EMPTY_STALE_DELAY_MS
+    // instead of instantly clearing; only show empty if still empty after delay.
+    if no_hits && prev_had && !query_empty && !(compact && query_empty) {
+        *prev_query.borrow_mut() = query.to_string();
+        empty.set_visible(false);
+        empty.set_vexpand(false);
+        list.set_visible(true);
+        // Keep the old pool/results on screen (stale) while we wait.
+        let q2 = query.to_string();
+        let engine2 = engine.clone();
+        let list2 = list.clone();
+        let row_pool2 = row_pool.clone();
+        let empty2 = empty.clone();
+        let results2 = results.clone();
+        let selected2 = selected.clone();
+        let footer2 = footer_action.clone();
+        let preview2 = preview.clone();
+        let search_entry2 = search_entry.clone();
+        let empty_delay2 = empty_delay.clone();
+        let drag2 = drag_session.clone();
+        let suppress2 = suppress_select.clone();
+        let icon_size2 = icon_size;
+        let symb2 = symbolic_icons;
+        let id = glib::timeout_add_local(
+            std::time::Duration::from_millis(EMPTY_STALE_DELAY_MS),
+            move || {
+                *empty_delay2.borrow_mut() = None;
+                if search_entry2.text().as_str() != q2.as_str() {
+                    return glib::ControlFlow::Break;
+                }
+                if drag2.is_active() {
+                    return glib::ControlFlow::Break;
+                }
+                // Re-search to confirm still empty (user may have typed more).
+                let still = if q2.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    engine2.search(&q2)
+                };
+                if still.is_empty() {
+                    empty2.set_markup(&empty_state_markup(&q2));
+                    empty2.set_visible(true);
+                    empty2.set_vexpand(true);
+                    list2.set_visible(false);
+                    row_pool2.borrow_mut().clear(&list2);
+                    *results2.borrow_mut() = Vec::new();
+                    selected2.set(0);
+                    suppress2.set(true);
+                    list2.select_row(Option::<&ListBoxRow>::None);
+                    suppress2.set(false);
+                    update_footer(&results2, 0, &footer2);
+                    preview2.clear();
+                } else {
+                    // Hits appeared (e.g. `10` after `1`); render them.
+                    empty2.set_visible(false);
+                    empty2.set_vexpand(false);
+                    list2.set_visible(true);
+                    row_pool2
+                        .borrow_mut()
+                        .apply(&list2, &still, icon_size2, symb2, None);
+                    *results2.borrow_mut() = still;
+                    selected2.set(0);
+                    if let Some(row) = row_pool2.borrow().row_at(0).cloned() {
+                        suppress2.set(true);
+                        list2.select_row(Some(&row));
+                        suppress2.set(false);
+                        update_footer(&results2, 0, &footer2);
+                        let item = results2.borrow().first().cloned();
+                        preview2.update(item.as_ref());
+                    }
+                }
+                glib::ControlFlow::Break
+            },
+        );
+        *empty_delay.borrow_mut() = Some(id);
+        // Keep stale list on screen; still allow async translate/deep below
+        // to potentially fill in hits before the delay fires.
     } else {
-        list.select_row(Option::<&ListBoxRow>::None);
-        update_footer(results, 0, footer_action);
-        preview.clear();
+        // In compact idle the empty placeholder is not shown (body hidden).
+        let show_empty = no_hits && !(compact && query_empty);
+        if show_empty {
+            if query_empty {
+                empty.set_text("Type to search apps, files, math, or conversions");
+            } else {
+                empty.set_markup(&empty_state_markup(query));
+            }
+        }
+        empty.set_visible(show_empty);
+        empty.set_vexpand(show_empty);
+        list.set_visible(!no_hits);
+
+        {
+            let mut pool = row_pool.borrow_mut();
+            if found.is_empty() {
+                pool.clear(list);
+            } else {
+                pool.apply(list, &found, icon_size, symbolic_icons, None);
+            }
+        }
+
+        selected.set(0);
+        *results.borrow_mut() = found;
+        *prev_query.borrow_mut() = query.to_string();
+
+        if let Some(row) = row_pool.borrow().row_at(0).cloned() {
+            suppress_select.set(true);
+            list.select_row(Some(&row));
+            suppress_select.set(false);
+            update_footer(results, 0, footer_action);
+            let item = results.borrow().first().cloned();
+            preview.update(item.as_ref());
+        } else {
+            list.select_row(Option::<&ListBoxRow>::None);
+            update_footer(results, 0, footer_action);
+            preview.clear();
+        }
     }
 
     let q = query.to_string();
@@ -2603,11 +2776,11 @@ fn apply_deep_hits(
     }
 }
 
-/// Contextual zero-hit state: name the failed query, teach real syntax.
-/// Hints must match actual engine capabilities (`in <folder>`, `*.ext` globs).
+/// Polished zero-hit state: centered, icon + title + hint.
+/// Keep hint tied to real syntax (`in <folder>`, `*.ext` globs).
 fn empty_state_markup(query: &str) -> String {
     format!(
-        "No results for <i>“{}”</i>\n<span font_size=\"smaller\" alpha=\"80%\">Try `name in folder` to scope files, `*.ext` for globs, or check spelling</span>",
+        "<span font_size=\"28000\" alpha=\"38%\">⌕</span>\n<span font_weight=\"600\" size=\"11000\">No results for “{}”</span>\n<span alpha=\"68%\" size=\"9000\">Try <tt>name in folder</tt> to scope • <tt>*.ext</tt> for globs • check spelling</span>",
         glib::markup_escape_text(query.trim())
     )
 }
