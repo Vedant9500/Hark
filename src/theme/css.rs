@@ -216,6 +216,25 @@ window.hark-window .hark-search.hark-search-busy image:last-child {{
   100% {{ opacity: 0.7; }}
 }}
 
+/* App-side open/close pop. Compositor layer animation is off (`no_anim`
+   layerrule): box interpolation ghosts on surface resize, so entrance/exit
+   animate the card INSIDE the surface — the box never changes, nothing can
+   ghost (docs/hyprland-layer-corners.md). Classes toggled from Rust. */
+@keyframes hark-shell-in {{
+  from {{ opacity: 0; transform: scale(0.96); }}
+  to {{ opacity: 1; transform: scale(1); }}
+}}
+@keyframes hark-shell-out {{
+  from {{ opacity: 1; }}
+  to {{ opacity: 0; }}
+}}
+window.hark-window .hark-shell.hark-anim-in {{
+  animation: hark-shell-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}}
+window.hark-window .hark-shell.hark-anim-out {{
+  animation: hark-shell-out 110ms ease-in forwards;
+}}
+
 /* Separators between search / body / footer */
 window.hark-window .hark-sep {{
   background-color: {border_soft};

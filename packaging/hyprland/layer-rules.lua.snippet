@@ -10,9 +10,15 @@
 -- Hark frosted glass: wiki https://wiki.hypr.land/Configuring/Basics/Window-Rules/
 -- ignore_alpha ≤ threshold not blurred. 0.8 ignores AA 0.6-0.8 → corners fully
 -- transparent (0), interior 0.85 still blurred. Low 0.05 blurred AA → square.
+--
+-- no_anim: ANY compositor box interpolation (popin/slide/fade) ghosts as a
+-- lagging square panel when the surface resizes (media preview open/close).
+-- The open/close pop is app-side instead — CSS hark-anim-in/out on
+-- .hark-shell (src/ui/mod.rs show/dismiss, HIDE_FADE_MS) — content animates
+-- inside a fixed box, so nothing can ghost.
 hl.layer_rule({
     match        = { namespace = "hark" },
-    animation    = "popin 80%",
+    no_anim      = true,
     blur         = true,
     ignore_alpha = 0.8,
     xray         = false,

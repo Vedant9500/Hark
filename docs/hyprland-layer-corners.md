@@ -17,14 +17,14 @@ Hyprland blurs rectangular layer surface, not rounded CSS. `ignore_alpha` decide
 `packaging/hyprland/layer-rules.lua.snippet:8` canonical; `~/.config/hypr/hyprland/rules.lua:178` must match:
 
 ```lua
-hl.layer_rule({ match={namespace="hark"}, animation="popin 80%", blur=true, ignore_alpha=0.8, xray=false })
+hl.layer_rule({ match={namespace="hark"}, no_anim=true, blur=true, ignore_alpha=0.8, xray=false })
 -- window_rule no_shadow=true at rules.lua:103; CSS inset-only at css.rs:49,55 (no outer)
 ```
 
 * `ignore_alpha 0.8` (≈ under `0.85` shell, over AA `0.6`) corners `0` transparent, interior blurred. `0.38` still rang, `0.60` faint, `0.05` blurred square worse, `0.82` also ok but near shell edge. `0.8` current.
 * CSS inset-only: `css.rs:49` `inset 0 1px...` / `css.rs:55` same — outer `0 16px/20px 60px` removed (was square at `SHEL_INSET 0`).
 * Code hug: `setup_window_chrome:2850` `set_default_size(outer_w,-1)` + `apply_body_chrome:2050` both `window`+`shell` to `480`/`110`; `shell:122` `vexpand true Fill`. Removes `370px` gap.
-* Ghost vs corners: fixed-surface (`720×480` always) kills `layersIn slide` ghost `animations.lua:16` but exposes gap; hug + `no_anim` preferred if ghost returns.
+* Shrink ghost (confirmed 2026-08-21): ANY compositor layer animation (`popin 80%`, `fade`) interpolates the surface box on resize → lagging square panel below the shrunk card. `fade` did NOT fix it; `no_anim=true` did. Open/close pop is now app-side: `hark-anim-in`/`hark-anim-out` CSS keyframes on `.hark-shell`, toggled from Rust (`show`/`dismiss`, `HIDE_FADE_MS` in `src/ui/mod.rs`) — content animates inside the fixed box, nothing left to ghost. Esc routes through `dismiss()` too.
 
 ## Diagnose Live (no file edit)
 

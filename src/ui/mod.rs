@@ -4,7 +4,9 @@ mod footer;
 mod open_with;
 mod preview;
 pub(crate) mod rows;
+mod scroll_anim;
 mod settings;
+mod size_anim;
 mod thumbnails;
 
 use crate::engine::{Engine, ExecuteOutcome};
@@ -53,6 +55,8 @@ const TRANSLATE_DEBOUNCE_MS: u64 = 180;
 /// Delay before showing `No results` when stale results exist — keeps the
 /// old list visible during rapid typing instead of flashing empty.
 const EMPTY_STALE_DELAY_MS: u64 = 140;
+/// Fade-out duration before the layer surface unmaps (app-side close pop).
+const HIDE_FADE_MS: u64 = 110;
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -93,6 +97,10 @@ pub struct Launcher {
     prev_query: Rc<RefCell<String>>,
     /// Delayed empty display when stale results are kept.
     empty_delay: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Pending fade-out timer for the app-side close pop.
+    hide_delay: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Compact↔expanded resize tween (app-side; compositor anims are off).
+    size_anim: size_anim::SizeTweener,
     #[allow(dead_code)]
     theme: Rc<ThemeManager>,
 }
@@ -291,6 +299,10 @@ impl Launcher {
         search_view.append(&footer_sep);
         search_view.append(&footer);
 
+        // App-side resize tween for compact↔expanded (see size_anim module).
+        // Declared before the initial layout call below.
+        let size_anim = size_anim::SizeTweener::new();
+
         // Compact idle: search + footer only (Raycast compact). Expanded when typing.
         {
             let compact0 = matches!(
@@ -306,6 +318,7 @@ impl Launcher {
                 Some(&scroll),
                 Some(&window),
                 Some(&shell),
+                Some(&size_anim),
             );
         }
 
@@ -325,6 +338,8 @@ impl Launcher {
         let suppress_select: Rc<Cell<bool>> = Rc::new(Cell::new(false));
         // Last arrow-key direction (+1 down / -1 up) for scroll lookahead.
         let nav_dir: Rc<Cell<i32>> = Rc::new(Cell::new(0));
+        // Animated follow-scroll for keyboard selection; rebuilds snap.
+        let scroll_anim = scroll_anim::ScrollTweener::new();
         let ui_cfg0 = engine.config().snapshot().ui.clone();
         let ui_icon_size: Rc<Cell<i32>> = Rc::new(Cell::new(ui_cfg0.icon_size as i32));
         let ui_symbolic: Rc<Cell<bool>> = Rc::new(Cell::new(ui_cfg0.symbolic_icons));
@@ -341,6 +356,9 @@ impl Launcher {
             Rc::new(RefCell::new(VecDeque::with_capacity(12)));
         let prev_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
         let empty_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        // Pending fade-out timer for the app-side close pop (compositor
+        // layer animation is off — no_anim — because it ghosts on resize).
+        let hide_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
         {
             let engine = engine.clone();
@@ -369,6 +387,7 @@ impl Launcher {
             let prev_query_search = prev_query.clone();
             let window_c = window.clone();
             let shell_c = shell.clone();
+            let size_anim_c = size_anim.clone();
             search.connect_changed(move |entry| {
                 if let Some(id) = search_debounce.borrow_mut().take() {
                     id.remove();
@@ -395,6 +414,7 @@ impl Launcher {
                     Some(&scroll_c),
                     Some(&window_c),
                     Some(&shell_c),
+                    Some(&size_anim_c),
                 );
                 let engine = engine.clone();
                 let list = list.clone();
@@ -421,6 +441,7 @@ impl Launcher {
                 let empty_delay_c = empty_delay_search.clone();
                 let window_tc = window_c.clone();
                 let shell_tc = shell_c.clone();
+                let size_anim_tc = size_anim_c.clone();
                 // Longer settle only for auto script paste/IME (not forced `tr …`).
                 let wait_ms = if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -456,6 +477,7 @@ impl Launcher {
                             &empty_delay_c,
                             Some(&window_tc),
                             Some(&shell_tc),
+                            Some(&size_anim_tc),
                         );
                         glib::ControlFlow::Break
                     });
@@ -514,6 +536,7 @@ impl Launcher {
             let empty_delay_cs = empty_delay.clone();
             let window_cs = window.clone();
             let shell_cs = shell.clone();
+            let size_anim_cs = size_anim.clone();
             Rc::new(move || {
                 in_settings.set(false);
                 stack.set_visible_child_name("search");
@@ -549,6 +572,7 @@ impl Launcher {
                     &empty_delay_cs,
                     Some(&window_cs),
                     Some(&shell_cs),
+                    Some(&size_anim_cs),
                 );
             })
         };
@@ -706,6 +730,7 @@ impl Launcher {
             let preview = preview.clone();
             let suppress_select = suppress_select.clone();
             let nav_dir = nav_dir.clone();
+            let scroll_anim = scroll_anim.clone();
             let list_sel = list.clone();
             let row_pool = row_pool.clone();
             let ui_icon_size = ui_icon_size.clone();
@@ -716,7 +741,7 @@ impl Launcher {
                 // Consume the arrow direction for one-row scroll lookahead AND for
                 // direction-aware hero animation (↓=slide-up, ↑=slide-down, click=crossfade).
                 let dir = nav_dir.replace(0);
-                ensure_row_visible(row, dir);
+                ensure_row_visible(row, dir, &scroll_anim);
                 let idx = row.index() as usize;
 
                 // Conversion prediction set (picker wheel): the hero card is
@@ -804,6 +829,8 @@ impl Launcher {
             let ui_symbolic = ui_symbolic.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
             let actions_chip = actions_chip.clone();
+            let shell_esc = shell.clone();
+            let hide_delay_esc = hide_delay.clone();
             let dismiss_settings_overlay = settings.dismiss_overlay_handle();
 
             let settings_nav = settings.nav.clone();
@@ -910,7 +937,7 @@ impl Launcher {
                             search.set_text("");
                             search.set_position(0);
                         } else {
-                            window.set_visible(false);
+                            dismiss(&window, &shell_esc, &hide_delay_esc);
                         }
                         glib::Propagation::Stop
                     }
@@ -1244,6 +1271,8 @@ impl Launcher {
             shell,
             prev_query,
             empty_delay,
+            hide_delay,
+            size_anim,
             theme: theme.clone(),
         }
     }
@@ -1257,6 +1286,11 @@ impl Launcher {
     }
 
     pub fn show(&self) {
+        // Cancel a fade-out in progress (rapid hotkey double-tap reopens).
+        if let Some(id) = self.hide_delay.borrow_mut().take() {
+            id.remove();
+        }
+        self.shell.remove_css_class("hark-anim-out");
         self.ignore_focus_loss.set(true);
         self.in_settings.set(false);
         self.stack.set_visible_child_name("search");
@@ -1298,10 +1332,19 @@ impl Launcher {
             &self.empty_delay,
             Some(&self.window),
             Some(&self.shell),
+            Some(&self.size_anim),
         );
         self.settings.refresh_status();
         self.window.set_visible(true);
         self.window.present();
+        // Entrance pop inside the surface — compositor layer animation is
+        // off (`no_anim`) because box interpolation ghosts on resize.
+        self.shell.remove_css_class("hark-anim-in");
+        self.shell.add_css_class("hark-anim-in");
+        let shell_in = self.shell.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(240), move || {
+            shell_in.remove_css_class("hark-anim-in");
+        });
         self.search.grab_focus();
         center_on_active_monitor(&self.window);
 
@@ -1312,8 +1355,13 @@ impl Launcher {
     }
 
     pub fn hide(&self) {
-        self.window.set_visible(false);
-        // Drop pending search / deep-walk work while hidden.
+        // App-side close pop: fade the card inside the surface, unmap after.
+        // Compositor layer animation is off (`no_anim` layerrule) because box
+        // interpolation ghosts on resize (docs/hyprland-layer-corners.md).
+        dismiss(&self.window, &self.shell, &self.hide_delay);
+        // Drop pending search / deep-walk work while dismissing. Invisible
+        // state clears now; `preview.clear()` waits — hiding the preview
+        // panel can resize the window mid-fade.
         if let Some(id) = self.search_debounce.borrow_mut().take() {
             id.remove();
         }
@@ -1326,8 +1374,38 @@ impl Launcher {
         self.search.set_secondary_icon_name(None);
         self.session_queries.borrow_mut().clear();
         self.prev_query.borrow_mut().clear();
-        self.preview.clear();
+        let preview = self.preview.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(HIDE_FADE_MS), move || {
+            preview.clear();
+        });
     }
+}
+
+/// Fade the card out inside the surface, then unmap. Compositor layer
+/// animation is disabled (`no_anim` layerrule) because box interpolation
+/// ghosts on surface resize — open/close animate the content instead
+/// (docs/hyprland-layer-corners.md). No-op while a fade is already running
+/// (rapid double-dismiss); `show()` cancels a pending fade.
+fn dismiss(
+    window: &ApplicationWindow,
+    shell: &GtkBox,
+    hide_delay: &Rc<RefCell<Option<glib::SourceId>>>,
+) {
+    if hide_delay.borrow().is_some() {
+        return;
+    }
+    shell.add_css_class("hark-anim-out");
+    let window = window.clone();
+    let shell = shell.clone();
+    let hide_delay_c = hide_delay.clone();
+    *hide_delay.borrow_mut() = Some(glib::timeout_add_local_once(
+        std::time::Duration::from_millis(HIDE_FADE_MS),
+        move || {
+            window.set_visible(false);
+            shell.remove_css_class("hark-anim-out");
+            *hide_delay_c.borrow_mut() = None;
+        },
+    ));
 }
 
 /// Fill the search entry from the selected suggestion (Tab autocomplete).
@@ -2012,6 +2090,7 @@ fn apply_body_chrome(
     scroll: Option<&ScrolledWindow>,
     window: Option<&ApplicationWindow>,
     shell: Option<&GtkBox>,
+    size_anim: Option<&size_anim::SizeTweener>,
 ) {
     // Compact + idle query → search bar + footer only (no middle body).
     let show_body = !(compact && query_empty);
@@ -2059,11 +2138,13 @@ fn apply_body_chrome(
     } else {
         COMPACT_WINDOW_HEIGHT
     };
-    if let Some(win) = window {
-        win.set_size_request(target_w, target_h);
-    }
-    if let Some(sh) = shell {
-        sh.set_size_request(target_w, target_h);
+    match (window, shell, size_anim) {
+        (Some(win), Some(sh), Some(anim)) => anim.glide(win, sh, target_w, target_h),
+        (Some(win), Some(sh), None) => {
+            win.set_size_request(target_w, target_h);
+            sh.set_size_request(target_w, target_h);
+        }
+        _ => {}
     }
     body.queue_resize();
     if let Some(sh) = shell {
@@ -2251,6 +2332,7 @@ fn refresh_results(
     empty_delay: &Rc<RefCell<Option<glib::SourceId>>>,
     window: Option<&ApplicationWindow>,
     shell: Option<&GtkBox>,
+    size_anim: Option<&size_anim::SizeTweener>,
 ) {
     // Never rebind rows mid-drag — that would cancel the DnD session.
     if drag_session.is_active() {
@@ -2274,6 +2356,7 @@ fn refresh_results(
         scroll,
         window,
         shell,
+        size_anim,
     );
 
     // Invalidate any in-flight async deep/translate for a previous query.
@@ -2797,10 +2880,12 @@ fn empty_state_markup(query: &str) -> String {
 /// direction of travel we keep a one-row lookahead so the next item peeks
 /// into view before the selection reaches the edge — without nudging on
 /// the opposite edge (which made upward navigation feel drifty).
+/// `dir != 0` glides to the target (see `scroll_anim`); `dir == 0` snaps
+/// (query rebuilds / reorders — content changed, nothing to animate from).
 // `allocation()` deprecated since GTK 4.12 with no direct replacement for
 // reading child coordinates outside snapshot/rendering — still the right tool.
 #[allow(deprecated)]
-fn ensure_row_visible(row: &ListBoxRow, dir: i32) {
+fn ensure_row_visible(row: &ListBoxRow, dir: i32, anim: &scroll_anim::ScrollTweener) {
     let Some(viewport) = row
         .ancestor(Viewport::static_type())
         .and_then(|w| w.downcast::<Viewport>().ok())
@@ -2809,7 +2894,9 @@ fn ensure_row_visible(row: &ListBoxRow, dir: i32) {
     };
     let alloc = row.allocation();
     if alloc.height() <= 0 {
-        // Not laid out yet — fall back to GTK's own scroll.
+        // Not laid out yet — fall back to GTK's own scroll. Any in-flight
+        // glide targets the *previous* list's offsets, so stop it first.
+        anim.cancel();
         viewport.scroll_to(row, None);
         return;
     }
@@ -2817,6 +2904,7 @@ fn ensure_row_visible(row: &ListBoxRow, dir: i32) {
     let adj = match viewport.vadjustment() {
         Some(adj) => adj,
         None => {
+            anim.cancel();
             viewport.scroll_to(row, None);
             return;
         }
@@ -2834,8 +2922,15 @@ fn ensure_row_visible(row: &ListBoxRow, dir: i32) {
         // Row above the fold; travelling up also reveals the previous row.
         value += top - if dir < 0 { peek } else { 0.0 };
     }
-    let max = (adj.upper() - page).max(adj.lower());
-    adj.set_value(value.clamp(adj.lower(), max));
+    let value = value.clamp(adj.lower(), (adj.upper() - page).max(adj.lower()));
+    if dir == 0 {
+        // Rebuild/reorder: content changed — snap and cancel any in-flight glide.
+        anim.snap(&adj, value);
+    } else {
+        // Keyboard travel: glide, retargeting from the current offset if a
+        // glide is already running (chained hops read as one motion).
+        anim.glide(&viewport, &adj, value);
+    }
 }
 
 fn kind_rank_ui(k: ResultKind) -> u8 {
