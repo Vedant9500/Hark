@@ -37,17 +37,22 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let icon_size = ui.icon_size.clamp(18, 36);
 
     let is_light = is_light_theme(&theme.surface_container);
+    // Inset-only shadow. An OUTER shadow here is the square-corner artifact:
+    // the layer surface buffer == the shell's bounding rect (SHELL_INSET 0),
+    // so an outer shadow is clipped everywhere except the four concave corner
+    // regions, where it paints semi-transparent black up to the buffer edge —
+    // a sharp square block over the wallpaper (docs/hyprland-layer-corners.md).
     let (border, border_soft, shell_shadow) = if is_light {
         (
             rgba(&theme.outline_variant, 0.85),
             rgba(&theme.outline_variant, 0.60),
-            "box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18), inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
+            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
         )
     } else {
         (
             rgba(&theme.outline_variant, 0.75),
             rgba(&theme.outline_variant, 0.50),
-            "box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42), inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
+            "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
         )
     };
 
@@ -223,9 +228,9 @@ window.hark-window .hark-sep {{
 window.hark-window .hark-body {{
   padding: 6px 8px;
   background-color: transparent;
-  /* 16:9 window 720×405 → body ~315px (405-90 header/footer).
-     Keeps aspect correct, no cinematic wide empty. */
-  min-height: 315px;
+  /* Vicinae 770×480 / Raycast 750×474 → 720×480 (1.50) → body ~390px (480-90).
+     720×405 16:9 too short, 720×540 4:3 too tall. Fits preview 380. */
+  min-height: 390px;
   transition: min-height 180ms ease;
 }}
 
@@ -1130,8 +1135,10 @@ mod tests {
     #[test]
     fn test_concentric_row_radius() {
         let theme = Theme::fallback();
-        let mut ui = UiThemeConfig::default();
-        ui.radius = 16;
+        let ui = UiThemeConfig {
+            radius: 16,
+            ..Default::default()
+        };
         let css = render(&theme, &ui);
         assert!(css.contains("border-radius: 10px;"));
     }

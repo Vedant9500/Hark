@@ -1,21 +1,19 @@
 -- Paste into ~/.config/hypr/hyprland/rules.lua (replace the existing hark layer_rule).
 --
--- Why: Hyprland blurs the full rectangular layer surface. Transparent pixels
--- outside the rounded card read as a square "padding" halo. ignore_alpha must
--- sit just under the minimum allowed shell fill (0.40) so only the frosted card
--- is blurred, even when opacity is set to its lowest slider value.
+-- Why: Hyprland blurs the full rectangular layer surface. ignore_alpha decides
+-- which pixels frost: 0.8 sits above the card's AA edge (0.1-0.8) so corners
+-- stay unblurred wallpaper while the 0.85 interior stays frosted, even at the
+-- lowest opacity slider (0.40). Square corner BLOCKS are a different bug —
+-- an outer CSS box-shadow clipped by the surface buffer (see
+-- docs/hyprland-layer-corners.md); never fix those here.
 
--- Hark frosted glass: blur only pixels above ignore_alpha (shell 0.40..1.00).
--- Fully transparent corners stay at alpha 0.0 under the threshold, preventing
--- any square blur halo around the rounded card.
+-- Hark frosted glass: wiki https://wiki.hypr.land/Configuring/Basics/Window-Rules/
+-- ignore_alpha ≤ threshold not blurred. 0.8 ignores AA 0.6-0.8 → corners fully
+-- transparent (0), interior 0.85 still blurred. Low 0.05 blurred AA → square.
 hl.layer_rule({
     match        = { namespace = "hark" },
     animation    = "popin 80%",
     blur         = true,
-    ignore_alpha = 0.38,
+    ignore_alpha = 0.8,
     xray         = false,
-    -- Outer shadow is CSS (shell 0 16/20px), not compositor, so it
-    -- follows the rounded card. Keep blur but disable compositor shadow
-    -- lag on resize.
-    shadow       = false,
 })

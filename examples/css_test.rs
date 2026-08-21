@@ -20,7 +20,11 @@ fn main() {
     let buf: sourceview5::Buffer = view.buffer().downcast::<sourceview5::Buffer>().unwrap();
     buf.set_text("fn main() {\n    let s = String::from(\"hi\");\n    println!(\"{}\", s);\n}");
     buf.set_highlight_syntax(true);
-    buf.set_language(Some(&sourceview5::LanguageManager::default().language("rust").unwrap()));
+    buf.set_language(Some(
+        &sourceview5::LanguageManager::default()
+            .language("rust")
+            .unwrap(),
+    ));
     let mgr = sourceview5::StyleSchemeManager::default();
     let scheme = mgr.scheme("Adwaita-dark").expect("Adwaita-dark");
     buf.set_style_scheme(Some(&scheme));

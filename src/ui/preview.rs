@@ -5,7 +5,10 @@ use gtk::gdk::{self, Texture};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::glib;
 use gtk::prelude::*;
-use gtk::{Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, ScrolledWindow, Separator, Stack};
+use gtk::{
+    Align, Box as GtkBox, ContentFit, Image, Label, Orientation, Picture, ScrolledWindow,
+    Separator, Stack,
+};
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::prelude::Accessor;
 use sourceview5::prelude::*;
@@ -86,10 +89,18 @@ impl MediaKind {
     fn is_previewable(self) -> bool {
         matches!(
             self,
-            MediaKind::Image | MediaKind::Video | MediaKind::Audio | MediaKind::Document | MediaKind::Code
+            MediaKind::Image
+                | MediaKind::Video
+                | MediaKind::Audio
+                | MediaKind::Document
+                | MediaKind::Code
         )
     }
 }
+
+/// Panel visibility callback — fired when the preview shows/hides so the
+/// launcher can widen/narrow the window.
+type VisibilityCallback = Rc<RefCell<Option<Box<dyn Fn(bool)>>>>;
 
 pub struct PreviewPanel {
     pub root: GtkBox,
@@ -122,7 +133,7 @@ pub struct PreviewPanel {
     /// User forced the panel off (Ctrl+P / Toggle Preview) until toggled back.
     user_hidden: Rc<Cell<bool>>,
     /// Notify the launcher when panel visibility changes (window widening).
-    on_visibility: Rc<RefCell<Option<Box<dyn Fn(bool)>>>>,
+    on_visibility: VisibilityCallback,
 }
 
 impl PreviewPanel {
@@ -518,6 +529,7 @@ impl PreviewPanel {
 
     /// Shared icon-view renderer used by both `show_icon_preview` and the
     /// audio worker (which only has borrowed widget handles).
+    #[allow(clippy::too_many_arguments)]
     fn show_icon_preview_shared(
         icon: &Image,
         icon_type: &Label,
@@ -750,9 +762,7 @@ impl PreviewPanel {
             let meta2 = meta.clone();
             glib::spawn_future_local(async move {
                 let text = rx.recv().await.ok().flatten();
-                if gen_cell2.get() != gen
-                    || last_path2.borrow().as_ref() != Some(&path_check2)
-                {
+                if gen_cell2.get() != gen || last_path2.borrow().as_ref() != Some(&path_check2) {
                     return;
                 }
                 let Some(text) = text else {
@@ -768,7 +778,10 @@ impl PreviewPanel {
                     }
                 }
                 let lines_label = if lines > 0 {
-                    format!("{lines} line{} · {meta2}", if lines == 1 { "" } else { "s" })
+                    format!(
+                        "{lines} line{} · {meta2}",
+                        if lines == 1 { "" } else { "s" }
+                    )
                 } else {
                     meta2
                 };
@@ -840,9 +853,7 @@ impl PreviewPanel {
             let item2 = item2.clone();
             glib::spawn_future_local(async move {
                 let info = rx.recv().await.ok().flatten();
-                if gen_cell2.get() != gen
-                    || last_path2.borrow().as_ref() != Some(&path_check2)
-                {
+                if gen_cell2.get() != gen || last_path2.borrow().as_ref() != Some(&path_check2) {
                     return;
                 }
                 match info {
@@ -913,6 +924,7 @@ impl PreviewPanel {
         *self.debounce.borrow_mut() = Some(id);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn audio_icon_fallback(
         icon: &Image,
         icon_title: &Label,
@@ -1158,7 +1170,10 @@ fn read_audio_meta(path: &Path) -> Option<AudioMeta> {
 }
 
 /// Decode raw album-art bytes (JPEG/PNG/…) into scaled preview pixels.
-fn decode_picture_bytes(data: &[u8], mime: Option<&lofty::picture::MimeType>) -> Option<DecodedPixels> {
+fn decode_picture_bytes(
+    data: &[u8],
+    mime: Option<&lofty::picture::MimeType>,
+) -> Option<DecodedPixels> {
     use std::io::Cursor;
     let pixbuf = match mime {
         Some(m) => {
@@ -1169,7 +1184,11 @@ fn decode_picture_bytes(data: &[u8], mime: Option<&lofty::picture::MimeType>) ->
         }
         None => Pixbuf::from_read(Cursor::new(data.to_vec())).ok()?,
     };
-    let scaled = pixbuf.scale_simple(DECODE_MAX_PX, DECODE_MAX_PX, gtk::gdk_pixbuf::InterpType::Bilinear)?;
+    let scaled = pixbuf.scale_simple(
+        DECODE_MAX_PX,
+        DECODE_MAX_PX,
+        gtk::gdk_pixbuf::InterpType::Bilinear,
+    )?;
     let mut px = pixbuf_to_pixels(&scaled)?;
     px.dims_label = String::new();
     Some(px)

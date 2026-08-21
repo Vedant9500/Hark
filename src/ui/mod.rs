@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 /// Compact fixed outer width. When the media preview opens, the window widens
 /// by PREVIEW_WIDTH + separator (see `preview.set_visibility_cb` below).
 const WINDOW_WIDTH: i32 = 720;
-const EXPANDED_WINDOW_HEIGHT: i32 = 405; // 720*9/16 = 405 for 16:9
+const EXPANDED_WINDOW_HEIGHT: i32 = 480; // Vicinae 770×480 (1.60) / Raycast 750×474 (1.58) — 720×480=1.50 fits preview 380+90
 const COMPACT_WINDOW_HEIGHT: i32 = 110;
 /// Extra transparent margin around the rounded shell (for soft drop-shadow).
 /// Keep at 0 — a non-zero square inset reads as "padding" on Sway/Hyprland
@@ -2002,6 +2002,7 @@ fn note_session_query(session: &Rc<RefCell<VecDeque<String>>>, q: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_body_chrome(
     compact: bool,
     query_empty: bool,
@@ -2048,9 +2049,10 @@ fn apply_body_chrome(
     // Variable height when expanded — window+shell follow content
     // (header+body+footer) to avoid awkward 470h empty gap for 4 rows
     // like `ge`. Both are set together to same size so no transparent
-    // gap (ghost) appears between window and shell. Window stays 1001
-    // wide when expanded (list 720+preview 280) so preview show/hide
-    // doesn't widen window — gemi→gemin no resize ghost.
+    // gap (ghost) appears between window and shell. Window stays 720
+    // wide so preview show/hide doesn't widen window — gemi→gemin no
+    // resize ghost. This also keeps window == shell so rounded corners
+    // have no visible rectangular window backing (the "padding" square).
     let target_w = WINDOW_WIDTH;
     let target_h = if show_body {
         EXPANDED_WINDOW_HEIGHT
