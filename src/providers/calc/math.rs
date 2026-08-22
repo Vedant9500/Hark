@@ -42,16 +42,25 @@ pub(crate) fn try_math(q: &str) -> Option<SearchResult> {
     let value = super::expr::eval_str(&expr)?;
     let formatted = format_number(value);
     let display_expr = q.trim().trim_start_matches('=').trim().to_string();
+    // Show interpreted grouping when it differs from the input (`-2^2` →
+    // `-(2^2)`); whitespace-only differences keep the user's own spelling.
+    let explained = super::expr::explain_str(&expr).unwrap_or_else(|| display_expr.clone());
+    let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let shown = if squeeze(&explained) == squeeze(&display_expr) {
+        display_expr.clone()
+    } else {
+        explained
+    };
     Some(SearchResult {
         id: format!("calc:{formatted}:{display_expr}"),
         title: formatted.clone(),
-        subtitle: format!("= {display_expr}"),
+        subtitle: format!("= {shown}"),
         kind: ResultKind::Calc,
         score: 10_000,
         icon: Some("accessories-calculator".into()),
         action: Action::Copy(formatted.clone()),
         conversion: Some(ConversionView {
-            left_title: display_expr,
+            left_title: shown,
             left_badge: "expression".into(),
             right_title: formatted,
             right_badge: "result".into(),
@@ -174,6 +183,19 @@ mod math_gate_tests {
         assert!(try_math("100m / 2").is_none());
         assert!(try_math("1m * 3").is_none());
         assert!(try_math("2t / 4").is_none());
+    }
+
+    #[test]
+    fn try_math_shows_interpreted_grouping() {
+        let r = try_math("-2^2").expect("math");
+        assert!(r.subtitle.contains("-(2^2)"), "subtitle: {}", r.subtitle);
+        let conv = r.conversion.expect("card");
+        assert_eq!(conv.left_title, "-(2^2)");
+        // Id stays built from the raw input.
+        assert!(r.id.ends_with(":-2^2"));
+        // Whitespace-only difference keeps the user's own spelling.
+        let r = try_math("2+2").expect("math");
+        assert_eq!(r.subtitle, "= 2+2");
     }
 
     #[test]

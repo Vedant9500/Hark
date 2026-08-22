@@ -847,7 +847,7 @@ impl Launcher {
                     if window
                         .root()
                         .and_then(|r| r.focus())
-                        .and_downcast::<Entry>()
+                        .and_downcast::<gtk::Editable>()
                         .is_some()
                     {
                         return glib::Propagation::Proceed;

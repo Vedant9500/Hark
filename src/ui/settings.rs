@@ -299,7 +299,7 @@ impl SettingsPanel {
                 if root_for_keys
                     .root()
                     .and_then(|r| r.focus())
-                    .and_downcast::<Entry>()
+                    .and_downcast::<gtk::Editable>()
                     .is_some()
                 {
                     return glib::Propagation::Proceed;

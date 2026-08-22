@@ -106,7 +106,7 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
     Some(out)
 }
 
-// Pratt / recursive descent: expr → term → factor → unary → primary
+// Pratt / recursive descent: expr → add → mul → unary → pow → primary
 fn parse_expr(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     parse_add(tokens, i)
 }
@@ -129,13 +129,13 @@ fn parse_add(tokens: &[Tok], i: &mut usize) -> Option<f64> {
 }
 
 fn parse_mul(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    let mut left = parse_pow(tokens, i)?;
+    let mut left = parse_unary(tokens, i)?;
     while let Some(Tok::Op(op)) = tokens.get(*i) {
         if *op != '*' && *op != '/' && *op != '%' {
             break;
         }
         *i += 1;
-        let right = parse_pow(tokens, i)?;
+        let right = parse_unary(tokens, i)?;
         left = match *op {
             '*' => left * right,
             '/' => {
@@ -156,9 +156,12 @@ fn parse_mul(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     Some(left)
 }
 
-/// Right-associative power, then postfix factorial.
+/// Right-associative power over a primary base, then postfix factorial.
+///
+/// Unary minus binds looser than `^` (`-2^2` is `-(2^2)`), so the base comes
+/// from `parse_primary` and the (possibly signed) exponent from `parse_unary`.
 fn parse_pow(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    let mut left = parse_unary(tokens, i)?;
+    let mut left = parse_primary(tokens, i)?;
     // postfix !
     while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
         *i += 1;
@@ -166,7 +169,7 @@ fn parse_pow(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     }
     if matches!(tokens.get(*i), Some(Tok::Op('^'))) {
         *i += 1;
-        let right = parse_pow(tokens, i)?; // right-assoc
+        let right = parse_unary(tokens, i)?; // right-assoc via unary→pow
         left = left.powf(right);
         // more postfix after power result? rare; allow !
         while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
@@ -185,9 +188,12 @@ fn parse_unary(tokens: &[Tok], i: &mut usize) -> Option<f64> {
         }
         Some(Tok::Op('-')) => {
             *i += 1;
+            // Recurse through unary (not pow) so doubled signs like `--3` and
+            // `5--3` keep parsing; precedence is unchanged since the default
+            // arm descends into pow anyway.
             Some(-parse_unary(tokens, i)?)
         }
-        _ => parse_primary(tokens, i),
+        _ => parse_pow(tokens, i),
     }
 }
 
@@ -266,6 +272,170 @@ fn call_fn(name: &str, args: &[f64]) -> Option<f64> {
         ("pow", [a, b]) => Some(a.powf(*b)),
         ("min", [a, b]) => Some(a.min(*b)),
         ("max", [a, b]) => Some(a.max(*b)),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Precedence printer
+//
+// Reprints a token stream with explicit grouping (`-2^2` → `-(2^2)`) by
+// walking the same grammar as the parser above. Never evaluates: numbers are
+// echoed via their token value only.
+// ---------------------------------------------------------------------------
+
+/// Binding levels for printed sub-expressions; used to decide where parens
+/// are required to keep re-evaluation identical to the original input.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum Lvl {
+    Add = 1,
+    Mul = 2,
+    Unary = 3,
+    Pow = 4,
+    Primary = 5,
+}
+
+/// Add parens iff `lvl` binds looser than the context requires (`min`).
+fn wrap(s: String, lvl: Lvl, min: Lvl) -> String {
+    if lvl < min {
+        format!("({s})")
+    } else {
+        s
+    }
+}
+
+/// Reprint `input` making precedence explicit, or `None` if it does not parse.
+///
+/// Mirrors [`eval_str`]'s guards: non-empty tokens, full consumption.
+pub(crate) fn explain_str(input: &str) -> Option<String> {
+    let tokens = tokenize(input)?;
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut i = 0;
+    let (s, _) = print_add(&tokens, &mut i)?;
+    if i != tokens.len() {
+        return None;
+    }
+    Some(s)
+}
+
+fn print_add(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+    let (mut s, mut lvl) = print_mul(tokens, i)?;
+    while let Some(Tok::Op(op)) = tokens.get(*i) {
+        if *op != '+' && *op != '-' {
+            break;
+        }
+        *i += 1;
+        let (r, _) = print_mul(tokens, i)?;
+        s = format!("{s} {op} {r}");
+        lvl = Lvl::Add;
+    }
+    Some((s, lvl))
+}
+
+fn print_mul(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+    let (mut s, mut lvl) = print_unary(tokens, i)?;
+    while let Some(Tok::Op(op)) = tokens.get(*i) {
+        if *op != '*' && *op != '/' && *op != '%' {
+            break;
+        }
+        *i += 1;
+        let (r, _) = print_unary(tokens, i)?;
+        s = format!("{s} {op} {r}");
+        lvl = Lvl::Mul;
+    }
+    Some((s, lvl))
+}
+
+/// Mirror of [`parse_unary`]: sign chains descend into pow; composite
+/// operands are grouped (`--3` → `-(-3)`), bare atoms stay ungrouped.
+fn print_unary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+    match tokens.get(*i) {
+        Some(Tok::Op(sign @ ('+' | '-'))) => {
+            *i += 1;
+            let (inner, lvl) = print_unary(tokens, i)?;
+            // Composite inner already carries its own grouping level below
+            // Primary, so wrap it; bare number/const/funccall stays `-3`.
+            let s = if lvl < Lvl::Primary {
+                format!("{sign}({inner})")
+            } else {
+                format!("{sign}{inner}")
+            };
+            Some((s, Lvl::Unary))
+        }
+        _ => print_pow(tokens, i),
+    }
+}
+
+/// Mirror of [`parse_pow`]: primary base, postfix `!`, single right-assoc
+/// `^` whose exponent comes from the unary path (right-assoc via recursion).
+fn print_pow(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+    let (mut s, mut lvl) = print_primary(tokens, i)?;
+    while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
+        *i += 1;
+        s = format!("{s}!"); // factorial is tightest; result stays atomic
+        lvl = Lvl::Primary;
+    }
+    if matches!(tokens.get(*i), Some(Tok::Op('^'))) {
+        *i += 1;
+        let (exp, elvl) = print_unary(tokens, i)?;
+        s = format!("{s}^{}", wrap(exp, elvl, Lvl::Primary));
+        lvl = Lvl::Pow;
+        while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
+            *i += 1;
+            s = format!("{s}!");
+            lvl = Lvl::Primary;
+        }
+    }
+    Some((s, lvl))
+}
+
+fn print_primary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+    match tokens.get(*i).cloned() {
+        Some(Tok::Num(n)) => {
+            *i += 1;
+            Some((format!("{n}"), Lvl::Primary))
+        }
+        Some(Tok::Ident(name)) => {
+            *i += 1;
+            if matches!(tokens.get(*i), Some(Tok::Op('('))) {
+                *i += 1;
+                let mut args = Vec::new();
+                if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
+                    loop {
+                        let (arg, _) = print_add(tokens, i)?;
+                        args.push(arg);
+                        match tokens.get(*i) {
+                            Some(Tok::Op(',')) => {
+                                *i += 1;
+                                continue;
+                            }
+                            Some(Tok::Op(')')) => break,
+                            _ => return None,
+                        }
+                    }
+                }
+                if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
+                    return None;
+                }
+                *i += 1;
+                Some((format!("{name}({})", args.join(", ")), Lvl::Primary))
+            } else {
+                // Constant (`pi`, `e`) — echo as written.
+                Some((name, Lvl::Primary))
+            }
+        }
+        Some(Tok::Op('(')) => {
+            *i += 1;
+            let (s, _) = print_add(tokens, i)?;
+            if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
+                return None;
+            }
+            *i += 1;
+            // Literal parens make this atomic at any outer position.
+            Some((format!("({s})"), Lvl::Primary))
+        }
         _ => None,
     }
 }
@@ -356,6 +526,69 @@ mod tests {
         assert!((eval_str("5!").unwrap() - 120.0).abs() < 1e-9);
         assert!((eval_str("-3+5").unwrap() - 2.0).abs() < 1e-12);
         assert!((eval_str("(1+2)*3").unwrap() - 9.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_minus_binds_looser_than_pow() {
+        // Conventional precedence: `^` before unary `-`, factorial tightest.
+        assert!((eval_str("-2^2").unwrap() + 4.0).abs() < 1e-12); // -(2^2)
+        assert!((eval_str("2^-3").unwrap() - 0.125).abs() < 1e-12);
+        assert!((eval_str("2^3^2").unwrap() - 512.0).abs() < 1e-9); // 2^(3^2), right-assoc
+        assert!((eval_str("-3!").unwrap() + 6.0).abs() < 1e-12); // -(3!)
+        assert!((eval_str("(-2)^2").unwrap() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn explain_shows_interpreted_grouping() {
+        assert_eq!(explain_str("-2^2").as_deref(), Some("-(2^2)"));
+        assert_eq!(explain_str("2^-3").as_deref(), Some("2^(-3)"));
+        assert_eq!(explain_str("2^3^2").as_deref(), Some("2^(3^2)"));
+        // Composite operands group; atoms and calls stay bare.
+        assert_eq!(explain_str("-sqrt(16)").as_deref(), Some("-sqrt(16)"));
+        assert_eq!(explain_str("(1+2)*3").as_deref(), Some("(1 + 2) * 3"));
+        assert_eq!(explain_str("5--3").as_deref(), Some("5 - -3"));
+        assert_eq!(explain_str("-3!").as_deref(), Some("-3!"));
+        // Re-explaining an explained expression is a no-op.
+        let once = explain_str("-2^3^2").unwrap();
+        assert_eq!(explain_str(&once).as_deref(), Some(once.as_str()));
+    }
+
+    #[test]
+    fn explain_never_changes_semantics() {
+        let cases = [
+            "-2^2",
+            "2^-3",
+            "2^3^2",
+            "-sqrt(16)",
+            "(1+2)*3",
+            "5--3",
+            "-3!",
+            "0.5*4+1",
+            "2**10",
+            "10%3",
+            "--3",
+            "-(2+3)^2",
+            "abs(-7)+floor(2.7)",
+            "max(3,9)-min(1,2)",
+            "pi*2+e",
+            "(2^2)!",
+        ];
+        for e in cases {
+            let orig = eval_str(e).unwrap_or_else(|| panic!("case {e} must eval"));
+            let printed = explain_str(e).unwrap_or_else(|| panic!("case {e} must explain"));
+            let again = eval_str(&printed).unwrap_or_else(|| panic!("reprint {printed} must eval"));
+            assert!(
+                (orig - again).abs() < 1e-9,
+                "{e}: {orig} != reprint {printed} -> {again}"
+            );
+        }
+    }
+
+    #[test]
+    fn doubled_signs_still_parse() {
+        assert!((eval_str("--3").unwrap() - 3.0).abs() < 1e-12);
+        assert!((eval_str("5--3").unwrap() - 8.0).abs() < 1e-12);
+        assert!((eval_str("2---3").unwrap() + 1.0).abs() < 1e-12);
     }
 
     #[test]

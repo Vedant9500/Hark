@@ -636,13 +636,42 @@ thread_local! {
     static RNG: Cell<u64> = Cell::new(initial_seed());
 }
 
+/// Best-effort read from the OS CSPRNG (/dev/urandom); None on any failure.
+fn read_urandom(n: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open("/dev/urandom").ok()?;
+    let mut buf = vec![0u8; n];
+    f.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// n random bytes: OS entropy when available, else our PRNG stream. Never panics.
+fn os_random_bytes(n: usize) -> Vec<u8> {
+    if let Some(b) = read_urandom(n) {
+        return b;
+    }
+    let mut buf = vec![0u8; n];
+    for chunk in buf.chunks_mut(8) {
+        let v = next_u64().to_le_bytes();
+        chunk.copy_from_slice(&v[..chunk.len()]);
+    }
+    buf
+}
+
 fn initial_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9e37_79b9_7f4a_7c15);
-    nanos ^ (std::process::id() as u64).wrapping_mul(0x9e37_79b9)
+    let mut s = nanos ^ (std::process::id() as u64).wrapping_mul(0x9e37_79b9);
+    // Mix OS entropy into the seed when available.
+    if let Some(b) = read_urandom(8) {
+        let mut e = [0u8; 8];
+        e.copy_from_slice(&b);
+        s ^= u64::from_le_bytes(e);
+    }
+    s
 }
 
 fn next_u64() -> u64 {
@@ -661,13 +690,21 @@ fn rng_f64() -> f64 {
     (next_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// Uniform integer in [lo, hi] inclusive.
+/// Uniform integer in [lo, hi] inclusive (overflow/bias-safe).
 fn rng_int(lo: i64, hi: i64) -> i64 {
     if hi <= lo {
         return lo;
     }
-    let span = (hi - lo + 1) as f64;
-    lo + (rng_f64() * span) as i64
+    let span = (hi as i128 - lo as i128 + 1) as u128; // ≤ 2^64, fits
+    // Rejection-sample a u128 against span to avoid modulo bias.
+    loop {
+        let v = ((next_u64() as u128) << 64) | (next_u64() as u128);
+        let limit = u128::MAX - (u128::MAX % span);
+        if v < limit {
+            // i128 accumulation: (v % span) as i64 alone would wrap ≥ 2^63.
+            return (lo as i128 + (v % span) as i128) as i64;
+        }
+    }
 }
 
 fn try_random(q: &str) -> Option<SearchResult> {
@@ -773,12 +810,8 @@ fn try_random(q: &str) -> Option<SearchResult> {
 
 fn uuid_v4() -> String {
     let mut b = [0u8; 16];
-    for chunk in b.chunks_mut(8) {
-        let v = next_u64();
-        for (j, byte) in chunk.iter_mut().enumerate() {
-            *byte = (v >> (8 * (7 - j))) as u8;
-        }
-    }
+    let bytes = os_random_bytes(16);
+    b.copy_from_slice(&bytes);
     b[6] = (b[6] & 0x0f) | 0x40; // version 4
     b[8] = (b[8] & 0x3f) | 0x80; // variant 10
     format!(
@@ -817,13 +850,19 @@ fn try_password(q: &str) -> Option<SearchResult> {
         .and_then(|m| m.as_str().parse::<usize>().ok())
         .unwrap_or(16);
     len = len.clamp(4, 128);
-    let s: String = (0..len)
-        .map(|_| {
-            PASSWORD_CHARS
-                [(rng_f64() * PASSWORD_CHARS.len() as f64) as usize % PASSWORD_CHARS.len()]
-                as char
-        })
-        .collect();
+    // Rejection sampling over bytes keeps draws uniform across the 62 chars.
+    let mut s = String::with_capacity(len);
+    while s.len() < len {
+        for b in os_random_bytes(len) {
+            if b < 248 {
+                // 62 * 4 = 248 accepted values → b % 62 is unbiased.
+                s.push(PASSWORD_CHARS[(b % 62) as usize] as char);
+                if s.len() == len {
+                    break;
+                }
+            }
+        }
+    }
     Some(card_result(
         s.clone(),
         format!("{len}-char password"),
@@ -1118,15 +1157,57 @@ mod tests {
     }
 
     #[test]
+    fn random_full_range_safe() {
+        let r = try_quickwin("random -9223372036854775808 9223372036854775807")
+            .expect("full i64 range");
+        let v: i64 = r.title.parse().unwrap();
+        assert!((i64::MIN..=i64::MAX).contains(&v));
+        // Subrange draws stay in bounds and eventually vary.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let v = rng_int(-5, 5);
+            assert!((-5..=5).contains(&v));
+            seen.insert(v);
+        }
+        assert!(seen.len() > 1, "subrange never varied");
+    }
+
+    #[test]
+    fn os_random_bytes_differs() {
+        let a = os_random_bytes(32);
+        let b = os_random_bytes(32);
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b, "two 32-byte draws identical");
+    }
+
+    #[test]
     fn uuid_and_password() {
         let r = try_quickwin("uuid").expect("uuid");
         let s = &r.title;
         assert_eq!(s.len(), 36);
         assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
         assert_eq!(&s[14..15], "4", "version nibble");
+        let re = Regex::new(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+        .unwrap();
+        assert!(re.is_match(s), "bad uuid format: {s}");
         let r = try_quickwin("password 20").expect("password");
         assert_eq!(r.title.len(), 20);
         assert!(r.title.bytes().all(|b| b.is_ascii_alphanumeric()));
+        // Length honored (default/clamped) + charset respected.
+        for q in ["password", "password 4", "password 128"] {
+            let r = try_quickwin(q).expect(q);
+            let want = match q.split_once(' ') {
+                Some((_, n)) => n.parse::<usize>().unwrap(),
+                None => 16,
+            };
+            assert_eq!(r.title.len(), want, "{q}");
+            assert!(
+                r.title.chars().all(|c| PASSWORD_CHARS.contains(&(c as u8))),
+                "{q}"
+            );
+        }
     }
 
     #[test]
