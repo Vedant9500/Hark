@@ -496,14 +496,18 @@ fn parse_size_bytes(s: &str) -> Option<f64> {
 }
 
 /// Speed token → bytes per second. Uppercase `B` (`MB/s`, `MBps`, `MB`) means
-/// bytes; lowercase `b` (`mbps`, `mb/s`, `Mb`) means bits (÷8).
+/// bytes; lowercase `b` (`mbps`, `mb/s`, `Mb`) means bits (÷8). Byte-ness is
+/// matched structurally on the case-preserved token (the magnitude table below
+/// folds case): trailing capital `B` (`KB`, `KiB`), capital `B` before
+/// `p`/`P`/`/` (`Bps`, `MB/S`), or an explicit byte word in any case.
 fn parse_speed_bps(s: &str) -> Option<f64> {
     let (v, u) = split_num_unit(s)?;
-    let is_byte = u.contains("Bps")
-        || u.contains("B/s")
-        || u.contains("B/sec")
-        || u.contains("byte")
-        || u.ends_with('B');
+    let is_byte = u.ends_with('B')
+        || u
+            .chars()
+            .zip(u.chars().skip(1))
+            .any(|(c, n)| c == 'B' && matches!(n, 'p' | 'P' | '/'))
+        || u.to_ascii_lowercase().contains("byte");
     let mag = match u.to_ascii_lowercase().as_str() {
         "b" | "bps" | "b/s" | "b/sec" | "bit" | "bits" | "bit/s" | "bits/s" => 1.0,
         "kb" | "kbps" | "kb/s" | "kbit" | "kbits" | "kilobit" | "kilobits" | "kilobit/s"
@@ -1135,6 +1139,48 @@ mod tests {
         assert_eq!(r.title, "40s");
         let r = try_quickwin("100MB at 1mbps").expect("slow");
         assert_eq!(r.title, "13m 20s");
+    }
+
+    #[test]
+    fn speed_unit_case_classifies_bytes_vs_bits() {
+        // (unit, table magnitude, is_bytes): lowercase `b` family = bits,
+        // capital-`B` forms and explicit byte words = bytes.
+        let cases: &[(&str, f64, bool)] = &[
+            ("MB", 1e6, true),
+            ("MB/s", 1e6, true),
+            ("MBPS", 1e6, true),
+            ("Mb", 1e6, false),
+            ("mb", 1e6, false),
+            ("mbps", 1e6, false),
+            ("KB", 1e3, true),
+            ("Kb", 1e3, false),
+            ("kB", 1e3, true),
+            ("KiB", 1024.0, true),
+            ("MiB", 1_048_576.0, true),
+            ("GB", 1e9, true),
+            ("Gb", 1e9, false),
+            ("TB", 1e12, true),
+            ("b", 1.0, false),
+            ("B", 1.0, true),
+            ("bit", 1.0, false),
+            ("kbit", 1e3, false),
+            ("mbit", 1e6, false),
+            ("gbit", 1e9, false),
+            ("Byte", 1.0, true),
+            ("Bytes", 1.0, true),
+            ("Kilobyte/s", 1e3, true),
+            ("kilobytes/s", 1e3, true),
+            ("MBytes", 1e6, true),
+        ];
+        for (u, mag, bytes) in cases {
+            let got = parse_speed_bps(&format!("1{u}")).unwrap_or_else(|| panic!("parse 1{u}"));
+            let want = if *bytes { *mag } else { *mag * 0.125 };
+            assert!(
+                (got - want).abs() <= want * 1e-9,
+                "1{u} → {got} bps, want {want} ({})",
+                if *bytes { "bytes" } else { "bits" }
+            );
+        }
     }
 
     #[test]

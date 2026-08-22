@@ -146,9 +146,15 @@ fn rate_vs_base(cache: &RatesCache, code: &str) -> Option<f64> {
     cache.rates.get(code).copied()
 }
 
-/// Apply ECB cross rate; reject zero / non-finite inputs so UI never shows inf/NaN.
+/// Apply ECB cross rate; reject zero / negative / non-finite inputs so the UI
+/// never shows inf/NaN or sign-flipped output.
 fn convert_amount(amount: f64, from_rate: f64, to_rate: f64) -> Option<f64> {
-    if !amount.is_finite() || !from_rate.is_finite() || !to_rate.is_finite() || from_rate == 0.0 {
+    if !from_rate.is_finite()
+        || !to_rate.is_finite()
+        || from_rate <= 0.0
+        || to_rate <= 0.0
+        || !amount.is_finite()
+    {
         return None;
     }
     let out = (amount / from_rate) * to_rate;
@@ -247,8 +253,14 @@ fn fetch_rates() -> Option<RatesCache> {
     parse_rates_body(&body)
 }
 
+/// Every rate (network or disk) must be finite and positive — zero poisons
+/// conversions into silent `0.00`, negatives sign-flip them.
+fn sane_rates(rates: &HashMap<String, f64>) -> bool {
+    rates.values().all(|r| r.is_finite() && *r > 0.0)
+}
+
 /// Parse Frankfurter `latest` response into a [`RatesCache`].
-/// Returns None on malformed JSON / missing fields / non-finite rates.
+/// Returns None on malformed JSON / missing fields / invalid rates.
 fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
     #[derive(Deserialize)]
     struct Api {
@@ -257,7 +269,7 @@ fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
         rates: HashMap<String, f64>,
     }
     let api: Api = serde_json::from_slice(body).ok()?;
-    if !api.rates.values().all(|r| r.is_finite() && *r != 0.0) {
+    if !sane_rates(&api.rates) {
         return None;
     }
     Some(RatesCache {
@@ -277,7 +289,17 @@ fn cache_path() -> PathBuf {
 
 fn load_disk() -> Option<RatesCache> {
     let data = fs::read_to_string(cache_path()).ok()?;
-    serde_json::from_str(&data).ok()
+    parse_disk_cache(&data)
+}
+
+/// Deserialize + validate a disk cache; tampered or corrupt entries (zero /
+/// negative / non-finite rates) invalidate the whole cache → None → refetch.
+fn parse_disk_cache(data: &str) -> Option<RatesCache> {
+    let c: RatesCache = serde_json::from_str(data).ok()?;
+    if !sane_rates(&c.rates) {
+        return None;
+    }
+    Some(c)
 }
 
 // O_NOFOLLOW open(2) bits (std does not expose them; libc is not a dependency).
@@ -424,14 +446,35 @@ mod tests {
         assert!(parse_rates_body(b"not json").is_none());
         // Missing base/date.
         assert!(parse_rates_body(br#"{"rates":{"USD":1.1}}"#).is_none());
-        // Zero / non-finite rates would poison conversions — reject them.
+        // Zero / negative / non-finite rates would poison conversions — reject.
         assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":0.0}}"#).is_none());
+        assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":-1.1}}"#).is_none());
+        assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":1e999}}"#).is_none());
+    }
+
+    #[test]
+    fn load_disk_cache_rejects_bad_rates() {
+        let ok = r#"{"base":"EUR","date":"d","rates":{"USD":1.1},"fetched_at":1}"#;
+        assert!(parse_disk_cache(ok).is_some());
+        // Tampered cache entries must not reach conversions: invalid → None → refetch.
+        for bad in [
+            r#"{"base":"EUR","date":"d","rates":{"USD":-1.1},"fetched_at":1}"#,
+            r#"{"base":"EUR","date":"d","rates":{"USD":0.0},"fetched_at":1}"#,
+            r#"{"base":"EUR","date":"d","rates":{"USD":1.1,"JPY":-0.01},"fetched_at":1}"#,
+        ] {
+            assert!(parse_disk_cache(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]
     fn convert_amount_rejects_zero_and_non_finite_rates() {
         assert_eq!(convert_amount(100.0, 1.0, 0.9), Some(90.0));
         assert!(convert_amount(100.0, 0.0, 0.9).is_none());
+        // Zero to_rate silently produced "0.00" before the guard.
+        assert!(convert_amount(100.0, 1.1, 0.0).is_none());
+        // Negative rates sign-flip output — rejected on both sides.
+        assert!(convert_amount(100.0, -1.1, 0.9).is_none());
+        assert!(convert_amount(100.0, 1.1, -0.9).is_none());
         assert!(convert_amount(100.0, f64::NAN, 0.9).is_none());
         assert!(convert_amount(100.0, 1.0, f64::INFINITY).is_none());
         assert!(convert_amount(f64::NAN, 1.0, 0.9).is_none());

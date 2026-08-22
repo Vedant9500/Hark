@@ -107,19 +107,44 @@ fn parse_text_date(s: &str, today: NaiveDate) -> Option<NaiveDate> {
     }
 }
 
+/// Days in `(year, month)`, leap-year aware: first of the next month minus a day.
+/// None past chrono's representable range (user-typed extreme years).
+fn days_in_month(year: i32, month: u32) -> Option<u32> {
+    let (y, m) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    Some(
+        NaiveDate::from_ymd_opt(y, m, 1)?
+            .checked_sub_signed(Duration::days(1))?
+            .day(),
+    )
+}
+
 /// Break the span `a → b` (a ≤ b) into whole years, months, days, plus total
-/// days. Walks calendar-safe increments so Feb 29 rollovers stay valid.
+/// days. Walks calendar-safe increments so anchors like `2020-02-29` or
+/// `2023-01-31` stay valid: `with_year`/`with_month` return None on impossible
+/// dates instead of clamping, so the day is clamped explicitly here.
 fn ymd_between(a: NaiveDate, b: NaiveDate) -> (i64, i64, i64, i64) {
+    // Advance by `months` steps (12 = one year), clamping day-of-month
+    // (`Feb 29 → Feb 28`, `Jan 31 → Feb 28`). None only past chrono's range.
+    fn advance(cur: NaiveDate, months: i32) -> Option<NaiveDate> {
+        let total = cur.year() * 12 + cur.month() as i32 - 1 + months;
+        let (y, m) = (total.div_euclid(12), total.rem_euclid(12) as u32 + 1);
+        NaiveDate::from_ymd_opt(y, m, cur.day().min(days_in_month(y, m)?))
+    }
+
     let (mut y, mut m) = (0i64, 0i64);
     let mut cur = a;
-    while let Some(next) = cur.with_year(cur.year() + 1) {
+    while let Some(next) = advance(cur, 12) {
         if next > b {
             break;
         }
         cur = next;
         y += 1;
     }
-    while let Some(next) = cur.with_month(cur.month() + 1) {
+    while let Some(next) = advance(cur, 1) {
         if next > b {
             break;
         }
@@ -713,6 +738,40 @@ mod datetime_tests {
         assert_eq!(r.conversion.expect("card").right_title, "Friday");
         // Unparseable remainder falls through, not an early error.
         assert!(try_datetime("day of year").is_some());
+    }
+
+    #[test]
+    fn span_leap_day_anchor_counts_years() {
+        // 2020-02-29 → 2024-02-29: with_year(2021) on a Feb-29 anchor yields
+        // None, which stalled the year walk at 0 before the clamp fix.
+        let a = NaiveDate::from_ymd_opt(2020, 2, 29).unwrap();
+        let b = NaiveDate::from_ymd_opt(2024, 2, 29).unwrap();
+        let (y, m, d, total) = ymd_between(a, b);
+        assert_eq!((y, m), (4, 0), "leap-day anchor must walk 4 years");
+        assert_eq!(d, 1, "clamped Feb 28 leaves one day");
+        assert_eq!(total, 1461);
+        assert_eq!(fmt_span(y, m, d), "4 years 1 day");
+    }
+
+    #[test]
+    fn span_month_end_anchor_counts_months() {
+        // 2023-01-31 → 2023-03-01: with_month(2) on day 31 yields None and
+        // killed the month walk; now Jan 31 clamps to Feb 28 (+1 day).
+        let a = NaiveDate::from_ymd_opt(2023, 1, 31).unwrap();
+        let b = NaiveDate::from_ymd_opt(2023, 3, 1).unwrap();
+        let (y, m, d, _) = ymd_between(a, b);
+        assert_eq!((y, m, d), (0, 1, 1));
+        // Day-31 anchors must not skip months either: Jan 31 → Apr 30 walks
+        // Feb/Mar/Apr via clamped days instead of stalling at 0.
+        let a = NaiveDate::from_ymd_opt(2021, 1, 31).unwrap();
+        let b = NaiveDate::from_ymd_opt(2021, 4, 30).unwrap();
+        let (y, m, _, total) = ymd_between(a, b);
+        assert_eq!((y, m), (0, 3));
+        assert_eq!(total, (b - a).num_days());
+        // Plain mid-month spans are unchanged.
+        let a = NaiveDate::from_ymd_opt(1998, 3, 15).unwrap();
+        let b = NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        assert_eq!(ymd_between(a, b), (28, 5, 0, (b - a).num_days()));
     }
 
     #[test]
