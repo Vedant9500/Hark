@@ -166,19 +166,23 @@ pub(super) fn name_matches_pat(name_lower: &str, pat: &str) -> bool {
 }
 
 pub(super) fn glob_match(pat: &str, name: &str) -> bool {
-    glob_match_bytes(pat.as_bytes(), name.as_bytes())
+    let pat: Vec<char> = pat.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    glob_match_chars(&pat, &name)
 }
 
-fn glob_match_bytes(pat: &[u8], name: &[u8]) -> bool {
+/// `?` consumes exactly one Unicode character (never a lone byte of a
+/// multi-byte char), so `a?` matches `aé`. `*` spans any number of chars.
+fn glob_match_chars(pat: &[char], name: &[char]) -> bool {
     let (mut pi, mut ni) = (0usize, 0usize);
     let mut star_pi = None;
     let mut star_ni = 0usize;
 
     while ni < name.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == name[ni]) {
+        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == name[ni]) {
             pi += 1;
             ni += 1;
-        } else if pi < pat.len() && pat[pi] == b'*' {
+        } else if pi < pat.len() && pat[pi] == '*' {
             star_pi = Some(pi);
             star_ni = ni;
             pi += 1;
@@ -190,7 +194,7 @@ fn glob_match_bytes(pat: &[u8], name: &[u8]) -> bool {
             return false;
         }
     }
-    while pi < pat.len() && pat[pi] == b'*' {
+    while pi < pat.len() && pat[pi] == '*' {
         pi += 1;
     }
     pi == pat.len()
@@ -201,6 +205,7 @@ pub(super) fn search_absolute_glob(
     index: &[IndexedPath],
     path_style: &PathStyle,
     mounts: &[MountInfo],
+    excludes: &ExcludeSet,
 ) -> Vec<SearchResult> {
     let expanded = expand_path_query(query, mounts);
     // Drop `**` segments so `~/dev/**/*.rs` resolves under `~/dev`, not a
@@ -223,6 +228,10 @@ pub(super) fn search_absolute_glob(
                     continue;
                 }
                 let path = entry.path();
+                // Live listings honor the same excludes as index hits.
+                if should_skip_entry(&path, excludes) {
+                    continue;
+                }
                 let key = path.display().to_string();
                 if !seen.insert(key.clone()) {
                     continue;
@@ -262,9 +271,10 @@ pub(super) fn search_absolute_glob(
         let mut heap: BinaryHeap<Reverse<(i64, Reverse<u16>, usize)>> =
             BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
         for (idx, item) in index.iter().enumerate() {
-            let under = item.path_lower.starts_with(&dir_prefix)
-                || item.path_lower == dir_lower
-                || item.path_lower.starts_with(&dir_lower);
+            // Children plus the dir itself; no bare dir-prefix clause here —
+            // it matched sibling paths that merely share the prefix
+            // (`/a/proj-x` when scoped to `/a/proj`).
+            let under = item.path_lower.starts_with(&dir_prefix) || item.path_lower == dir_lower;
             if !under {
                 continue;
             }
@@ -564,4 +574,32 @@ pub(super) fn path_completions(
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     results
+}
+
+#[cfg(test)]
+mod unicode_glob_tests {
+    use super::glob_match;
+
+    #[test]
+    fn question_mark_consumes_one_character_not_one_byte() {
+        // `é` is two bytes; `?` must match it as a single character.
+        assert!(glob_match("a?", "aé"));
+        assert!(glob_match("?é", "aé"));
+        assert!(glob_match("*", "aé"));
+        assert!(glob_match("a*", "aé"));
+
+        // `é` is one char: a two-char pattern must not match it.
+        assert!(!glob_match("??", "é"));
+        assert!(!glob_match("a?", "a")); // ? still requires exactly one char
+        assert!(!glob_match("a", "aé"));
+    }
+
+    #[test]
+    fn ascii_semantics_unchanged() {
+        assert!(glob_match("*.md", "readme.md"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(!glob_match("*.rs", "readme.md"));
+        assert!(glob_match("**", "anything"));
+    }
 }

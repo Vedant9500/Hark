@@ -805,15 +805,16 @@ fn save_cache(items: &[IndexedPath], fingerprint: &str, capped_by_deep: bool) {
             .collect(),
     };
     // Compact JSON + atomic replace (no half-written cache on crash).
+    // Meta stamp only after the rename lands: a failed write/rename must keep
+    // the old meta so `cache_ttl_stale` still reports the cache as stale.
     if let Ok(data) = serde_json::to_vec(&cf) {
         let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, &data).is_ok() {
-            let _ = fs::rename(&tmp, &path);
+        if fs::write(&tmp, &data).is_ok() && fs::rename(&tmp, &path).is_ok() {
+            let _ = fs::write(
+                meta_path(),
+                format!("{} {} {}", CACHE_VERSION, now_secs(), fingerprint),
+            );
         }
-        let _ = fs::write(
-            meta_path(),
-            format!("{} {} {}", CACHE_VERSION, now_secs(), fingerprint),
-        );
     }
 }
 

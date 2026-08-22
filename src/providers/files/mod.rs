@@ -288,12 +288,8 @@ impl FileProvider {
         let v = if is_scoped_file_query(query) {
             true
         } else {
-            let raw = query.trim();
-            let q = raw
-                .strip_prefix("f ")
-                .or_else(|| raw.strip_prefix("file "))
-                .or_else(|| raw.strip_prefix("folder "))
-                .unwrap_or(raw)
+            let q = strip_force_files_prefix(query.trim())
+                .unwrap_or_else(|| query.trim())
                 .trim();
             let index = self.state.index.read().unwrap_or_else(|p| p.into_inner());
             search::parse_scoped_for_query(q, &index).is_some()

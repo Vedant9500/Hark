@@ -90,7 +90,7 @@ pub(crate) fn search_index(
 
     if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") || is_drive_path_query(q) {
         if q.contains('*') || q.contains('?') {
-            return search_absolute_glob(q, index, path_style, mounts);
+            return search_absolute_glob(q, index, path_style, mounts, excludes);
         }
         return path_completions(q, path_style, mounts);
     }
