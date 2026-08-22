@@ -381,6 +381,13 @@ mod tests {
         );
         // substring of component must not match
         assert!(find_path_segment("/home/u/harky/docs", "hark", 0).is_none());
+
+        // Multi-byte segment: first hit fails the after-boundary check
+        // (`文档` followed by `x`), retry must skip the whole char, not 1 byte.
+        assert_eq!(
+            find_path_segment("/home/u/文档x/文档/docs", "文档", 0),
+            Some(22)
+        );
     }
 
     #[test]

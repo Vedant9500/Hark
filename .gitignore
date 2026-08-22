@@ -82,3 +82,4 @@ lcov.info
 docs/audit/
 assets/ui_review/
 UI_UX_AUDIT.md
+.commandcode/

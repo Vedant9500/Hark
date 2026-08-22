@@ -224,21 +224,10 @@ fn parse_direction_and_text(rest: &str) -> Option<(String, String, String)> {
         return None;
     }
     // Remainder of original string after the two codes (preserve inner spaces).
-    let mut idx = 0usize;
-    let bytes = rest.as_bytes();
-    // skip first code
-    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
-    idx += a.len();
-    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
-    idx += b.len();
-    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
-    let text = rest[idx..].trim();
+    // `find` returns char boundaries, so this is safe for Unicode separators.
+    let a_end = rest.find(a)? + a.len();
+    let b_end = rest[a_end..].find(b)? + a_end + b.len();
+    let text = rest[b_end..].trim();
     if text.is_empty() {
         return None;
     }
@@ -1236,6 +1225,16 @@ mod tests {
 
         let job = parse_job("tr en hi Hello", &c).expect("job");
         assert_eq!(job.2, "hi");
+    }
+
+    #[test]
+    fn direction_parse_unicode_whitespace_separator() {
+        let c = cfg_auto();
+        // U+3000 ideographic space between codes — must not panic on slice.
+        let job = parse_job("tr zh\u{3000}en 你好世界", &c).expect("job");
+        assert_eq!(job.0, "你好世界");
+        assert!(job.1.to_ascii_lowercase().starts_with("zh"));
+        assert_eq!(job.2.to_ascii_lowercase(), "en");
     }
 
     #[test]

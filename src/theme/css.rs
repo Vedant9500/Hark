@@ -399,7 +399,9 @@ window.hark-window .hark-results > row {{
   box-shadow: none;
   border-radius: {row_radius}px;
   padding: 0;
-  margin: 1px 0;
+  /* Horizontal inset keeps the rounded highlight off the preview separator
+     and window edges; 6px also lands row text near the search field's 16px. */
+  margin: 1px 6px;
   /* let content define height — fixed min-height was clipping glyphs */
   min-height: 48px;
 }}

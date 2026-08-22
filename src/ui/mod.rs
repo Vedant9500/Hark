@@ -176,7 +176,7 @@ impl Launcher {
         let body_revealer = gtk::Revealer::new();
         body_revealer.add_css_class("hark-body-revealer");
         body_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-        body_revealer.set_transition_duration(150);
+        body_revealer.set_transition_duration(220);
         body_revealer.set_hexpand(true);
         body_revealer.set_vexpand(false);
         body_revealer.set_reveal_child(true);
@@ -843,6 +843,14 @@ impl Launcher {
                         }
                         close_settings();
                         return glib::Propagation::Stop;
+                    }
+                    if window
+                        .root()
+                        .and_then(|r| r.focus())
+                        .and_downcast::<Entry>()
+                        .is_some()
+                    {
+                        return glib::Propagation::Proceed;
                     }
                     // ↑/↓ / j/k cycle settings categories (window-level capture)
                     let n = {

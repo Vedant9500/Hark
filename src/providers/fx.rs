@@ -280,13 +280,65 @@ fn load_disk() -> Option<RatesCache> {
     serde_json::from_str(&data).ok()
 }
 
+// O_NOFOLLOW open(2) bits (std does not expose them; libc is not a dependency).
+// Other unix targets fall back to 0 — the directory ownership guard below
+// still prevents an attacker from planting entries in the cache dir.
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400_000;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const O_NOFOLLOW: i32 = 0o400;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+const O_NOFOLLOW: i32 = 0;
+
+/// Effective UID of this process, parsed from procfs (`Uid:` line, 2nd field).
+#[cfg(unix)]
+fn current_euid() -> Option<u32> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
+    line.split_whitespace().nth(2)?.parse().ok()
+}
+
 fn save_disk(c: &RatesCache) {
     let path = cache_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            // Fallback paths live under shared temp space where a local
+            // attacker may have pre-created the directory or planted a
+            // symlinked cache file. Force 0700, then refuse to persist
+            // through any directory we do not own.
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            let trusted = fs::metadata(parent).is_ok_and(|m| {
+                m.is_dir()
+                    && m.mode() & 0o777 == 0o700
+                    && m.uid() == current_euid().unwrap_or(u32::MAX)
+            });
+            if !trusted {
+                eprintln!("hark: fx cache dir untrusted, skipping disk persistence");
+                return;
+            }
+        }
     }
     if let Ok(data) = serde_json::to_string(c) {
-        let _ = fs::write(path, data);
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            // O_NOFOLLOW makes the kernel refuse a symlinked cache file.
+            let _ = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .custom_flags(O_NOFOLLOW)
+                .open(&path)
+                .and_then(|mut f| f.write_all(data.as_bytes()));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fs::write(&path, data);
+        }
     }
 }
 

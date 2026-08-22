@@ -153,7 +153,7 @@ pub(super) fn find_path_segment(path_lower: &str, seg: &str, start: usize) -> Op
         if before_ok && after_ok {
             return Some(after);
         }
-        i = abs + 1;
+        i = abs + path_lower[abs..].chars().next().map_or(1, |c| c.len_utf8());
     }
     None
 }

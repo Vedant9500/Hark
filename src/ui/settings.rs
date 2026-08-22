@@ -292,9 +292,18 @@ impl SettingsPanel {
         // Keyboard: ↑/↓ or j/k cycle categories; Home/End jump
         {
             let nav = nav.clone();
+            let root_for_keys = root.clone();
             let key = EventControllerKey::new();
             key.set_propagation_phase(gtk::PropagationPhase::Capture);
             key.connect_key_pressed(move |_, keyval, _, _| {
+                if root_for_keys
+                    .root()
+                    .and_then(|r| r.focus())
+                    .and_downcast::<Entry>()
+                    .is_some()
+                {
+                    return glib::Propagation::Proceed;
+                }
                 let n = CATEGORIES.len() as i32;
                 if n == 0 {
                     return glib::Propagation::Proceed;
