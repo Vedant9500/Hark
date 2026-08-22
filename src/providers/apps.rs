@@ -19,11 +19,44 @@ struct DesktopApp {
     search_blob: String,
     comment: String,
     exec: String,
+    /// Parsed launch argv (field codes stripped), preserved losslessly.
+    /// `exec` is a display/re-parse string that quotes tokens so
+    /// `split_exec_args` round-trips it back to exactly this argv.
+    argv: Vec<String>,
     icon: String,
     terminal: bool,
     no_display: bool,
     /// Absolute path to the `.desktop` file (for drag-and-drop).
     desktop_path: PathBuf,
+}
+
+/// Quote a single argv token (if needed) so `split_exec_args` reproduces it
+/// exactly. Desktop Exec quoting is destroyed by parse→join→re-split unless
+/// tokens containing whitespace or quote characters are re-quoted here.
+fn quote_token(tok: &str) -> String {
+    if !tok.is_empty()
+        && tok
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.' | ':' | '=' | '+' | '@' | ',' | '%' | '*'))
+    {
+        return tok.to_string();
+    }
+    // Double-quote and escape what the double-quote lexer treats specially.
+    let mut out = String::with_capacity(tok.len() + 2);
+    out.push('"');
+    for c in tok.chars() {
+        if matches!(c, '"' | '\\' | '$' | '`') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// Join argv into an Exec-style string that survives a re-split unchanged.
+fn quote_join(argv: &[String]) -> String {
+    argv.iter().map(|t| quote_token(t)).collect::<Vec<_>>().join(" ")
 }
 
 pub struct AppProvider {
@@ -66,6 +99,7 @@ impl AppProvider {
                 search_blob: format!("{} {} {id_tokens}", name.to_lowercase(), id_tokens),
                 comment: String::new(),
                 exec: format!("{} %U", id.replace('-', "_")),
+                argv: vec![id.replace('-', "_")],
                 icon: String::new(),
                 terminal: false,
                 no_display: false,
@@ -281,7 +315,9 @@ fn to_result(app: &DesktopApp, score: i64, matched: Option<Vec<usize>>) -> Searc
             Some(app.icon.clone())
         },
         action: Action::LaunchApp {
-            exec: app.exec.clone(),
+            // Always serialized from the parsed argv so the launch path
+            // (`split_exec_args`) reproduces it exactly.
+            exec: quote_join(&app.argv),
             terminal: app.terminal,
             desktop_path: Some(app.desktop_path.clone()),
         },
@@ -321,7 +357,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     let mut generic_name = String::new();
     let mut keywords = String::new();
     let mut comment = String::new();
-    let mut exec = String::new();
+    let mut exec_raw = String::new();
     let mut icon = String::new();
     let mut terminal = false;
     let mut no_display = false;
@@ -347,7 +383,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
                 keywords = value.replace(';', " ").to_string();
             }
             "Comment" if comment.is_empty() => comment = value.to_string(),
-            "Exec" if exec.is_empty() => exec = clean_exec(value),
+            "Exec" if exec_raw.is_empty() => exec_raw = value.to_string(),
             "Icon" if icon.is_empty() => icon = value.to_string(),
             "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
             "NoDisplay" => no_display = value.eq_ignore_ascii_case("true"),
@@ -376,6 +412,13 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         generic_name.to_lowercase(),
         keywords.to_lowercase(),
     );
+    // Field codes are launch placeholders, not arguments — strip exactly the
+    // standalone codes (never tokens that merely start with `%`).
+    let argv: Vec<String> = split_exec_args(&exec_raw)
+        .into_iter()
+        .filter(|part| !is_field_code(part))
+        .collect();
+    let exec = quote_join(&argv);
     Some(DesktopApp {
         id,
         name,
@@ -383,6 +426,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         search_blob,
         comment,
         exec,
+        argv,
         icon,
         terminal,
         no_display,
@@ -392,6 +436,9 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
 
 /// Split a desktop `Exec=` value into argv, respecting simple shell-style quotes.
 /// Never feed the result through a shell — tokens are passed as argv only.
+///
+/// Lenient on unterminated quotes: the rest of the line joins the current
+/// token rather than erroring.
 fn split_exec_args(exec: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut cur = String::new();
@@ -414,9 +461,9 @@ fn split_exec_args(exec: &str) -> Vec<String> {
                     } else {
                         cur.push('\\');
                     }
-                } else {
-                    cur.push('\\');
                 }
+                // Trailing `\` inside an unterminated double quote escapes
+                // nothing — drop it instead of leaking a stray backslash.
             }
             c if c.is_whitespace() && !in_single && !in_double => {
                 if !cur.is_empty() {
@@ -432,12 +479,13 @@ fn split_exec_args(exec: &str) -> Vec<String> {
     args
 }
 
-fn clean_exec(exec: &str) -> String {
-    split_exec_args(exec)
-        .into_iter()
-        .filter(|part| !part.starts_with('%'))
-        .collect::<Vec<_>>()
-        .join(" ")
+/// Standalone desktop-entry field codes (`%f`, `%F`, `%%`-style placeholders).
+/// Per spec these are exact standalone tokens — `--opt=%s` is a normal argument.
+fn is_field_code(part: &str) -> bool {
+    matches!(
+        part,
+        "%f" | "%u" | "%F" | "%U" | "%d" | "%D" | "%n" | "%i" | "%c" | "%k" | "%v" | "%m"
+    )
 }
 
 fn which(bin: &str) -> Option<PathBuf> {
@@ -497,14 +545,14 @@ fn spawn_detached_argv(argv: &[String]) -> Result<(), String> {
 pub fn resolve_exec_binary(exec: &str) -> Option<PathBuf> {
     let first = split_exec_args(exec)
         .into_iter()
-        .find(|part| !part.starts_with('%') && !part.is_empty())?;
+        .find(|part| !is_field_code(part) && !part.is_empty())?;
     which(&first)
 }
 
 pub fn launch_app(exec: &str, terminal: bool) -> Result<(), String> {
     let mut argv: Vec<String> = split_exec_args(exec)
         .into_iter()
-        .filter(|part| !part.starts_with('%'))
+        .filter(|part| !is_field_code(part))
         .collect();
     if argv.is_empty() {
         return Ok(());
@@ -613,9 +661,16 @@ mod tests {
                 "%F".to_string()
             ]
         );
+        // Field codes strip as exact standalone tokens only.
+        assert!(is_field_code("%F"));
+        assert!(!is_field_code("--opt=%s"));
         assert_eq!(
-            clean_exec(r#"/usr/bin/foo --opt="bar baz" %U"#),
-            "/usr/bin/foo --opt=bar baz"
+            split_exec_args(r#"/usr/bin/foo --opt=%s %F"#),
+            vec![
+                "/usr/bin/foo".to_string(),
+                "--opt=%s".to_string(),
+                "%F".to_string()
+            ]
         );
         // Metacharacters must remain a single argv token, not shell syntax.
         assert_eq!(
@@ -626,5 +681,56 @@ mod tests {
             split_exec_args(r#"/bin/echo '$(reboot)'"#),
             vec!["/bin/echo".to_string(), "$(reboot)".to_string()]
         );
+        // Unterminated double quote: lenient merge, no dangling escape leak.
+        assert_eq!(
+            split_exec_args(r#"/bin/echo "hi\"#),
+            vec!["/bin/echo".to_string(), "hi".to_string()]
+        );
+
+        // Quoting survives storage: re-splitting the stored Exec string
+        // reproduces the original argv exactly.
+        let argvs: Vec<Vec<String>> = vec![
+            vec!["foo".into(), "--opt=bar baz".into()],
+            vec!["sh".into(), "-c".into(), "echo hello".into()],
+            vec!["/usr/bin/subl".into(), "--launch-group".into()],
+            vec!["weird;$(reboot)".into(), "a'b".into()],
+        ];
+        for argv in &argvs {
+            let joined = quote_join(argv);
+            assert_eq!(split_exec_args(&joined), *argv, "round trip of {joined:?}");
+        }
+    }
+
+    #[test]
+    fn parsed_desktop_argv_survives_launch_round_trip() {
+        let dir = std::env::temp_dir().join(format!("hark-app-argv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quoted.desktop");
+        let mut f = fs::File::create(&path).unwrap();
+        write!(
+            f,
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Quoted\n\
+             Exec=sh -c \"echo hello world\" --opt=%s %F\n\
+             Icon=x\n"
+        )
+        .unwrap();
+
+        let app = parse_desktop_file(&path).expect("parse");
+        assert_eq!(
+            app.argv,
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo hello world".to_string(),
+                "--opt=%s".to_string()
+            ]
+        );
+        // What launch_app consumes must equal what was parsed at scan time.
+        assert_eq!(split_exec_args(&app.exec), app.argv);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
