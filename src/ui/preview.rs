@@ -16,7 +16,7 @@ use sourceview5::{LanguageManager, StyleSchemeManager, View};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
@@ -35,6 +35,9 @@ const DECODE_MAX_PX: i32 = IMAGE_FRAME_WIDTH * 2;
 const TEXTURE_CACHE_CAP: usize = 24;
 /// Skip decode work while the user is still arrowing through results.
 const LOAD_DEBOUNCE: Duration = Duration::from_millis(45);
+/// Hard deadline for ffmpeg/pdftoppm so a hung encoder can't wedge the single
+/// preview worker (busy flag would otherwise never clear).
+const CONVERTER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Filesystem identity so in-place edits invalidate the texture cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1275,12 +1278,71 @@ fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels
     decode_image_scaled(original)
 }
 
+/// User-private scratch space for converter output (ffmpeg/pdftoppm PNG
+/// frames). Lives under the XDG cache rather than shared `/tmp` and is
+/// forced to 0700 so another local user can neither reach nor pre-plant the
+/// files we decode. `None` → caller soft-fails like a missing converter.
+fn converter_scratch_dir() -> Option<PathBuf> {
+    let dir = dirs::cache_dir()
+        .or_else(dirs::home_dir)?
+        .join("hark/preview");
+    std::fs::create_dir_all(&dir).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // create_dir_all honours umask; force user-private afterwards.
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Some(dir)
+}
+
+/// Best-effort OS-entropy token so output filenames are unpredictable across
+/// processes (tiny local copy of the calc provider's /dev/urandom read — no
+/// cross-module import). Falls back to time+pid entropy.
+fn random_token() -> String {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut buf = [0u8; 8];
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            if f.read_exact(&mut buf).is_ok() {
+                return buf.iter().map(|b| format!("{b:02x}")).collect();
+            }
+        }
+    }
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{:x}-{}", nanos, std::process::id())
+}
+
+/// Pre-create the converter output file with 0600 so the encoder keeps our
+/// private inode instead of making a umask-world-readable one (unix only;
+/// other targets just truncate-create).
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> bool {
+    std::fs::File::create(path).is_ok()
+}
+
 /// First video frame via `ffmpeg` (optional — fails soft if missing).
 fn decode_video_frame(path: &Path) -> Option<DecodedPixels> {
-    let tmp_dir = std::env::temp_dir().join("hark-preview");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    // Unique per-call name inside a 0700 dir: nothing predictable to race.
+    let tmp_dir = converter_scratch_dir()?;
     let token = format!(
-        "v-{}-{}",
+        "v-{}-{}-{}",
+        random_token(),
         std::process::id(),
         path.file_name()
             .and_then(|s| s.to_str())
@@ -1291,12 +1353,13 @@ fn decode_video_frame(path: &Path) -> Option<DecodedPixels> {
             .collect::<String>()
     );
     let out = tmp_dir.join(format!("{token}.png"));
-    let _ = std::fs::remove_file(&out);
+    if !create_private_file(&out) {
+        return None;
+    }
 
     // Seek a bit past 0 so black intro frames are less common; fall back to 0s.
     let mut ok = run_ffmpeg_frame(path, &out, "0.5");
     if !ok || !out.is_file() {
-        let _ = std::fs::remove_file(&out);
         ok = run_ffmpeg_frame(path, &out, "0");
     }
     if !ok || !out.is_file() {
@@ -1315,9 +1378,41 @@ fn decode_video_frame(path: &Path) -> Option<DecodedPixels> {
     result
 }
 
+/// Run `cmd` with a hard deadline. A hung ffmpeg/pdftoppm must never block
+/// this worker thread forever — past the deadline we SIGKILL and reap so the
+/// caller's busy flag always clears.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> bool {
+    // Detach child stdio: an inherited supervisor pipe could fill and stall
+    // the child until the deadline kill.
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let poll = Duration::from_millis(50);
+    let mut waited = Duration::ZERO;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+        if waited >= timeout {
+            let _ = child.kill();
+            let _ = child.wait(); // reap — no zombie
+            return false;
+        }
+        std::thread::sleep(poll);
+        waited += poll;
+    }
+}
+
 fn run_ffmpeg_frame(path: &Path, out: &Path, ss: &str) -> bool {
-    Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-ss", ss, "-i"])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-ss", ss, "-i"])
         .arg(path)
         .args([
             "-frames:v",
@@ -1327,18 +1422,17 @@ fn run_ffmpeg_frame(path: &Path, out: &Path, ss: &str) -> bool {
             &format!("scale='min({DECODE_MAX_PX},iw)':-2"),
             "-y",
         ])
-        .arg(out)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .arg(out);
+    run_with_timeout(cmd, CONVERTER_TIMEOUT)
 }
 
 /// PDF page 1 via `pdftoppm` (poppler-utils). Soft-fail if missing.
 fn decode_pdf_page(path: &Path) -> Option<DecodedPixels> {
-    let tmp_dir = std::env::temp_dir().join("hark-preview");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    // Same private scratch dir + unpredictable name as the video path.
+    let tmp_dir = converter_scratch_dir()?;
     let token = format!(
-        "p-{}-{}",
+        "p-{}-{}-{}",
+        random_token(),
         std::process::id(),
         path.file_name()
             .and_then(|s| s.to_str())
@@ -1351,24 +1445,24 @@ fn decode_pdf_page(path: &Path) -> Option<DecodedPixels> {
     let prefix = tmp_dir.join(&token);
     // pdftoppm -singlefile -png writes `{prefix}.png`
     let out = tmp_dir.join(format!("{token}.png"));
-    let _ = std::fs::remove_file(&out);
+    if !create_private_file(&out) {
+        return None;
+    }
 
-    let ok = Command::new("pdftoppm")
-        .args([
-            "-f",
-            "1",
-            "-l",
-            "1",
-            "-singlefile",
-            "-png",
-            "-scale-to",
-            &DECODE_MAX_PX.to_string(),
-        ])
-        .arg(path)
-        .arg(&prefix)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let mut cmd = Command::new("pdftoppm");
+    cmd.args([
+        "-f",
+        "1",
+        "-l",
+        "1",
+        "-singlefile",
+        "-png",
+        "-scale-to",
+        &DECODE_MAX_PX.to_string(),
+    ])
+    .arg(path)
+    .arg(&prefix);
+    let ok = run_with_timeout(cmd, CONVERTER_TIMEOUT);
 
     if !ok || !out.is_file() {
         let _ = std::fs::remove_file(&out);

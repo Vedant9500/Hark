@@ -1,5 +1,9 @@
+use super::{Theme, sanitize_hex};
+
 pub fn is_light_theme(hex: &str) -> bool {
-    let h = hex.trim().trim_start_matches('#');
+    // scheme.json values are external input — sanitize before byte slicing.
+    let h = sanitize_hex(hex);
+    let h = h.trim_start_matches('#');
     if h.len() < 6 {
         return false;
     }
@@ -10,10 +14,10 @@ pub fn is_light_theme(hex: &str) -> bool {
     lum > 128.0
 }
 
-use super::Theme;
-
 fn rgba(hex: &str, alpha: f32) -> String {
-    let h = hex.trim().trim_start_matches('#');
+    // scheme.json values are external input — sanitize before byte slicing.
+    let h = sanitize_hex(hex);
+    let h = h.trim_start_matches('#');
     if h.len() < 6 {
         return format!("rgba(26, 27, 38, {alpha})");
     }
@@ -1190,5 +1194,20 @@ mod tests {
         let css = render(&theme, &ui);
         assert!(css.contains("@keyframes hark-icon-spin"));
         assert!(css.contains(".hark-search-busy image.right"));
+    }
+
+    #[test]
+    fn test_external_non_ascii_scheme_values_do_not_panic() {
+        // scheme.json is external input; the byte slicing in is_light_theme /
+        // rgba must never see a non-char-boundary index.
+        let mut theme = Theme::fallback();
+        theme.surface_container = "éé".into(); // 4 bytes, not ASCII hex
+        theme.outline_variant = "日本".into();
+        let ui = UiThemeConfig::default();
+        // Sanitized fallback (#ffffff) reads as light.
+        assert!(is_light_theme(&theme.surface_container));
+        assert_eq!(rgba(&theme.surface_container, 0.5), "rgba(255, 255, 255, 0.5)");
+        assert_eq!(rgba(&theme.outline_variant, 0.5), "rgba(255, 255, 255, 0.5)");
+        let _ = render(&theme, &ui); // must not panic
     }
 }

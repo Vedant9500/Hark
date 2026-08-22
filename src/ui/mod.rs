@@ -1049,7 +1049,10 @@ impl Launcher {
                     Key::Right => {
                         // At end of query, → opens the Action Panel (Raycast
                         // parity). Mid-text, → keeps moving the caret.
-                        let at_end = search.position() >= search.text().len() as i32
+                        // `position()` counts chars, `text().len()` counts
+                        // bytes — compare against the char count or non-ASCII
+                        // queries never detect at-end.
+                        let at_end = search.position() >= search.text().chars().count() as i32
                             && !action_panel.is_open();
                         if at_end && !results.borrow().is_empty() {
                             open_action_panel();
@@ -2405,6 +2408,7 @@ fn refresh_results(
         let preview2 = preview.clone();
         let search_entry2 = search_entry.clone();
         let empty_delay2 = empty_delay.clone();
+        let scroll2 = scroll.cloned();
         let drag2 = drag_session.clone();
         let suppress2 = suppress_select.clone();
         let icon_size2 = icon_size;
@@ -2430,6 +2434,9 @@ fn refresh_results(
                     empty2.set_visible(true);
                     empty2.set_vexpand(true);
                     list2.set_visible(false);
+                    if let Some(s) = &scroll2 {
+                        s.set_visible(false);
+                    }
                     row_pool2.borrow_mut().clear(&list2);
                     *results2.borrow_mut() = Vec::new();
                     selected2.set(0);
@@ -2443,6 +2450,9 @@ fn refresh_results(
                     empty2.set_visible(false);
                     empty2.set_vexpand(false);
                     list2.set_visible(true);
+                    if let Some(s) = &scroll2 {
+                        s.set_visible(true);
+                    }
                     row_pool2
                         .borrow_mut()
                         .apply(&list2, &still, icon_size2, symb2, None);
@@ -2476,6 +2486,12 @@ fn refresh_results(
         empty.set_visible(show_empty);
         empty.set_vexpand(show_empty);
         list.set_visible(!no_hits);
+        // A hidden list must not leave the 260px min-content scroll ghost
+        // behind the empty state — it made the page taller than any results
+        // view and pushed the label off-center.
+        if let Some(s) = scroll {
+            s.set_visible(!no_hits);
+        }
 
         {
             let mut pool = row_pool.borrow_mut();

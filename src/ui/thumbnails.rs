@@ -3,18 +3,22 @@
 //! Shared by preview decode and drag-icon polish so MD5/URI path logic stays
 //! in one place.
 
+use gio::prelude::*;
 use gtk::gdk_pixbuf::Pixbuf;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// FreeDesktop thumbnail path (`~/.cache/thumbnails/{large,normal}/md5(uri).png`).
+///
+/// A stale thumb (source edited since it was written) is as good as none: the
+/// `Thumb::MTime` text chunk must match the source's mtime.
 pub(crate) fn freedesktop_thumbnail(path: &Path) -> Option<PathBuf> {
     let digest = thumbnail_digest(path)?;
     let base = dirs::home_dir()?.join(".cache/thumbnails");
     for size in ["large", "normal", "x-large"] {
         let p = base.join(size).join(format!("{digest}.png"));
-        if p.is_file() {
+        if p.is_file() && thumb_is_current(&p, path) {
             return Some(p);
         }
     }
@@ -29,8 +33,54 @@ pub(crate) fn thumbnail_digest(path: &Path) -> Option<String> {
 }
 
 fn file_uri(canon: &Path) -> String {
-    // Local paths only; percent-encoding non-ascii is rare for our use.
-    format!("file://{}", canon.display())
+    // gio percent-encodes per spec so spaces / '#' / non-ASCII digest the same
+    // URI nautilus and other FreeDesktop caches use.
+    gio::File::for_path(canon).uri().into()
+}
+
+/// Source mtime as the spec's `Thumb::MTime` value (seconds since epoch).
+fn source_mtime_secs(path: &Path) -> Option<String> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs().to_string())
+}
+
+/// Read the `Thumb::MTime` tEXt chunk from a thumbnail PNG.
+///
+/// gdk-pixbuf exposes no chunk API on load, so scan raw chunks by hand:
+/// 8-byte signature, then length/type/body/CRC records.
+fn stored_mtime(thumb: &Path) -> Option<String> {
+    let data = fs::read(thumb).ok()?;
+    const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if data.get(..SIG.len()) != Some(&SIG[..]) {
+        return None;
+    }
+    let mut off = SIG.len();
+    while data.len() >= off + 8 {
+        let len = u32::from_be_bytes(data[off..off + 4].try_into().ok()?) as usize;
+        let kind = &data[off + 4..off + 8];
+        let body_end = (off + 8).checked_add(len)?;
+        let body = data.get(off + 8..body_end)?;
+        if kind == b"tEXt" {
+            let mut parts = body.splitn(2, |&b| b == 0);
+            if parts.next()? == b"Thumb::MTime" {
+                return String::from_utf8(parts.next()?.to_vec()).ok();
+            }
+        }
+        off = body_end.checked_add(4)?; // skip CRC
+    }
+    None
+}
+
+/// True when the thumbnail was taken from the current version of `source`.
+/// Missing or unreadable MTime counts as stale so we regenerate.
+fn thumb_is_current(thumb: &Path, source: &Path) -> bool {
+    match (stored_mtime(thumb), source_mtime_secs(source)) {
+        (Some(stored), Some(current)) => stored == current,
+        _ => false,
+    }
 }
 
 /// Write a FreeDesktop-style thumbnail for `source` from already-decoded pixels.
@@ -69,7 +119,8 @@ pub(crate) fn store_freedesktop_thumbnail(
         return false;
     }
     let dest = dir.join(format!("{digest}.png"));
-    if dest.is_file() {
+    // Keep a matching entry; overwrite one that is stale or missing MTime.
+    if dest.is_file() && thumb_is_current(&dest, &canon) {
         return true;
     }
 
@@ -99,12 +150,7 @@ pub(crate) fn store_freedesktop_thumbnail(
         }
     };
 
-    let mtime = fs::metadata(&canon)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|| "0".into());
+    let mtime = source_mtime_secs(&canon).unwrap_or_else(|| "0".into());
 
     // Atomic-ish write via temp then rename.
     let tmp = dir.join(format!(".{digest}.hark-tmp.png"));

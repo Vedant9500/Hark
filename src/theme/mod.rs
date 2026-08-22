@@ -55,7 +55,7 @@ impl Theme {
             scheme
                 .colours
                 .get(key)
-                .map(|v| normalize_hex(v))
+                .map(|v| sanitize_hex(v))
                 .unwrap_or_else(|| fallback.to_string())
         };
 
@@ -117,7 +117,7 @@ impl ThemeManager {
         self.provider.load_from_string(&theme.to_css(&ui));
         // Row highlight spans read the accent from a thread-local (rows have
         // no theme access at bind time) — keep it in lockstep with the scheme.
-        crate::ui::rows::set_highlight_accent(theme.primary.clone());
+        crate::ui::rows::set_highlight_accent(sanitize_hex(&theme.primary));
         *self.cached_theme.borrow_mut() = theme;
         self.apply_gen.set(self.apply_gen.get().wrapping_add(1));
     }
@@ -218,7 +218,40 @@ fn scheme_path() -> PathBuf {
         .join(".local/state/caelestia/scheme.json")
 }
 
-fn normalize_hex(v: &str) -> String {
-    let v = v.trim().trim_start_matches('#');
-    format!("#{v}")
+/// Validate a colour from external input (scheme.json, config). Accepts an
+/// optional leading `#` plus 3/4/6/8 ASCII hex digits and returns it with a
+/// leading `#`; anything else falls back to `#ffffff`. Non-ASCII or malformed
+/// values must not reach byte-slicing consumers (`css::rgba`,
+/// `css::is_light_theme`) or Pango markup (row highlight spans).
+fn sanitize_hex(v: &str) -> String {
+    let h = v.trim().trim_start_matches('#');
+    if matches!(h.len(), 3 | 4 | 6 | 8) && h.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("#{h}")
+    } else {
+        "#ffffff".to_string()
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_hex;
+
+    #[test]
+    fn valid_lengths_pass_through_with_hash() {
+        assert_eq!(sanitize_hex("24283b"), "#24283b");
+        assert_eq!(sanitize_hex("#7aa2f7"), "#7aa2f7");
+        assert_eq!(sanitize_hex("fff"), "#fff");
+        assert_eq!(sanitize_hex("#ffff"), "#ffff");
+        assert_eq!(sanitize_hex("#24283bff"), "#24283bff");
+    }
+
+    #[test]
+    fn malformed_or_non_ascii_falls_back() {
+        assert_eq!(sanitize_hex(""), "#ffffff");
+        assert_eq!(sanitize_hex("xyz123"), "#ffffff");
+        // 2-byte chars: byte length (4) passes a naive len check — must still
+        // fall back instead of panicking downstream byte slicing.
+        assert_eq!(sanitize_hex("éé"), "#ffffff");
+        assert_eq!(sanitize_hex("2428日本"), "#ffffff");
+    }
 }

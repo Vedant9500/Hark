@@ -86,11 +86,14 @@ pub fn show_open_with_picker(
     let apps_rc = Rc::new(std::cell::RefCell::new(Vec::<gio::AppInfo>::new()));
 
     let firing = Rc::new(Cell::new(false));
+    // Weak capture: activate_row is stored in per-row GestureClick handlers,
+    // so a strong popover here would cycle popover → row → handler → popover.
+    let popover_w = popover.downgrade();
     let activate_row = {
         let apps_rc = apps_rc.clone();
         let path = path.clone();
         let window = window.clone();
-        let popover_c = popover.clone();
+        let popover_c = popover_w.clone();
         let ignore = ignore_focus_loss.clone();
         let firing = firing.clone();
         Rc::new(move |row: &ListBoxRow| {
@@ -101,7 +104,9 @@ pub fn show_open_with_picker(
             let name = row.widget_name();
             if name.as_str() == "__system_default__" {
                 let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
-                popover_c.popdown();
+                if let Some(p) = popover_c.upgrade() {
+                    p.popdown();
+                }
                 ignore.set(false);
                 window.set_visible(false);
                 return;
@@ -113,7 +118,9 @@ pub fn show_open_with_picker(
                 let file = gio::File::for_path(&path);
                 match app.launch(&[file], None::<&gio::AppLaunchContext>) {
                     Ok(()) => {
-                        popover_c.popdown();
+                        if let Some(p) = popover_c.upgrade() {
+                            p.popdown();
+                        }
                         ignore.set(false);
                         window.set_visible(false);
                     }
@@ -279,11 +286,15 @@ pub fn show_open_with_picker(
 
     {
         let ignore = ignore_focus_loss.clone();
-        let popover_c = popover.clone();
+        // Weak self-capture: a strong one here is a reference cycle
+        // (popover owns the signal handler that would own the popover).
+        let popover_w = popover.downgrade();
         popover.connect_closed(move |_| {
             ignore.set(false);
             // Detach so the next Open With creates a clean popover.
-            popover_c.unparent();
+            if let Some(p) = popover_w.upgrade() {
+                p.unparent();
+            }
         });
     }
 

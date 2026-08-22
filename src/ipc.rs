@@ -39,19 +39,14 @@ pub fn request_toggle() -> bool {
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 }
-                // Optional ack from healthy daemons; older daemons may close without reply.
+                // Optional ack from healthy daemons; older daemons may close without
+                // reply. Everything past a successful write counts as delivered —
+                // the listener answers "ok\n" or nothing. An unexpected payload must
+                // NOT fall through to a rewrite: a second "toggle" would immediately
+                // undo the first.
                 let mut buf = [0u8; 8];
-                match stream.read(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
-                        if msg.starts_with("ok") || msg.is_empty() {
-                            return true;
-                        }
-                    }
-                    // EOF / timeout after successful write — still treat as delivered
-                    // (listener processed toggle without writing ack).
-                    Ok(_) | Err(_) => return true,
-                }
+                let _ = stream.read(&mut buf);
+                return true;
             }
             Err(_) => {
                 thread::sleep(Duration::from_millis(20));
@@ -61,8 +56,11 @@ pub fn request_toggle() -> bool {
     false
 }
 
-/// Listen for toggle requests; `on_toggle` runs on the listener thread
-/// (caller should bounce work onto the GTK main loop via a channel).
+/// Listen for toggle requests; `on_toggle` runs INLINE on the listener thread,
+/// so handlers must stay trivial — bounce real work onto the GTK main loop via
+/// a channel (see main.rs). Per-connection reads time out after 2s and ack
+/// writes after 1s, so a silent client cannot park the listener and wedge
+/// later toggles.
 pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
     let path = socket_path();
 
@@ -96,6 +94,11 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
     thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
+            // A client that connects and writes nothing must not park the
+            // listener thread forever (later toggles queue behind it): time out
+            // the read and skip the connection. The timeout error surfaces as
+            // `Err`, which `unwrap_or(0)` maps to n == 0 below.
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let mut buf = [0u8; 64];
             let n = stream.read(&mut buf).unwrap_or(0);
             if n == 0 {
@@ -104,6 +107,7 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
             let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
             if msg == "toggle" {
                 on_toggle();
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
                 let _ = stream.write_all(b"ok\n");
             }
         }
