@@ -537,23 +537,15 @@ fn spawn_detached_argv(argv: &[String]) -> Result<(), String> {
 
     // Prefer `setsid -f program args...` so the child survives hark exit without a shell.
     let mut cmd = Command::new("setsid");
-    cmd.arg("-f")
-        .args(argv)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if cmd.spawn().is_ok() {
+    cmd.arg("-f").args(argv);
+    if crate::providers::files::spawn_and_reap(cmd).is_ok() {
         return Ok(());
     }
 
     // Fallback: direct spawn (may die with the parent session on some setups).
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.spawn()
-        .map(|_| ())
+    cmd.args(&argv[1..]);
+    crate::providers::files::spawn_and_reap(cmd)
         .map_err(|err| format!("could not launch {}: {err}", argv[0]))
 }
 

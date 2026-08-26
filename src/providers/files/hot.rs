@@ -23,10 +23,11 @@ pub struct HotSet {
     indices: Vec<usize>,
 }
 
-/// Thread-safe hot set + dirty flag (rebuild after opens / reindex).
+/// #24: shared immutable hot indices — `Arc<[usize]>` clones are refcount
+/// bumps, not Vec copies under the read lock nested inside the index lock.
 pub struct HotPaths {
     usage: Arc<UsageStore>,
-    set: RwLock<HotSet>,
+    set: RwLock<Arc<[usize]>>,
     dirty: AtomicBool,
 }
 
@@ -34,7 +35,7 @@ impl HotPaths {
     pub fn new(usage: Arc<UsageStore>) -> Self {
         Self {
             usage,
-            set: RwLock::new(HotSet::default()),
+            set: RwLock::new(Arc::from(Vec::new())),
             dirty: AtomicBool::new(true),
         }
     }
@@ -58,25 +59,18 @@ impl HotPaths {
             .usage
             .top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
         let set = build_hot_set(index, &wanted, HOT_CAP);
-        *self.set.write().unwrap_or_else(|p| p.into_inner()) = set;
+        *self.set.write().unwrap_or_else(|p| p.into_inner()) = Arc::from(set.indices);
         self.dirty.store(false, Ordering::Relaxed);
     }
 
-    pub fn snapshot_indices(&self) -> Vec<usize> {
-        self.set
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .indices
-            .clone()
+    /// #24: cheap refcount clone — no Vec copy under nested locks.
+    pub fn snapshot_indices(&self) -> Arc<[usize]> {
+        self.set.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.set
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .indices
-            .len()
+        self.set.read().unwrap_or_else(|p| p.into_inner()).len()
     }
 }
 

@@ -82,6 +82,8 @@ pub struct ThemeManager {
     cached_theme: RefCell<Theme>,
     /// Pending debounced UI CSS inject (Settings steppers).
     reload_debounce: RefCell<Option<glib::SourceId>>,
+    /// #29: single pending scheme-change debounce (monitor events coalesce).
+    scheme_debounce: RefCell<Option<glib::SourceId>>,
     /// Bumps when a full scheme re-apply runs so stale debounce callbacks no-op.
     apply_gen: Cell<u64>,
     _monitor: RefCell<Option<gio::FileMonitor>>,
@@ -101,6 +103,7 @@ impl ThemeManager {
             config,
             cached_theme: RefCell::new(Theme::fallback()),
             reload_debounce: RefCell::new(None),
+            scheme_debounce: RefCell::new(None),
             apply_gen: Cell::new(0),
             _monitor: RefCell::new(None),
         });
@@ -195,11 +198,17 @@ impl ThemeManager {
                             }
                         }
                     }
-                    let this = this.clone();
-                    // Debounce: caelestia may write multiple times
-                    glib::timeout_add_local_once(Duration::from_millis(80), move || {
-                        this.apply();
+                    // Debounce: caelestia may write multiple times — #29 keep
+                    // ONE pending timer instead of stacking one per event.
+                    if let Some(id) = this.scheme_debounce.borrow_mut().take() {
+                        id.remove();
+                    }
+                    let this2 = this.clone();
+                    let id = glib::timeout_add_local_once(Duration::from_millis(80), move || {
+                        *this2.scheme_debounce.borrow_mut() = None;
+                        this2.apply();
                     });
+                    *this.scheme_debounce.borrow_mut() = Some(id);
                 }
                 _ => {}
             }

@@ -31,12 +31,16 @@ pub fn show_open_with_picker(
         return;
     }
 
-    // One content-type probe shared by the subtitle and app enumeration.
-    let content_type = content_type_for_path(&path);
-    let apps = apps_for_content_type(&content_type);
-    let type_label = gio::content_type_get_description(&content_type);
-
     ignore_focus_loss.set(true);
+
+    // ow-sync: the content-type probe (sync query_info) and app enumeration
+    // (cold app-DB scan) jank the popover open — run both off-thread, open
+    // the popover immediately with a loading row, and fill when ready.
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string();
 
     let popover = Popover::new();
     popover.set_parent(anchor);
@@ -58,11 +62,7 @@ pub fn show_open_with_picker(
     header.set_halign(Align::Start);
     header.set_margin_start(6);
 
-    let sub = Label::new(Some(&format!(
-        "{} · {}",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
-        type_label
-    )));
+    let sub = Label::new(Some(&file_name));
     sub.add_css_class("hark-action-panel-shortcut");
     sub.set_halign(Align::Start);
     sub.set_margin_start(6);
@@ -103,7 +103,9 @@ pub fn show_open_with_picker(
             firing.set(true);
             let name = row.widget_name();
             if name.as_str() == "__system_default__" {
-                match std::process::Command::new("xdg-open").arg(&path).spawn() {
+                let mut xdg = std::process::Command::new("xdg-open");
+                xdg.arg(&path);
+                match crate::providers::files::spawn_and_reap(xdg) {
                     Ok(_child) => {
                         if let Some(p) = popover_c.upgrade() {
                             p.popdown();
@@ -147,93 +149,24 @@ pub fn show_open_with_picker(
         })
     };
 
-    if apps.is_empty() {
+    // Loading placeholder row — replaced when the async enumeration lands.
+    {
         let row = ListBoxRow::new();
         row.add_css_class("hark-action-panel-row");
         row.set_sensitive(false);
+        row.set_widget_name("__loading__");
         let line = GtkBox::new(Orientation::Horizontal, 10);
         line.set_margin_top(8);
         line.set_margin_bottom(8);
         line.set_margin_start(8);
         line.set_margin_end(8);
         line.set_can_target(false);
-        let label = Label::new(Some("No compatible apps found"));
+        let label = Label::new(Some("Finding apps…"));
         label.add_css_class("hark-action-panel-label");
         label.set_can_target(false);
         line.append(&label);
         row.set_child(Some(&line));
         list.append(&row);
-    } else {
-        for app in &apps {
-            let row = ListBoxRow::new();
-            row.add_css_class("hark-action-panel-row");
-            row.set_activatable(true);
-
-            let line = GtkBox::new(Orientation::Horizontal, 10);
-            line.set_margin_top(6);
-            line.set_margin_bottom(6);
-            line.set_margin_start(8);
-            line.set_margin_end(8);
-            line.set_can_target(false);
-
-            let icon = if let Some(gicon) = app.icon() {
-                Image::from_gicon(&gicon)
-            } else {
-                Image::from_icon_name("application-x-executable")
-            };
-            icon.set_pixel_size(22);
-            icon.set_can_target(false);
-            line.append(&icon);
-
-            let texts = GtkBox::new(Orientation::Vertical, 0);
-            texts.set_hexpand(true);
-            texts.set_halign(Align::Start);
-            texts.set_can_target(false);
-
-            let name = Label::new(Some(&app.name()));
-            name.add_css_class("hark-action-panel-label");
-            name.set_halign(Align::Start);
-            name.set_xalign(0.0);
-            name.set_can_target(false);
-            texts.append(&name);
-
-            if let Some(id) = app.id() {
-                let id_l = Label::new(Some(id.as_str()));
-                id_l.add_css_class("hark-action-panel-shortcut");
-                id_l.set_halign(Align::Start);
-                id_l.set_xalign(0.0);
-                id_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                id_l.set_max_width_chars(32);
-                id_l.set_can_target(false);
-                texts.append(&id_l);
-            }
-
-            line.append(&texts);
-            row.set_child(Some(&line));
-
-            {
-                let activate_row = activate_row.clone();
-                let click = GestureClick::new();
-                click.set_button(1);
-                click.connect_released(move |gesture, n_press, _x, _y| {
-                    if n_press != 1 || gesture.current_button() != 1 {
-                        return;
-                    }
-                    if let Some(widget) = gesture.widget() {
-                        if let Ok(r) = widget.downcast::<ListBoxRow>() {
-                            activate_row(&r);
-                        }
-                    }
-                });
-                row.add_controller(click);
-            }
-
-            list.append(&row);
-        }
-        *apps_rc.borrow_mut() = apps;
-        if let Some(row) = list.row_at_index(0) {
-            list.select_row(Some(&row));
-        }
     }
 
     // Always offer xdg-open / system default as last resort.
@@ -312,6 +245,162 @@ pub fn show_open_with_picker(
 
     popover.popup();
     list.grab_focus();
+
+    // ow-sync: enumerate off-thread, then fill the list on the main loop.
+    {
+        let probe_path = path.clone();
+        let (tx, rx) = async_channel::bounded::<(String, Vec<(Option<String>, String)>)>(1);
+        std::thread::spawn(move || {
+            let content_type = content_type_for_path(&probe_path);
+            let type_label = gio::content_type_get_description(&content_type).to_string();
+            // gio::AppInfo is !Send — transfer (id, name) pairs and re-resolve
+            // to DesktopAppInfo objects on the main thread.
+            let apps: Vec<(Option<String>, String)> = apps_for_content_type(&content_type)
+                .into_iter()
+                .map(|app| (app.id().map(|s| s.to_string()), app.name().to_string()))
+                .collect();
+            let _ = tx.send_blocking((type_label, apps));
+        });
+        let list = list.clone();
+        let apps_rc = apps_rc.clone();
+        let sub = sub.clone();
+        let activate_row = activate_row.clone();
+        let popover_w = popover_w.clone();
+        let file_name2 = file_name.clone();
+        glib::spawn_future_local(async move {
+            let Ok((type_label, apps)) = rx.recv().await else {
+                return;
+            };
+            // Popover closed before results arrived — nothing to fill.
+            let Some(popover) = popover_w.upgrade() else {
+                return;
+            };
+            if !popover.is_visible() {
+                return;
+            }
+            sub.set_text(&format!("{file_name2} · {type_label}"));
+            // Drop the loading row.
+            if let Some(row) = list
+                .first_child()
+                .and_then(|c| c.downcast::<ListBoxRow>().ok())
+            {
+                if row.widget_name().as_str() == "__loading__" {
+                    list.remove(&row);
+                }
+            }
+            if apps.is_empty() {
+                let row = ListBoxRow::new();
+                row.add_css_class("hark-action-panel-row");
+                row.set_sensitive(false);
+                let line = GtkBox::new(Orientation::Horizontal, 10);
+                line.set_margin_top(8);
+                line.set_margin_bottom(8);
+                line.set_margin_start(8);
+                line.set_margin_end(8);
+                line.set_can_target(false);
+                let label = Label::new(Some("No compatible apps found"));
+                label.add_css_class("hark-action-panel-label");
+                label.set_can_target(false);
+                line.append(&label);
+                row.set_child(Some(&line));
+                list.prepend(&row);
+                return;
+            }
+            let mut resolved: Vec<gio::AppInfo> = Vec::with_capacity(apps.len());
+            for (id, name) in &apps {
+                let app = match id.as_deref().and_then(gio::DesktopAppInfo::new) {
+                    Some(d) => d.upcast::<gio::AppInfo>(),
+                    None => {
+                        // No desktop id — fall back to a commandline AppInfo.
+                        match gio::AppInfo::create_from_commandline(
+                            name,
+                            Some(name.as_str()),
+                            gio::AppInfoCreateFlags::NONE,
+                        ) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                eprintln!(
+                                    "hark: open with: cannot resolve {name}: {}",
+                                    e.message()
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                };
+                resolved.push(app);
+
+                let row = ListBoxRow::new();
+                row.add_css_class("hark-action-panel-row");
+                row.set_activatable(true);
+
+                let line = GtkBox::new(Orientation::Horizontal, 10);
+                line.set_margin_top(6);
+                line.set_margin_bottom(6);
+                line.set_margin_start(8);
+                line.set_margin_end(8);
+                line.set_can_target(false);
+
+                let icon = if let Some(gicon) = resolved.last().and_then(|a| a.icon()) {
+                    Image::from_gicon(&gicon)
+                } else {
+                    Image::from_icon_name("application-x-executable")
+                };
+                icon.set_pixel_size(22);
+                icon.set_can_target(false);
+                line.append(&icon);
+
+                let texts = GtkBox::new(Orientation::Vertical, 0);
+                texts.set_hexpand(true);
+                texts.set_halign(Align::Start);
+                texts.set_can_target(false);
+
+                let name_l = Label::new(Some(name));
+                name_l.add_css_class("hark-action-panel-label");
+                name_l.set_halign(Align::Start);
+                name_l.set_xalign(0.0);
+                name_l.set_can_target(false);
+                texts.append(&name_l);
+
+                if let Some(id) = id.as_deref() {
+                    let id_l = Label::new(Some(id));
+                    id_l.add_css_class("hark-action-panel-shortcut");
+                    id_l.set_halign(Align::Start);
+                    id_l.set_xalign(0.0);
+                    id_l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    id_l.set_max_width_chars(32);
+                    id_l.set_can_target(false);
+                    texts.append(&id_l);
+                }
+
+                line.append(&texts);
+                row.set_child(Some(&line));
+
+                {
+                    let activate_row = activate_row.clone();
+                    let click = GestureClick::new();
+                    click.set_button(1);
+                    click.connect_released(move |gesture, n_press, _x, _y| {
+                        if n_press != 1 || gesture.current_button() != 1 {
+                            return;
+                        }
+                        if let Some(widget) = gesture.widget() {
+                            if let Ok(r) = widget.downcast::<ListBoxRow>() {
+                                activate_row(&r);
+                            }
+                        }
+                    });
+                    row.add_controller(click);
+                }
+
+                list.insert(&row, -1);
+            }
+            *apps_rc.borrow_mut() = resolved;
+            if let Some(row) = list.row_at_index(0) {
+                list.select_row(Some(&row));
+            }
+        });
+    }
 }
 
 fn content_type_for_path(path: &Path) -> String {

@@ -204,6 +204,9 @@ impl TypoStore {
 
     /// Compact JSON + atomic replace (parity with [`crate::usage::UsageStore`]).
     fn save(&self) {
+        // usage-race parity: claim the flag before snapshotting; records
+        // landing mid-write re-set it so the next flush retries.
+        self.dirty.store(false, Ordering::Release);
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -214,10 +217,18 @@ impl TypoStore {
                 Err(_) => return,
             }
         };
-        let tmp = self.path.with_extension("json.tmp");
+        // Unique temp name — a fixed sibling lets two concurrent savers
+        // truncate each other's tmp and rename a torn JSON into place.
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = self.path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
-            self.dirty.store(false, Ordering::Relaxed);
             *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
+        } else {
+            self.dirty.store(true, Ordering::Release);
         }
     }
 

@@ -1654,6 +1654,10 @@ fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
     });
 }
 
+// N14 guard: set while preset buttons programmatically update the accent
+// entry, so its changed handler doesn't double-apply.
+type AccentProgrammatic = std::rc::Rc<std::cell::Cell<bool>>;
+
 fn build_appearance_page(
     engine: &Arc<Engine>,
     theme: &Rc<ThemeManager>,
@@ -1842,10 +1846,15 @@ fn build_appearance_page(
     accent_row.append(&accent_entry);
     colour_card.append(&accent_row);
 
+    let accent_programmatic: AccentProgrammatic = Default::default();
     {
         let engine = engine.clone();
         let theme = theme.clone();
+        let guard = accent_programmatic.clone();
         accent_entry.connect_changed(move |entry| {
+            if guard.get() {
+                return;
+            }
             let text = entry.text().to_string();
             engine.config().update(|c| {
                 let t = text.trim();
@@ -1884,8 +1893,12 @@ fn build_appearance_page(
         let engine = engine.clone();
         let theme = theme.clone();
         let accent_entry = accent_entry.clone();
+        let guard = accent_programmatic.clone();
         let hex = hex.to_string();
         btn.connect_clicked(move |_| {
+            // N14: set_text would re-fire the entry's changed handler
+            // (double config write + double CSS inject) — suppress it.
+            guard.set(true);
             if hex.is_empty() {
                 accent_entry.set_text("");
                 engine.config().update(|c| c.ui.accent = None);
@@ -1893,6 +1906,7 @@ fn build_appearance_page(
                 accent_entry.set_text(&hex);
                 engine.config().update(|c| c.ui.accent = Some(hex.clone()));
             }
+            guard.set(false);
             theme.reload();
         });
         presets.append(&btn);

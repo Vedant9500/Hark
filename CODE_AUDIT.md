@@ -273,17 +273,17 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 | N8 | P1 | `ipc.rs:96-110` | Inline handler wedges listener thread (pairs with #28) | fixed |
 | #28 | P1 | `ipc.rs:100` | No read timeout on accepted stream — silent client parks listener forever | fixed |
 | N13 | P2 | `ui/dnd.rs:335` | Drag icon loads freedesktop thumb without mtime check (same root as #17) | fixed |
-| #23 | P2 | `ui/settings.rs:1826,2141` | Config written per keystroke on main thread (+ theme reload) | open |
-| N14 | P2 | `ui/settings.rs:1866-1875` | Preset click double-writes config + double CSS inject (set_text cascade) | open |
-| #24 | P2 | `files/hot.rs:65` | Vec cloned under read lock nested inside index lock every keystroke | open |
-| #25 | P2 | `ui/preview.rs:427` | Sync fs::metadata on main thread stalls UI on NFS/FUSE | open |
-| #26 | P2 | `ui/preview.rs:1187` | Album art stretched square via scale_simple | open |
-| #29 | P2 | `theme/mod.rs:184-206` | Debounce timer spawned per event, no coalescing | open |
+| #23 | P2 | `ui/settings.rs:1826,2141` | Config written per keystroke on main thread (+ theme reload) | fixed |
+| N14 | P2 | `ui/settings.rs:1866-1875` | Preset click double-writes config + double CSS inject (set_text cascade) | fixed |
+| #24 | P2 | `files/hot.rs:65` | Vec cloned under read lock nested inside index lock every keystroke | fixed |
+| #25 | P2 | `ui/preview.rs:427` | Sync fs::metadata on main thread stalls UI on NFS/FUSE | fixed |
+| #26 | P2 | `ui/preview.rs:1187` | Album art stretched square via scale_simple | fixed |
+| #29 | P2 | `theme/mod.rs:184-206` | Debounce timer spawned per event, no coalescing | fixed |
 | #27 | P3 | `ui/settings.rs:844` | Duplicate extra-folder rows in config (index dedup prevents double work) | fixed |
-| N9 | P2 | `files/mod.rs:435,634,716,725` | Unwaited spawns → zombies (same class as apps.rs:481) | open |
+| N9 | P2 | `files/mod.rs:435,634,716,725` | Unwaited spawns → zombies (same class as apps.rs:481) | fixed |
 | N10 | P3 | `providers/apps.rs:438,507` | Field-code filter drops any `%token`; `%%` literal mishandled | fixed |
 | N11 | P3 | `providers/apps.rs:402-432` | Unterminated quote merges command tail silently | fixed |
-| apps-z | P3 | `providers/apps.rs:481` | Spawned children never waited → zombies | open |
+| apps-z | P3 | `providers/apps.rs:481` | Spawned children never waited → zombies | fixed |
 | apps-bs | P3 | `providers/apps.rs:426` | Unquoted `\` not escaped per Desktop Entry spec | fixed |
 | N15 | P3 | `theme/mod.rs:120` | Raw scheme colour into Pango markup — route through shared sanitizer w/ #12 | fixed |
 | N16 | P3 | `thumbnails.rs:110`, `usage.rs:176` | Fixed temp filenames race → torn file renamed into place | fixed |
@@ -302,7 +302,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 | q-hexa | P4 | `calc/quick.rs:20,51` | `hexa` arm unreachable via regexes | fixed |
 | m-u64 | P4 | `calc/math.rs:127`, `quick.rs:45` | >u64 hex/binary silently yields nothing | fixed |
 | cfg-hash | P4 | `config.rs:1210` | ExcludeSet::matches double hash lookup | fixed |
-| usage-race | P4 | `usage.rs:169-178`, `typos.rs:206-220` | Dirty-flag race record↔save (one delayed write worst case) | open |
+| usage-race | P4 | `usage.rs:169-178`, `typos.rs:206-220` | Dirty-flag race record↔save (one delayed write worst case) | fixed |
 
 ### Latent hazards (fix opportunistically, no current trigger)
 
@@ -311,7 +311,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 | pv-refcell | `ui/preview.rs:370` | Borrow held across visibility callback — panics if callback gains a body touching same RefCell | fixed | — fixed
 | th-bytes | `ui/thumbnails.rs:77` | Pixbuf::from_bytes over-reads if caller-supplied rowstride/pixels ever inconsistent | fixed | — fixed
 | th-canon | `ui/thumbnails.rs:26` | canonicalize before hashing diverges symlinked cache keys from other apps | fixed | — fixed
-| ow-sync | `ui/open_with.rs:36` | Sync app enumeration janks popover open on cold app DB | open |
+| ow-sync | `ui/open_with.rs:36` | Sync app enumeration janks popover open on cold app DB | fixed | — fixed
 | rng-reseed | `calc/quick.rs:635-646` | Same-millisecond thread starts get correlated xorshift streams (micro) | fixed |
 
 **Counts:** P0 ×4 · P1 ×25 · P2 ×10 · P3 ×7 · P4 ×16 · latent ×5 = **67 items**. Fixed so far: 34 items (4×P0 · 18×P1 + 5 bonus · empty-state layout) + install speedup.
@@ -2099,16 +2099,16 @@ The table above covers only Passes 13–21. Below are the 67 tracker items from 
 |---|---|---|---|---|
 | P1 | #17+N13 | Stale thumbs never invalidated; drag icon same root | `thumbnails.rs:12`, `dnd.rs:335` | fixed |
 | P1 | #20 | No timeout on ffmpeg/pdftoppm — one hang kills all previews | `preview.rs:1319` | fixed |
-| P2 | #23 | Config written per keystroke on main thread | `settings.rs:1826,2141` | open (re-verified Pass 14) |
-| P2 | N14 | Preset click double-writes config + double CSS inject | `settings.rs:1866-1875` | open |
-| P2 | #24 | Hot Vec cloned under nested locks every keystroke | `hot.rs:65` | open |
-| P2 | #25 | Sync fs::metadata on main thread stalls UI on NFS/FUSE | `preview.rs:427` | open (re-verified Pass 12) |
-| P2 | #26 | Album art stretched square via scale_simple | `preview.rs:1187` | open |
-| P2 | #29 | Theme debounce timer per event, no coalescing | `theme/mod.rs:184-206` | open (re-verified Pass 15) |
-| P2 | N9+apps-z | Unwaited spawns → zombies (files + apps) | `files/mod.rs`, `apps.rs:481` | open |
+| P2 | #23 | Config written per keystroke on main thread | `settings.rs:1826,2141` | fixed |
+| P2 | N14 | Preset click double-writes config + double CSS inject | `settings.rs:1866-1875` | fixed |
+| P2 | #24 | Hot Vec cloned under nested locks every keystroke | `hot.rs:65` | fixed |
+| P2 | #25 | Sync fs::metadata on main thread stalls UI on NFS/FUSE | `preview.rs:427` | fixed |
+| P2 | #26 | Album art stretched square via scale_simple | `preview.rs:1187` | fixed |
+| P2 | #29 | Theme debounce timer per event, no coalescing | `theme/mod.rs:184-206` | fixed |
+| P2 | N9+apps-z | Unwaited spawns → zombies (files + apps) | `files/mod.rs`, `apps.rs:481` | fixed |
 | P3 | th-order | Thumbnail probe order makes x-large unreachable | `thumbnails.rs:15` | fixed |
-| P3 | ow-sync | Sync app enumeration janks popover on cold DB | `open_with.rs:36` | open (latent) |
-| P4 | usage-race | Dirty-flag race record↔save (one delayed write) | `usage.rs`, `typos.rs` | open |
+| P3 | ow-sync | Sync app enumeration janks popover on cold DB | `open_with.rs:36` | fixed |
+| P4 | usage-race | Dirty-flag race record↔save (one delayed write) | `usage.rs`, `typos.rs` | fixed |
 
 ### 🖼 UI/UX (original)
 
@@ -2134,7 +2134,7 @@ The table above covers only Passes 13–21. Below are the 67 tracker items from 
 | pv-refcell | Borrow held across visibility callback — panics if callback gains a body | `preview.rs:370` | — fixed
 | th-bytes | Pixbuf::from_bytes over-reads on inconsistent rowstride/pixels | `thumbnails.rs:77` | — fixed
 | th-canon | canonicalize before hashing diverges symlinked cache keys | `thumbnails.rs:26` | — fixed
-| ow-sync | (also listed under Performance) | `open_with.rs:36` |
+| ow-sync | (also listed under Performance) | `open_with.rs:36` | — fixed
 | rng-reseed | Same-millisecond correlated xorshift streams | `quick.rs:635-646` — fixed |
 
 **Pre-existing totals:** 67 items — 4 P0 · 25 P1 · 10 P2 · 7 P3 · 16 P4 · 5 latent. 34 fixed (re-confirmed live by the Pass 17 fixed-status sweep), 33 open (the still-relevant open ones are cross-referenced above where Passes 12–15 re-verified them). Combined with Passes 13–21, the full audit catalog stands at **~205 distinct findings**.

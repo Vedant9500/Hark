@@ -163,6 +163,10 @@ impl UsageStore {
     }
 
     fn save(&self) {
+        // usage-race: claim the flag BEFORE snapshotting. A record landing
+        // mid-write re-sets it, so the next flush retries — clearing after the
+        // rename could erase a concurrent record's dirty flag (lost write).
+        self.dirty.store(false, Ordering::Release);
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -182,8 +186,10 @@ impl UsageStore {
             TMP_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
-            self.dirty.store(false, Ordering::Relaxed);
             *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
+        } else {
+            // Write failed — stay dirty so the next flush retries.
+            self.dirty.store(true, Ordering::Release);
         }
     }
 }

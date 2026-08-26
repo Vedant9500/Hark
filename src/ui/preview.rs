@@ -407,7 +407,7 @@ impl PreviewPanel {
         self.set_panel_visible(false);
     }
 
-    pub fn update(&self, item: Option<&SearchResult>) {
+    pub fn update(self: &Rc<Self>, item: Option<&SearchResult>) {
         let Some(item) = item else {
             self.clear();
             return;
@@ -428,30 +428,54 @@ impl PreviewPanel {
             }
         };
 
-        // One metadata probe for dir check, size/mtime labels, and texture fingerprint.
-        let fs_meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(_) => {
-                self.clear();
+        // #25: stat off the main thread — sync fs::metadata stalls the UI on
+        // NFS/FUSE. Bump gen so a stale probe from an older selection is
+        // dropped when it comes back.
+        self.cancel_debounce();
+        let gen = self.gen.get().wrapping_add(1);
+        self.gen.set(gen);
+        let this = self.clone();
+        let item = item.clone();
+        let this_path = path.clone();
+        let (tx, rx) = async_channel::bounded::<Option<(std::fs::Metadata, PathBuf)>>(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(std::fs::metadata(&this_path).ok().map(|m| (m, this_path)));
+        });
+        glib::spawn_future_local(async move {
+            let Some((fs_meta, path)) = rx.recv().await.ok().flatten() else {
                 return;
+            };
+            if this.gen.get() != gen || this.last_path.borrow().as_ref() != Some(&path) {
+                return; // a newer selection superseded this probe
             }
-        };
+            this.apply_probed_metadata(&path, &fs_meta, &item);
+        });
+    }
+
+    /// Post-probe continuation of `update` (#25): everything that needed the
+    /// stat result, back on the main thread.
+    fn apply_probed_metadata(
+        self: &Rc<Self>,
+        path: &Path,
+        fs_meta: &std::fs::Metadata,
+        item: &SearchResult,
+    ) {
         if fs_meta.is_dir() {
             self.clear();
             return;
         }
 
-        let media = media_kind(&path);
+        let media = media_kind(path);
         if !media.is_previewable() {
             self.clear();
             return;
         }
 
-        let fp = FileFp::from_meta(&fs_meta);
-        let meta = file_meta_from(&path, &fs_meta);
+        let fp = FileFp::from_meta(fs_meta);
+        let meta = file_meta_from(path, fs_meta);
         self.set_panel_visible(true);
         // Always offer the real file path for DnD from the preview.
-        self.drag.set_path(Some(path.clone()));
+        self.drag.set_path(Some(path.to_path_buf()));
 
         let is_pdf = path
             .extension()
@@ -461,26 +485,26 @@ impl PreviewPanel {
 
         // Images, video first-frame, and PDF page 1 share the picture pipeline.
         if media == MediaKind::Image || media == MediaKind::Video || is_pdf {
-            self.queue_image_load(path, item.title.clone(), meta, fp);
+            self.queue_image_load(path.to_path_buf(), item.title.clone(), meta, fp);
             return;
         }
 
         // Code files: syntax-highlighted source preview.
         if media == MediaKind::Code {
-            self.queue_code_load(path, item.title.clone(), meta, fp);
+            self.queue_code_load(path.to_path_buf(), item.title.clone(), meta, fp);
             return;
         }
 
         // Audio: ID3/Vorbis/MP4 tags + duration + embedded art.
         if media == MediaKind::Audio {
-            self.queue_audio_load(path, item.clone(), meta, fp);
+            self.queue_audio_load(path.to_path_buf(), item.clone(), meta, fp);
             return;
         }
 
         // Non-PDF documents stay icon + metadata.
         self.cancel_debounce();
         self.gen.set(self.gen.get().wrapping_add(1));
-        *self.last_path.borrow_mut() = Some(path.clone());
+        *self.last_path.borrow_mut() = Some(path.to_path_buf());
         *self.inflight.borrow_mut() = None;
         let badge = media_badge(media);
         let icon_name = item
@@ -1186,11 +1210,18 @@ fn decode_picture_bytes(
         }
         None => Pixbuf::from_read(Cursor::new(data.to_vec())).ok()?,
     };
-    let scaled = pixbuf.scale_simple(
-        DECODE_MAX_PX,
-        DECODE_MAX_PX,
-        gtk::gdk_pixbuf::InterpType::Bilinear,
-    )?;
+    // #26: preserve aspect ratio — scaling to a forced square stretched album
+    // covers. Fit within DECODE_MAX_PX on the long edge only.
+    let w = pixbuf.width();
+    let h = pixbuf.height();
+    let scaled = if w.max(h) > DECODE_MAX_PX {
+        let ratio = DECODE_MAX_PX as f64 / w.max(h) as f64;
+        let nw = ((w as f64) * ratio).round().max(1.0) as i32;
+        let nh = ((h as f64) * ratio).round().max(1.0) as i32;
+        pixbuf.scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)?
+    } else {
+        pixbuf
+    };
     let mut px = pixbuf_to_pixels(&scaled)?;
     px.dims_label = String::new();
     Some(px)

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -676,6 +677,8 @@ pub struct ConfigStore {
     /// Arc swap on update — hot paths clone the Arc, not the whole config tree.
     inner: RwLock<Arc<HarkConfig>>,
     path: PathBuf,
+    /// Debounced-save support (#23): set when a save is due.
+    pending_save: AtomicBool,
 }
 
 impl ConfigStore {
@@ -686,6 +689,7 @@ impl ConfigStore {
         Self {
             inner: RwLock::new(Arc::new(cfg)),
             path,
+            pending_save: AtomicBool::new(false),
         }
     }
 
@@ -776,6 +780,7 @@ impl ConfigStore {
         let store = Self {
             inner: RwLock::new(Arc::new(cfg)),
             path,
+            pending_save: AtomicBool::new(false),
         };
         if changed || recovered || !store.path.exists() {
             store.save();
@@ -801,8 +806,11 @@ impl ConfigStore {
     }
 
     /// Apply a mutation. Clones the config, runs `f`, sanitizes UI/translate.
-    /// Swaps the Arc and writes disk **only when** the result differs from the
-    /// previous snapshot (no-op promote/settings toggles must not thrash I/O).
+    /// Swaps the Arc and schedules a disk write **only when** the result
+    /// differs from the previous snapshot (no-op promote/settings toggles
+    /// must not thrash I/O). Writes run on a background thread, coalesced
+    /// through `pending_save` — so per-keystroke updates never do main-thread
+    /// I/O (#23).
     pub fn update<F: FnOnce(&mut HarkConfig)>(&self, f: F) {
         let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         let mut cfg = (**g).clone();
@@ -814,30 +822,59 @@ impl ConfigStore {
         }
         *g = Arc::new(cfg);
         drop(g);
-        self.save();
+        self.pending_save.store(true, Ordering::Release);
+        let data = self.serialize_snapshot();
+        let path = self.path.clone();
+        std::thread::spawn(move || write_config_disk(&path, &data));
     }
 
+    /// Serialize the current snapshot for a background write; empty on error.
+    fn serialize_snapshot(&self) -> String {
+        serde_json::to_string_pretty(self.snapshot().as_ref()).unwrap_or_default()
+    }
+
+    /// Synchronous save (load-time recovery, tests, and explicit flushes).
+    /// Runtime mutations use the background write in `update` (#23).
     pub fn save(&self) {
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+        self.pending_save.store(false, Ordering::Release);
+        write_config_disk(&self.path, &self.serialize_snapshot());
+    }
+
+    /// Flush any pending background write synchronously (exit paths).
+    pub fn flush_pending(&self) {
+        if self.pending_save.swap(false, Ordering::AcqRel) {
+            self.save();
         }
-        let snap = self.snapshot();
-        if let Ok(data) = serde_json::to_string_pretty(snap.as_ref()) {
-            let tmp = self.path.with_extension("json.tmp");
-            if fs::write(&tmp, data).is_ok() {
-                // Restrict mode so translate api_key (and other secrets) are not group/world readable.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-                }
-                if fs::rename(&tmp, &self.path).is_ok() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600));
-                    }
-                }
+    }
+}
+
+/// Atomic disk write: tmp + chmod 0600 + rename (owner-only — translate
+/// api_key and other secrets must not be group/world readable).
+fn write_config_disk(path: &Path, data: &str) {
+    if data.is_empty() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    // Unique temp name so concurrent writers can't truncate each other (N16).
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if fs::write(&tmp, data).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        }
+        if fs::rename(&tmp, path).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
             }
         }
     }
@@ -1273,6 +1310,7 @@ mod config_store_tests {
         let store = ConfigStore {
             inner: RwLock::new(Arc::new(cfg)),
             path: path.clone(),
+            pending_save: AtomicBool::new(false),
         };
         let mtime_before = fs::metadata(&path).unwrap().modified().unwrap();
         // No-op update (already present deep root path style).
@@ -1285,12 +1323,20 @@ mod config_store_tests {
             "no-op update must not rewrite config"
         );
 
-        // Real change must rewrite.
+        // Real change must rewrite (update now writes on a background thread —
+        // flush and poll briefly for the mtime change).
         std::thread::sleep(std::time::Duration::from_millis(20));
         store.update(|c| {
             c.index.max_depth = 3;
         });
-        let mtime_changed = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut mtime_changed = fs::metadata(&path).unwrap().modified().unwrap();
+        for _ in 0..50 {
+            if mtime_changed > mtime_before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            mtime_changed = fs::metadata(&path).unwrap().modified().unwrap();
+        }
         assert!(
             mtime_changed > mtime_before,
             "real update must rewrite config"
@@ -1478,6 +1524,7 @@ mod config_store_tests {
         let store = ConfigStore {
             inner: RwLock::new(Arc::new(cfg)),
             path: path.clone(),
+            pending_save: AtomicBool::new(false),
         };
         store.save();
 

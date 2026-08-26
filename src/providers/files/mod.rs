@@ -427,10 +427,9 @@ pub fn open_path_with(
             }
         }
     }
-    Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
+    let mut cmd = Command::new("xdg-open");
+    cmd.arg(path);
+    spawn_and_reap(cmd)
         .map_err(|err| format!("could not open {} with xdg-open: {err}", path.display()))
 }
 
@@ -628,7 +627,7 @@ fn spawn_detached(bin: &str, args: &[&str]) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if sh.spawn().is_err() && cmd.spawn().is_err() {
+    if spawn_and_reap(sh).is_err() && spawn_and_reap(cmd).is_err() {
         eprintln!("hark: could not spawn {bin}");
     }
 }
@@ -710,18 +709,12 @@ fn spawn_detached_in_dir(bin: &Path, args: &[String], dir: &Path) -> Result<(), 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if cmd.spawn().is_ok() {
+    if spawn_and_reap(cmd).is_ok() {
         return Ok(());
     }
     let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|err| format!("could not launch {}: {err}", bin.display()))
+    cmd.args(args).current_dir(dir);
+    spawn_and_reap(cmd).map_err(|err| format!("could not launch {}: {err}", bin.display()))
 }
 
 /// Basename used to pick terminal CLI flags (`/usr/bin/kitty` → `kitty`).
@@ -731,6 +724,20 @@ fn terminal_basename(term_path: &Path, fallback: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(fallback)
         .to_ascii_lowercase()
+}
+
+/// N9/apps-z: spawn-and-forget children become zombies until hark exits.
+/// Reap in a detached thread instead — the wait pid only blocks the reaper.
+pub fn spawn_and_reap(mut cmd: Command) -> std::io::Result<()> {
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 fn which_bin(bin: &str) -> Option<PathBuf> {
