@@ -536,10 +536,11 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** wrong/incomplete suggestions/UX inconsistency, no arithmetic corruption in exact conversions.
 - **Remediation:** generate prediction from one unit table containing aliases, canonical names, factors, and categories; add missing `to_base` units (including tonne and pressure/energy/power/angle/frequency aliases); derive preferred lists from category metadata rather than a duplicate hardcoded map.
 
-#### P3 — fuel-economy converter overbroadly claims any query containing “ to ” (`src/providers/calc/fueleco.rs:53-100`)
+#### P3 — fuel-economy converter overbroadly claims any query containing “ to ” (`src/providers/calc/fueleco.rs:53-100`) — **fixed 2026-08-26**
 
 - **Root cause:** gating is only `lower.contains(" to ")`; conversion then splits the left side with `splitn(2, whitespace)` and requires the second token to parse as a fuel unit. A query such as `5 ton to lb` is not consumed (verified by the “fuel unit” gate), so most unit conversions remain safe. However, when fuel matching succeeds, `out_label` re-splits by the first `" to "` even if another ` to ` appears later; numeric parsing accepts `inf`/`NaN` through Rust `f64::parse` before the `<= 0.0` filter (NaN bypasses that comparison and propagates into arithmetic).
 - **Verified consequence:** `NaN mpg to l/100km` proceeds through parsing; fuel conversion computes `L100_PER_MPG / NaN`, yielding NaN and formatting a nonsensical card instead of rejecting the input. Existing tests do not cover non-finite fuel input.
+- **Fix:** `convert` now rejects non-finite input and non-finite output; regression test `rejects_non_finite_values` fails when the guard is removed.
 - **Impact:** invalid calculator card (CWE-20 numeric input validation); no crash or panic.
 - **Remediation:** require `value.is_finite() && value > 0.0`, and reject non-finite outputs before constructing the card. Add regression tests for `inf`, `NaN`, negative, and zero values.
 
@@ -568,10 +569,11 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P3 — compound-interest card can present `inf`/`NaN` instead of rejecting the query (`src/providers/calc/financial.rs:34-55`)
+#### P3 — compound-interest card can present `inf`/`NaN` instead of rejecting the query (`src/providers/calc/financial.rs:34-55`) — **fixed 2026-08-26**
 
 - **Root cause:** `amt()` delegates to `expr::eval_str`, which correctly rejects non-finite final values, but the separately captured rate and term are parsed directly as `f64` (`:43-44`). Validation only checks `rate <= 0.0 || t_years < 0.0`; NaN passes both comparisons. Extremely large compound terms also overflow `powf`. Unlike EMI (`:199`), the resulting `total` has no `is_finite()` guard.
 - **Failure pathway:** `interest 1 crore at 5% for 1e308 years compounded` → `powf` overflows to infinity; `format_number` intentionally stringifies non-finite values rather than rejecting them (`util.rs:17-20`), producing an “Infinity” calculator card. A NaN rate/term from a future parser change would likewise pass all existing comparisons.
+- **Fix:** interest now rejects non-finite rate/term and non-finite totals; regression test `interest_rejects_non_finite_results` fails when the guard is removed.
 - **Impact:** invalid calculator answer (CWE-20 numeric validation); no panic or memory-safety issue. `format_number`’s non-finite passthrough is intentional formatting, not validation.
 - **Remediation:** require `rate.is_finite()`, `t.is_finite()`, `p.is_finite()`, and reject `!total.is_finite() && !interest_amt.is_finite()` before constructing the card. Add regression tests for overflow and NaN inputs, mirroring the EMI guard.
 
@@ -589,10 +591,11 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** inconsistent natural-language coverage across calculator providers; no incorrect arithmetic when a query does match.
 - **Remediation:** share one amount grammar/parser (fraction + decimal + magnitude suffix) across unit, currency, and finance providers, preserving unit-letter collisions (`m` as meters) through whitespace requirements where already intended.
 
-#### P3 — fraction parser accepts non-finite numerator/denominator literals (`src/providers/calc/util.rs:5-15`)
+#### P3 — fraction parser accepts non-finite numerator/denominator literals (`src/providers/calc/util.rs:5-15`) — **fixed 2026-08-26**
 
 - **Root cause:** `parse_qty_number` parses each fraction half with Rust float parsing and only checks `b == 0.0`; `NaN/1`, `1/NaN`, `inf/2`, and `2/inf` are accepted. This helper is used by unit conversion quantity parsing, so malformed literals can become non-finite conversion factors before reaching `format_number`.
 - **Impact:** the regex layer currently limits ordinary decimal inputs and therefore prevents these strings from reaching it in the main unit path, making this latent rather than directly user-triggered today. It is still an unsafe shared helper for future call sites.
+- **Fix:** `parse_qty_number` now rejects non-finite parts and non-finite results for fractions and plain values; regression test `parse_qty_number_rejects_non_finite` fails when the guard is removed.
 - **Remediation:** require both numerator and denominator finite and denominator nonzero; add direct unit tests for `NaN`, `inf`, and negative denominators.
 
 ### Clean areas verified in this pass

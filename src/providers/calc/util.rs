@@ -6,12 +6,14 @@ pub(crate) fn parse_qty_number(s: &str) -> Option<f64> {
     if let Some((a, b)) = s.split_once('/') {
         let a: f64 = a.parse().ok()?;
         let b: f64 = b.trim().parse().ok()?;
-        if b == 0.0 {
+        if !a.is_finite() || !b.is_finite() || b == 0.0 {
             return None;
         }
-        return Some(a / b);
+        let out = a / b;
+        return out.is_finite().then_some(out);
     }
-    s.parse().ok()
+    let out: f64 = s.parse().ok()?;
+    out.is_finite().then_some(out)
 }
 
 pub(crate) fn format_number(v: f64) -> String {
@@ -94,5 +96,21 @@ pub(crate) fn card_result(
             right_badge: right_badge.into(),
         }),
         matched: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_qty_number;
+
+    #[test]
+    fn parse_qty_number_rejects_non_finite() {
+        assert!(parse_qty_number("NaN/1").is_none());
+        assert!(parse_qty_number("1/NaN").is_none());
+        assert!(parse_qty_number("inf/2").is_none());
+        assert!(parse_qty_number("2/inf").is_none());
+        assert!(parse_qty_number("1e309").is_none());
+        assert_eq!(parse_qty_number("1/2"), Some(0.5));
+        assert_eq!(parse_qty_number("2.5"), Some(2.5));
     }
 }

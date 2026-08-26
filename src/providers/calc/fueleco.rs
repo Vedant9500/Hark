@@ -59,10 +59,10 @@ fn convert(q: &str) -> Option<f64> {
     let value: f64 = parts.next()?.parse().ok()?;
     let from = fuel_unit(parts.next()?)?;
     let to = fuel_unit(rhs.trim())?;
-    if value <= 0.0 || from == to {
+    if !value.is_finite() || value <= 0.0 || from == to {
         return None;
     }
-    Some(match (from, to) {
+    let out = match (from, to) {
         (FuelUnit::Kml, FuelUnit::Mpg) => value * KML_TO_MPG,
         (FuelUnit::Kml, FuelUnit::L100) => 100.0 / value,
         (FuelUnit::Mpg, FuelUnit::Kml) => value / KML_TO_MPG,
@@ -70,7 +70,8 @@ fn convert(q: &str) -> Option<f64> {
         (FuelUnit::L100, FuelUnit::Kml) => 100.0 / value,
         (FuelUnit::L100, FuelUnit::Mpg) => L100_PER_MPG / value,
         _ => return None,
-    })
+    };
+    out.is_finite().then_some(out)
 }
 
 pub(crate) fn try_fuel_economy(q: &str) -> Option<SearchResult> {
@@ -163,5 +164,12 @@ mod tests {
         assert!(try_fuel_economy("12 km/l to km/l").is_none());
         assert!(try_fuel_economy("12 to 30").is_none());
         assert!(try_fuel_economy("firefox").is_none());
+    }
+
+    #[test]
+    fn rejects_non_finite_values() {
+        assert!(try_fuel_economy("NaN mpg to l/100km").is_none());
+        assert!(try_fuel_economy("inf mpg to l/100km").is_none());
+        assert!(try_fuel_economy("1e309 mpg to l/100km").is_none());
     }
 }

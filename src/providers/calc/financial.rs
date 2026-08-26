@@ -44,7 +44,7 @@ fn interest(q: &str) -> Option<SearchResult> {
     let t: f64 = c.get(3)?.as_str().parse().ok()?;
     let unit = c.get(4)?.as_str().to_ascii_lowercase();
     let t_years = if unit.starts_with('m') { t / 12.0 } else { t };
-    if rate <= 0.0 || t_years < 0.0 {
+    if !rate.is_finite() || !t_years.is_finite() || rate <= 0.0 || t_years < 0.0 {
         return None;
     }
     let compound = q.to_ascii_lowercase().contains("compound");
@@ -53,6 +53,9 @@ fn interest(q: &str) -> Option<SearchResult> {
     } else {
         p * (1.0 + rate / 100.0 * t_years)
     };
+    if !total.is_finite() {
+        return None;
+    }
     let interest_amt = total - p;
     let shown = q.trim();
     let kind: &'static str = if compound {
@@ -434,6 +437,13 @@ mod tests {
         let r =
             try_financial("interest 1000 at 5% for 3 years compounded annually").expect("compound");
         assert_eq!(r.title, "1157.63");
+    }
+
+    #[test]
+    fn interest_rejects_non_finite_results() {
+        let huge_years = format!("1{}", "0".repeat(308));
+        let q = format!("interest 1 crore at 5% for {huge_years} years compounded");
+        assert!(try_financial(&q).is_none());
     }
 
     #[test]
