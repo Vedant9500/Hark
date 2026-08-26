@@ -103,12 +103,24 @@ pub fn show_open_with_picker(
             firing.set(true);
             let name = row.widget_name();
             if name.as_str() == "__system_default__" {
-                let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
-                if let Some(p) = popover_c.upgrade() {
-                    p.popdown();
+                match std::process::Command::new("xdg-open").arg(&path).spawn() {
+                    Ok(_child) => {
+                        if let Some(p) = popover_c.upgrade() {
+                            p.popdown();
+                        }
+                        ignore.set(false);
+                        window.set_visible(false);
+                    }
+                    Err(err) => {
+                        // Surface the failure — keep the window open and reset
+                        // the firing latch so the user can retry.
+                        firing.set(false);
+                        eprintln!("hark: xdg-open spawn failed: {err}");
+                        if let Some(p) = popover_c.upgrade() {
+                            p.popdown();
+                        }
+                    }
                 }
-                ignore.set(false);
-                window.set_visible(false);
                 return;
             }
 

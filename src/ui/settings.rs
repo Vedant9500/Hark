@@ -2069,6 +2069,7 @@ fn build_appearance_page(
         let f_val = f_val.clone();
         let i_val = i_val.clone();
         let layout_cb = layout_cb.clone();
+        let sym_cb = sym_cb.clone();
         reset_btn.connect_clicked(move |_| {
             engine.config().update(|c| c.ui = UiThemeConfig::default());
             accent_entry.set_text("");
@@ -2077,6 +2078,11 @@ fn build_appearance_page(
             f_val.set_text("100%");
             i_val.set_text("26");
             layout_cb.set_active(true); // default Compact
+                                        // GTK only emits `toggled` on actual change — force the checkbox
+                                        // back in sync with the reset config.
+            if sym_cb.is_active() {
+                sym_cb.set_active(false);
+            }
             theme.reload();
         });
     }

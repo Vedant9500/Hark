@@ -7,7 +7,11 @@ use gio::prelude::*;
 use gtk::gdk_pixbuf::Pixbuf;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
+
+/// Unique-name counter for temp files (N16 torn-write race).
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// FreeDesktop thumbnail path (`~/.cache/thumbnails/{large,normal}/md5(uri).png`).
 ///
@@ -16,7 +20,9 @@ use std::time::SystemTime;
 pub(crate) fn freedesktop_thumbnail(path: &Path) -> Option<PathBuf> {
     let digest = thumbnail_digest(path)?;
     let base = dirs::home_dir()?.join(".cache/thumbnails");
-    for size in ["large", "normal", "x-large"] {
+    // x-large first: it is strictly higher quality; probing large/normal
+    // first made the x-large slot unreachable whenever both existed.
+    for size in ["x-large", "large", "normal"] {
         let p = base.join(size).join(format!("{digest}.png"));
         if p.is_file() && thumb_is_current(&p, path) {
             return Some(p);
@@ -26,9 +32,19 @@ pub(crate) fn freedesktop_thumbnail(path: &Path) -> Option<PathBuf> {
 }
 
 /// Canonical FreeDesktop `file://` URI + MD5 digest used for cache names.
+///
+/// th-canon: canonicalize() resolves symlinks, producing different URIs (and
+/// digests) from what nautilus and other FreeDesktop consumers use for the
+/// same file. Resolve only the directory — the final component keeps its
+/// symlink spelling, matching other thumbnail implementations.
 pub(crate) fn thumbnail_digest(path: &Path) -> Option<String> {
-    let canon = path.canonicalize().ok()?;
-    let uri = file_uri(&canon);
+    let uri = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let parent = parent.canonicalize().ok()?;
+            file_uri(&parent.join(name))
+        }
+        _ => file_uri(&path.canonicalize().ok()?),
+    };
     Some(md5_hex(uri.as_bytes()))
 }
 
@@ -99,11 +115,17 @@ pub(crate) fn store_freedesktop_thumbnail(
     if width <= 0 || height <= 0 || pixels.is_empty() {
         return false;
     }
+    // Same key computation as thumbnail_digest (symlink-spelled final
+    // component) so store and read slots always agree.
+    let Some(digest) = thumbnail_digest(source) else {
+        return false;
+    };
+    // MTime check stats the resolved file — canonical path is correct there.
     let Ok(canon) = source.canonicalize() else {
         return false;
     };
-    let uri = file_uri(&canon);
-    let digest = md5_hex(uri.as_bytes());
+    // Thumb::URI must match the digest key (symlink-spelled path).
+    let uri = file_uri(source);
     let Some(home) = dirs::home_dir() else {
         return false;
     };
@@ -124,6 +146,16 @@ pub(crate) fn store_freedesktop_thumbnail(
         return true;
     }
 
+    // th-bytes guard: reject rowstride/size combinations that would make
+    // Pixbuf::from_bytes read past the end of the pixel buffer.
+    let n_channels: i32 = if has_alpha { 4 } else { 3 };
+    if rowstride < width * n_channels
+        || (pixels.len() as i64)
+            < (height as i64).saturating_mul(rowstride as i64)
+                - (rowstride - width * n_channels) as i64
+    {
+        return false;
+    }
     let bytes = glib::Bytes::from_owned(pixels.to_vec());
     let pixbuf = Pixbuf::from_bytes(
         &bytes,
@@ -152,8 +184,14 @@ pub(crate) fn store_freedesktop_thumbnail(
 
     let mtime = source_mtime_secs(&canon).unwrap_or_else(|| "0".into());
 
-    // Atomic-ish write via temp then rename.
-    let tmp = dir.join(format!(".{digest}.hark-tmp.png"));
+    // Atomic-ish write via unique temp (pid + counter) then rename — a fixed
+    // name lets two concurrent writers truncate each other's temp file and
+    // rename a torn PNG into place.
+    let tmp = dir.join(format!(
+        ".{digest}.hark-tmp-{}-{}.png",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let options = [
         ("tEXt::Thumb::URI", uri.as_str()),
         ("tEXt::Thumb::MTime", mtime.as_str()),
@@ -268,4 +306,20 @@ fn md5_bytes(message: &[u8]) -> [u8; 16] {
     out[8..12].copy_from_slice(&c0.to_le_bytes());
     out[12..16].copy_from_slice(&d0.to_le_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::store_freedesktop_thumbnail;
+
+    #[test]
+    fn rejects_short_pixel_buffer() {
+        // 2×2 RGBA needs ≥ rowstride*(h-1) + w*4 bytes; give it fewer.
+        let src = std::env::temp_dir().join("hark-th-bytes-guard-test.png");
+        std::fs::write(&src, b"x").unwrap();
+        assert!(!store_freedesktop_thumbnail(
+            &src, 2, 2, 8, true, &[0u8; 12]
+        ));
+        let _ = std::fs::remove_file(&src);
+    }
 }

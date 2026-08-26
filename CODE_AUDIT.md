@@ -286,16 +286,16 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 | apps-z | P3 | `providers/apps.rs:481` | Spawned children never waited → zombies | open |
 | apps-bs | P3 | `providers/apps.rs:426` | Unquoted `\` not escaped per Desktop Entry spec | fixed |
 | N15 | P3 | `theme/mod.rs:120` | Raw scheme colour into Pango markup — route through shared sanitizer w/ #12 | fixed |
-| N16 | P3 | `thumbnails.rs:110`, `usage.rs:176` | Fixed temp filenames race → torn file renamed into place | open |
+| N16 | P3 | `thumbnails.rs:110`, `usage.rs:176` | Fixed temp filenames race → torn file renamed into place | fixed |
 | eng-q | P4 | `engine.rs:530` | Dead `let _ = q;` + unused lowercase var | fixed |
 | dt-hr | P4 | `calc/datetime.rs:555` | Dead keep-alive line | fixed |
 | um-b | P4 | `calc/unitmath.rs:179` | Dead `_b` parser field | fixed |
 | set-depth | P4 | `ui/settings.rs:502,520` | Depth ± force_reindex even when clamped | fixed |
-| set-sym | P4 | `ui/settings.rs:2050` | Restore-defaults leaves symbolic-icons checkbox stale | open |
-| ow-spawn | P4 | `ui/open_with.rs:103` | xdg-open spawn error discarded; window hidden regardless | open |
-| th-order | P4 | `ui/thumbnails.rs:15` | Probe order large→normal→x-large — x-large unreachable | open |
-| pv-lang | P4 | `ui/preview.rs:775` | Stale GtkSourceView language kept when guess_language → None | open |
-| pv-meta | P4 | `ui/preview.rs:956` | Dead `meta` parameter | open |
+| set-sym | P4 | `ui/settings.rs:2050` | Restore-defaults leaves symbolic-icons checkbox stale | fixed |
+| ow-spawn | P4 | `ui/open_with.rs:103` | xdg-open spawn error discarded; window hidden regardless | fixed |
+| th-order | P4 | `ui/thumbnails.rs:15` | Probe order large→normal→x-large — x-large unreachable | fixed |
+| pv-lang | P4 | `ui/preview.rs:775` | Stale GtkSourceView language kept when guess_language → None | fixed |
+| pv-meta | P4 | `ui/preview.rs:956` | Dead `meta` parameter | fixed |
 | fm-trunc | P4 | `files/mod.rs:324` | Hardcoded truncate(25) instead of FILE_RESULT_LIMIT | fixed |
 | rank-hot | P4 | `files/search/rank.rs:122` | Hot short-circuit flips highlight style; fuzzy-only candidates vanish | fixed |
 | rank-budget | P4 | `files/search/rank.rs:218` | Fuzzy budget burned by failed scorings (prefilter skips don't burn) | fixed |
@@ -308,9 +308,9 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 
 | ID | Location | Hazard | Status |
 |---|---|---|---|
-| pv-refcell | `ui/preview.rs:370` | Borrow held across visibility callback — panics if callback gains a body touching same RefCell | open |
-| th-bytes | `ui/thumbnails.rs:77` | Pixbuf::from_bytes over-reads if caller-supplied rowstride/pixels ever inconsistent | open |
-| th-canon | `ui/thumbnails.rs:26` | canonicalize before hashing diverges symlinked cache keys from other apps | open |
+| pv-refcell | `ui/preview.rs:370` | Borrow held across visibility callback — panics if callback gains a body touching same RefCell | fixed | — fixed
+| th-bytes | `ui/thumbnails.rs:77` | Pixbuf::from_bytes over-reads if caller-supplied rowstride/pixels ever inconsistent | fixed | — fixed
+| th-canon | `ui/thumbnails.rs:26` | canonicalize before hashing diverges symlinked cache keys from other apps | fixed | — fixed
 | ow-sync | `ui/open_with.rs:36` | Sync app enumeration janks popover open on cold app DB | open |
 | rng-reseed | `calc/quick.rs:635-646` | Same-millisecond thread starts get correlated xorshift streams (micro) | fixed |
 
@@ -2106,7 +2106,7 @@ The table above covers only Passes 13–21. Below are the 67 tracker items from 
 | P2 | #26 | Album art stretched square via scale_simple | `preview.rs:1187` | open |
 | P2 | #29 | Theme debounce timer per event, no coalescing | `theme/mod.rs:184-206` | open (re-verified Pass 15) |
 | P2 | N9+apps-z | Unwaited spawns → zombies (files + apps) | `files/mod.rs`, `apps.rs:481` | open |
-| P3 | th-order | Thumbnail probe order makes x-large unreachable | `thumbnails.rs:15` | open |
+| P3 | th-order | Thumbnail probe order makes x-large unreachable | `thumbnails.rs:15` | fixed |
 | P3 | ow-sync | Sync app enumeration janks popover on cold DB | `open_with.rs:36` | open (latent) |
 | P4 | usage-race | Dirty-flag race record↔save (one delayed write) | `usage.rs`, `typos.rs` | open |
 
@@ -2118,22 +2118,22 @@ The table above covers only Passes 13–21. Below are the 67 tracker items from 
 | P1 | #18 | GObject cycles leak Open With popover tree | `open_with.rs:283` | fixed |
 | P2 | #15 | Force-prefix fallback case-hygiene mismatch | `files/mod.rs:293` | fixed |
 | P3 | N15 | Raw scheme colour into Pango markup | `theme/mod.rs:120` | fixed |
-| P4 | set-sym / ow-spawn / pv-lang / pv-meta | Reset-desync checkbox, discarded xdg-open errors, stale language, dead param | various | open |
+| P4 | set-sym / ow-spawn / pv-lang / pv-meta | Reset-desync checkbox, discarded xdg-open errors, stale language, dead param | various | fixed |
 
 ### 💾 Data Integrity (original)
 
 | Sev | ID | Finding | Location | Status |
 |---|---|---|---|---|
 | P1 | #14 | Meta stamped despite failed write → freshness lie per start | `files/index.rs:808` | fixed |
-| P3 | N16 | Fixed temp filenames race → torn file renamed into place | `thumbnails.rs:110`, `usage.rs:176` | open (re-verified Pass 13) |
+| P3 | N16 | Fixed temp filenames race → torn file renamed into place | `thumbnails.rs:110`, `usage.rs:176` | fixed |
 
 ### Latent hazards (no current trigger — fix opportunistically)
 
 | ID | Finding | Location |
 |---|---|---|
-| pv-refcell | Borrow held across visibility callback — panics if callback gains a body | `preview.rs:370` |
-| th-bytes | Pixbuf::from_bytes over-reads on inconsistent rowstride/pixels | `thumbnails.rs:77` |
-| th-canon | canonicalize before hashing diverges symlinked cache keys | `thumbnails.rs:26` |
+| pv-refcell | Borrow held across visibility callback — panics if callback gains a body | `preview.rs:370` | — fixed
+| th-bytes | Pixbuf::from_bytes over-reads on inconsistent rowstride/pixels | `thumbnails.rs:77` | — fixed
+| th-canon | canonicalize before hashing diverges symlinked cache keys | `thumbnails.rs:26` | — fixed
 | ow-sync | (also listed under Performance) | `open_with.rs:36` |
 | rng-reseed | Same-millisecond correlated xorshift streams | `quick.rs:635-646` — fixed |
 

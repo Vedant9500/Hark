@@ -2,11 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Unique-name counter for temp files (N16 torn-write race).
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Soft cap: after this, drop coldest entries by frecency.
 const MAX_ENTRIES: usize = 500;
@@ -173,7 +174,13 @@ impl UsageStore {
                 Err(_) => return,
             }
         };
-        let tmp = self.path.with_extension("json.tmp");
+        // Unique temp name — a fixed sibling lets two concurrent savers
+        // truncate each other's tmp and rename a torn JSON into place.
+        let tmp = self.path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
             self.dirty.store(false, Ordering::Relaxed);
             *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();

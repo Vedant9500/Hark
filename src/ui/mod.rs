@@ -242,12 +242,12 @@ impl Launcher {
         {
             let _shell = shell.clone();
             let _window = window.clone();
-            preview.set_visibility_cb(Box::new(move |_vis| {
+            preview.set_visibility_cb(move |_vis| {
                 // No window resize here — window stays 1001×470 (expanded) or
                 // 720×110 (compact) via apply_body_chrome. Preview just
                 // toggles its own visibility inside fixed surface, so no
                 // texture expansion ghost on gemi→gemin.
-            }));
+            });
         }
 
         body.append(&list_col);

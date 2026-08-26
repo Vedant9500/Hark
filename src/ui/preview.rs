@@ -103,7 +103,7 @@ impl MediaKind {
 
 /// Panel visibility callback — fired when the preview shows/hides so the
 /// launcher can widen/narrow the window.
-type VisibilityCallback = Rc<RefCell<Option<Box<dyn Fn(bool)>>>>;
+type VisibilityCallback = Rc<RefCell<Option<Rc<dyn Fn(bool)>>>>;
 
 pub struct PreviewPanel {
     pub root: GtkBox,
@@ -370,7 +370,9 @@ impl PreviewPanel {
     fn set_panel_visible(&self, visible: bool) {
         let vis = visible && !self.user_hidden.get();
         if vis != self.root.is_visible() {
-            if let Some(cb) = self.on_visibility.borrow().as_ref() {
+            // Clone the callback out before invoking — calling it with the
+            // borrow held would panic if the body re-enters this RefCell.
+            if let Some(cb) = self.on_visibility.borrow().clone() {
                 cb(vis);
             }
         }
@@ -380,8 +382,8 @@ impl PreviewPanel {
 
     /// Register a callback fired whenever the panel toggles between shown/hidden
     /// (used by the launcher to widen/narrow the window around the preview).
-    pub fn set_visibility_cb(&self, cb: Box<dyn Fn(bool)>) {
-        *self.on_visibility.borrow_mut() = Some(cb);
+    pub fn set_visibility_cb(&self, cb: impl Fn(bool) + 'static) {
+        *self.on_visibility.borrow_mut() = Some(Rc::new(cb));
     }
 
     /// Flip user hide flag. Returns `true` when the panel is now user-hidden.
@@ -775,10 +777,11 @@ impl PreviewPanel {
                 };
                 let lines = text.lines().count();
                 view.buffer().set_text(&text);
-                if let Some(lang) = guess_language(&path_check2) {
-                    if let Ok(buf) = view.buffer().downcast::<sourceview5::Buffer>() {
-                        buf.set_language(Some(&lang));
-                    }
+                if let Ok(buf) = view.buffer().downcast::<sourceview5::Buffer>() {
+                    // Clear stale language when guessing fails for this file,
+                    // so a previous preview's syntax highlighting doesn't leak.
+                    let lang = guess_language(&path_check2);
+                    buf.set_language(lang.as_ref());
                 }
                 let lines_label = if lines > 0 {
                     format!(
@@ -882,7 +885,6 @@ impl PreviewPanel {
                             &icon_type,
                             &item2,
                             &info,
-                            &meta2,
                             &stack,
                         );
                     }
@@ -895,7 +897,6 @@ impl PreviewPanel {
                             &icon_type,
                             &item2,
                             &info,
-                            &meta2,
                             &stack,
                         );
                     }
@@ -936,7 +937,6 @@ impl PreviewPanel {
         icon_type: &Label,
         item: &SearchResult,
         info: &AudioMeta,
-        meta: &str,
         stack: &Stack,
     ) {
         let icon_name = item
@@ -956,7 +956,6 @@ impl PreviewPanel {
             &info.sub_line,
             Some(&info.meta_line),
         );
-        let _ = meta;
     }
 
     /// At most one decode thread. Latest `inflight` wins; never stacks workers.
