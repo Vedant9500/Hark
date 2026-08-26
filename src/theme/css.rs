@@ -834,12 +834,14 @@ window.hark-window scrollbar * {{
 window.hark-window .hark-settings {{
   background-color: transparent;
   min-width: 720px;
-  min-height: 400px;
+  /* Match EXPANDED_WINDOW_HEIGHT — a smaller minimum shrinks the window
+     when switching pages (stack is vhomogeneous=false). */
+  min-height: 480px;
 }}
 
 window.hark-window .hark-settings-split {{
   background-color: transparent;
-  min-height: 380px;
+  min-height: 460px;
 }}
 
 window.hark-window .hark-settings-nav-col {{

@@ -94,6 +94,10 @@ impl SettingsPanel {
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.set_overflow(gtk::Overflow::Hidden);
+        // Same footprint as the expanded launcher view — the stack is
+        // vhomogeneous=false, so without this the window shrinks/jumps when
+        // switching between search and settings.
+        root.set_size_request(super::WINDOW_WIDTH, super::EXPANDED_WINDOW_HEIGHT);
 
         // Dual panel body (no bulky top chrome — Esc closes)
         let split = GtkBox::new(Orientation::Horizontal, 0);

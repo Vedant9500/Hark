@@ -20,7 +20,7 @@ pub(crate) fn eval_str(input: &str) -> Option<f64> {
         return None;
     }
     let mut i = 0;
-    let v = parse_expr(&tokens, &mut i)?;
+    let v = parse_expr(&tokens, &mut i, 0)?;
     if i != tokens.len() {
         return None;
     }
@@ -107,18 +107,27 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
 }
 
 // Pratt / recursive descent: expr → add → mul → unary → pow → primary
-fn parse_expr(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    parse_add(tokens, i)
+//
+// Every `(` and unary sign recurses through the whole chain; a depth budget
+// (counted at `parse_expr`) bounds stack usage — deeply nested input returns
+// `None` instead of overflowing the stack (a runtime abort, not a panic).
+const MAX_DEPTH: usize = 200;
+
+fn parse_expr(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    parse_add(tokens, i, depth)
 }
 
-fn parse_add(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    let mut left = parse_mul(tokens, i)?;
+fn parse_add(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
+    let mut left = parse_mul(tokens, i, depth)?;
     while let Some(Tok::Op(op)) = tokens.get(*i) {
         if *op != '+' && *op != '-' {
             break;
         }
         *i += 1;
-        let right = parse_mul(tokens, i)?;
+        let right = parse_mul(tokens, i, depth)?;
         left = if *op == '+' {
             left + right
         } else {
@@ -128,14 +137,14 @@ fn parse_add(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     Some(left)
 }
 
-fn parse_mul(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    let mut left = parse_unary(tokens, i)?;
+fn parse_mul(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
+    let mut left = parse_unary(tokens, i, depth)?;
     while let Some(Tok::Op(op)) = tokens.get(*i) {
         if *op != '*' && *op != '/' && *op != '%' {
             break;
         }
         *i += 1;
-        let right = parse_unary(tokens, i)?;
+        let right = parse_unary(tokens, i, depth)?;
         left = match *op {
             '*' => left * right,
             '/' => {
@@ -160,8 +169,8 @@ fn parse_mul(tokens: &[Tok], i: &mut usize) -> Option<f64> {
 ///
 /// Unary minus binds looser than `^` (`-2^2` is `-(2^2)`), so the base comes
 /// from `parse_primary` and the (possibly signed) exponent from `parse_unary`.
-fn parse_pow(tokens: &[Tok], i: &mut usize) -> Option<f64> {
-    let mut left = parse_primary(tokens, i)?;
+fn parse_pow(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
+    let mut left = parse_primary(tokens, i, depth)?;
     // postfix !
     while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
         *i += 1;
@@ -169,7 +178,7 @@ fn parse_pow(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     }
     if matches!(tokens.get(*i), Some(Tok::Op('^'))) {
         *i += 1;
-        let right = parse_unary(tokens, i)?; // right-assoc via unary→pow
+        let right = parse_unary(tokens, i, depth)?; // right-assoc via unary→pow
         left = left.powf(right);
         // more postfix after power result? rare; allow !
         while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
@@ -180,24 +189,29 @@ fn parse_pow(tokens: &[Tok], i: &mut usize) -> Option<f64> {
     Some(left)
 }
 
-fn parse_unary(tokens: &[Tok], i: &mut usize) -> Option<f64> {
+fn parse_unary(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
+    // Sign chains (`----3`) recurse unary→unary without re-entering
+    // parse_expr, so this arm needs its own budget check.
+    if depth > MAX_DEPTH {
+        return None;
+    }
     match tokens.get(*i) {
         Some(Tok::Op('+')) => {
             *i += 1;
-            parse_unary(tokens, i)
+            parse_unary(tokens, i, depth + 1)
         }
         Some(Tok::Op('-')) => {
             *i += 1;
             // Recurse through unary (not pow) so doubled signs like `--3` and
             // `5--3` keep parsing; precedence is unchanged since the default
             // arm descends into pow anyway.
-            Some(-parse_unary(tokens, i)?)
+            Some(-parse_unary(tokens, i, depth + 1)?)
         }
-        _ => parse_pow(tokens, i),
+        _ => parse_pow(tokens, i, depth),
     }
 }
 
-fn parse_primary(tokens: &[Tok], i: &mut usize) -> Option<f64> {
+fn parse_primary(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<f64> {
     match tokens.get(*i).cloned() {
         Some(Tok::Num(n)) => {
             *i += 1;
@@ -211,7 +225,7 @@ fn parse_primary(tokens: &[Tok], i: &mut usize) -> Option<f64> {
                 let mut args = Vec::new();
                 if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
                     loop {
-                        args.push(parse_expr(tokens, i)?);
+                        args.push(parse_expr(tokens, i, depth + 1)?);
                         match tokens.get(*i) {
                             Some(Tok::Op(',')) => {
                                 *i += 1;
@@ -233,7 +247,7 @@ fn parse_primary(tokens: &[Tok], i: &mut usize) -> Option<f64> {
         }
         Some(Tok::Op('(')) => {
             *i += 1;
-            let v = parse_expr(tokens, i)?;
+            let v = parse_expr(tokens, i, depth + 1)?;
             if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
                 return None;
             }
@@ -313,35 +327,38 @@ pub(crate) fn explain_str(input: &str) -> Option<String> {
         return None;
     }
     let mut i = 0;
-    let (s, _) = print_add(&tokens, &mut i)?;
+    let (s, _) = print_add(&tokens, &mut i, 0)?;
     if i != tokens.len() {
         return None;
     }
     Some(s)
 }
 
-fn print_add(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
-    let (mut s, mut lvl) = print_mul(tokens, i)?;
+fn print_add(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<(String, Lvl)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let (mut s, mut lvl) = print_mul(tokens, i, depth)?;
     while let Some(Tok::Op(op)) = tokens.get(*i) {
         if *op != '+' && *op != '-' {
             break;
         }
         *i += 1;
-        let (r, _) = print_mul(tokens, i)?;
+        let (r, _) = print_mul(tokens, i, depth)?;
         s = format!("{s} {op} {r}");
         lvl = Lvl::Add;
     }
     Some((s, lvl))
 }
 
-fn print_mul(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
-    let (mut s, mut lvl) = print_unary(tokens, i)?;
+fn print_mul(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<(String, Lvl)> {
+    let (mut s, mut lvl) = print_unary(tokens, i, depth)?;
     while let Some(Tok::Op(op)) = tokens.get(*i) {
         if *op != '*' && *op != '/' && *op != '%' {
             break;
         }
         *i += 1;
-        let (r, _) = print_unary(tokens, i)?;
+        let (r, _) = print_unary(tokens, i, depth)?;
         s = format!("{s} {op} {r}");
         lvl = Lvl::Mul;
     }
@@ -350,11 +367,11 @@ fn print_mul(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
 
 /// Mirror of [`parse_unary`]: sign chains descend into pow; composite
 /// operands are grouped (`--3` → `-(-3)`), bare atoms stay ungrouped.
-fn print_unary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+fn print_unary(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<(String, Lvl)> {
     match tokens.get(*i) {
         Some(Tok::Op(sign @ ('+' | '-'))) => {
             *i += 1;
-            let (inner, lvl) = print_unary(tokens, i)?;
+            let (inner, lvl) = print_unary(tokens, i, depth)?;
             // Composite inner already carries its own grouping level below
             // Primary, so wrap it; bare number/const/funccall stays `-3`.
             let s = if lvl < Lvl::Primary {
@@ -364,14 +381,14 @@ fn print_unary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
             };
             Some((s, Lvl::Unary))
         }
-        _ => print_pow(tokens, i),
+        _ => print_pow(tokens, i, depth),
     }
 }
 
 /// Mirror of [`parse_pow`]: primary base, postfix `!`, single right-assoc
 /// `^` whose exponent comes from the unary path (right-assoc via recursion).
-fn print_pow(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
-    let (mut s, mut lvl) = print_primary(tokens, i)?;
+fn print_pow(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<(String, Lvl)> {
+    let (mut s, mut lvl) = print_primary(tokens, i, depth)?;
     while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
         *i += 1;
         s = format!("{s}!"); // factorial is tightest; result stays atomic
@@ -379,7 +396,7 @@ fn print_pow(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
     }
     if matches!(tokens.get(*i), Some(Tok::Op('^'))) {
         *i += 1;
-        let (exp, elvl) = print_unary(tokens, i)?;
+        let (exp, elvl) = print_unary(tokens, i, depth)?;
         s = format!("{s}^{}", wrap(exp, elvl, Lvl::Primary));
         lvl = Lvl::Pow;
         while matches!(tokens.get(*i), Some(Tok::Op('!'))) {
@@ -391,7 +408,7 @@ fn print_pow(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
     Some((s, lvl))
 }
 
-fn print_primary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
+fn print_primary(tokens: &[Tok], i: &mut usize, depth: usize) -> Option<(String, Lvl)> {
     match tokens.get(*i).cloned() {
         Some(Tok::Num(n)) => {
             *i += 1;
@@ -404,7 +421,7 @@ fn print_primary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
                 let mut args = Vec::new();
                 if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
                     loop {
-                        let (arg, _) = print_add(tokens, i)?;
+                        let (arg, _) = print_add(tokens, i, depth + 1)?;
                         args.push(arg);
                         match tokens.get(*i) {
                             Some(Tok::Op(',')) => {
@@ -428,7 +445,7 @@ fn print_primary(tokens: &[Tok], i: &mut usize) -> Option<(String, Lvl)> {
         }
         Some(Tok::Op('(')) => {
             *i += 1;
-            let (s, _) = print_add(tokens, i)?;
+            let (s, _) = print_add(tokens, i, depth + 1)?;
             if !matches!(tokens.get(*i), Some(Tok::Op(')'))) {
                 return None;
             }
@@ -607,6 +624,21 @@ mod tests {
         assert!(eval_str("5%0").is_none());
         assert!(eval_str("5 % 0").is_none());
         assert!(eval_str("nope").is_none());
+    }
+
+    #[test]
+    fn deep_nesting_bounded_not_stack_overflow() {
+        // Audit P1: 15k nested parens used to abort the daemon with a stack
+        // overflow. The depth budget turns it into a clean `None`.
+        let deep = format!("{}1+1{}", "(".repeat(15_000), ")".repeat(15_000));
+        assert!(eval_str(&deep).is_none());
+        assert!(explain_str(&deep).is_none());
+        // A long sign chain hits the same recursion cycle via parse_unary.
+        let signs = format!("-{}", "-".repeat(15_000));
+        assert!(eval_str(&signs).is_none());
+        // Shallow nesting still parses and evaluates normally.
+        let ok = format!("{}1+1{}", "(".repeat(50), ")".repeat(50));
+        assert!((eval_str(&ok).unwrap() - 2.0).abs() < 1e-12);
     }
 
     #[test]

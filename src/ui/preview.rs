@@ -445,7 +445,9 @@ impl PreviewPanel {
             let Some((fs_meta, path)) = rx.recv().await.ok().flatten() else {
                 return;
             };
-            if this.gen.get() != gen || this.last_path.borrow().as_ref() != Some(&path) {
+            // Gen check only: last_path is set later by the queue_* paths,
+            // so comparing it here would drop every fresh selection.
+            if this.gen.get() != gen {
                 return; // a newer selection superseded this probe
             }
             this.apply_probed_metadata(&path, &fs_meta, &item);

@@ -1221,13 +1221,21 @@ impl ExcludeSet {
         let mut names = std::collections::HashSet::with_capacity(excludes.len());
         let mut patterns = Vec::new();
         for ex in excludes {
+            let ex = ex.trim();
+            if ex.is_empty() {
+                continue;
+            }
             if ex.contains('/') {
-                patterns.push(
-                    ex.split('/')
-                        .map(|c| c.to_ascii_lowercase())
-                        .filter(|c| !c.is_empty())
-                        .collect::<Vec<String>>(),
-                );
+                let pat: Vec<String> = ex
+                    .split('/')
+                    .map(|c| c.to_ascii_lowercase())
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                // Patterns reduced to nothing (e.g. "/") would make
+                // `matches` call `windows(0)` → panic; skip them.
+                if !pat.is_empty() {
+                    patterns.push(pat);
+                }
             } else {
                 names.insert(ex.to_ascii_lowercase());
             }
@@ -1272,6 +1280,26 @@ impl ExcludeSet {
 #[allow(dead_code)]
 pub fn is_excluded(path: &Path, excludes: &[String]) -> bool {
     ExcludeSet::from_list(excludes).matches(path)
+}
+
+#[cfg(test)]
+mod exclude_set_tests {
+    use super::*;
+
+    #[test]
+    fn slash_only_pattern_does_not_panic() {
+        // Audit P1 chain: `index.exclude = ["/"]` previously produced an empty
+        // pattern and `matches` called `windows(0)` → panic on every entry.
+        let ex = ExcludeSet::from_list(&["/".to_string()]);
+        assert!(!ex.matches(Path::new("/home/u/docs/report.md")));
+    }
+
+    #[test]
+    fn empty_and_blank_entries_ignored() {
+        let ex = ExcludeSet::from_list(&["".to_string(), "   ".to_string(), ".git".to_string()]);
+        assert!(ex.matches(Path::new("/home/u/proj/.git/HEAD")));
+        assert!(!ex.matches(Path::new("/home/u/proj/src/main.rs")));
+    }
 }
 
 #[cfg(test)]

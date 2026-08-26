@@ -233,6 +233,28 @@ mod tests {
     }
 
     #[test]
+    fn scoped_query_multibyte_no_panic() {
+        // Audit P1: `İ` changes byte length under `to_lowercase()`, shifting
+        // keyword offsets into mid-codepoint positions of the original string.
+        // Must not panic, and the split must stay correct. (Bare folder scope
+        // requires an index hit for confidence.)
+        let index = vec![make_indexed(
+            PathBuf::from("/home/u/文档"),
+            "文档".into(),
+            true,
+            1,
+            false,
+        )];
+        let sq = parse_scoped_query("İ in 文档", Some(&index)).unwrap();
+        assert_eq!(sq.name_pat, "i̇");
+        assert_eq!(sq.segments, vec!["文档"]);
+        // Hint parser shares the same lowercased-slice pattern.
+        let (name, prefix, _) = parse_scope_hint_query("İ.md in 文").unwrap();
+        assert_eq!(name, "İ.md");
+        assert_eq!(prefix, "文");
+    }
+
+    #[test]
     fn parse_extension_and_segments() {
         let g = parse_glob_query("*.md").unwrap();
         assert!(g.segments.is_empty());

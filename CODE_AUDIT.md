@@ -1841,13 +1841,13 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 
 138 findings from Passes 13–21 reorganized into categories. Sev: P1 (crash/abort), P2 (logic error, leak, security, silent data loss), P3 (minor). Multi-category entries appear once under their dominant category. Search by the Pass N + heading text to find the full entry with root cause, pathway, and remediation.
 
-### 🔴 Crash / Panic (P1 ×3)
+### 🔴 Crash / Panic (P1 ×3) — **ALL FIXED 2026-08-26** (fixes + regression tests; each test verified to fail with its fix reverted)
 
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
-| P1 | `to_lowercase()` byte-offset mismatch panics slicing the original query (İ/ẞ before scope keyword) | `files/search/plan.rs:101-114`, `257-286` | 16 |
-| P1 | Composite chain: exclude-`"/"` config + missing-path scoped query → walk `/` → `windows(0)` panic → `panic=abort` kills daemon | `config.rs:1185-1227` + `deep.rs:285-290,646` | 18 |
-| P1 | Stack overflow abort via ~15k nested parentheses in expression parser (empirically reproduced; paste-only) | `calc/expr.rs:238-241` | 20 |
+| P1 | `to_lowercase()` byte-offset mismatch panics slicing the original query (İ/ẞ before scope keyword) — **fixed**: `to_ascii_lowercase()` (length-preserving) in both parsers; test `scoped_query_multibyte_no_panic` | `files/search/plan.rs:101-114`, `257-286` | 16 |
+| P1 | Composite chain: exclude-`"/"` config + missing-path scoped query → walk `/` → `windows(0)` panic → `panic=abort` kills daemon — **fixed**: `ExcludeSet::from_list` skips empty/blank/empty-after-split patterns; test `slash_only_pattern_does_not_panic` | `config.rs:1185-1227` + `deep.rs:285-290,646` | 18 |
+| P1 | Stack overflow abort via ~15k nested parentheses in expression parser (empirically reproduced; paste-only) — **fixed**: `MAX_DEPTH = 200` threaded through parse_* and print_* families (incl. unary sign chains); test `deep_nesting_bounded_not_stack_overflow` | `calc/expr.rs:238-241` | 20 |
 
 ### 🔒 Security / Trust Boundaries
 

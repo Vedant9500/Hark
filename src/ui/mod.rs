@@ -39,9 +39,9 @@ use std::time::{Duration, Instant};
 
 /// Compact fixed outer width. When the media preview opens, the window widens
 /// by PREVIEW_WIDTH + separator (see `preview.set_visibility_cb` below).
-const WINDOW_WIDTH: i32 = 720;
-const EXPANDED_WINDOW_HEIGHT: i32 = 480; // Vicinae 770×480 (1.60) / Raycast 750×474 (1.58) — 720×480=1.50 fits preview 380+90
-const COMPACT_WINDOW_HEIGHT: i32 = 110;
+pub(crate) const WINDOW_WIDTH: i32 = 720;
+pub(crate) const EXPANDED_WINDOW_HEIGHT: i32 = 480; // Vicinae 770×480 (1.60) / Raycast 750×474 (1.58) — 720×480=1.50 fits preview 380+90
+pub(crate) const COMPACT_WINDOW_HEIGHT: i32 = 110;
 /// Extra transparent margin around the rounded shell (for soft drop-shadow).
 /// Keep at 0 — a non-zero square inset reads as "padding" on Sway/Hyprland
 /// because the layer surface is rectangular while the card is rounded.

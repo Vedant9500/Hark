@@ -99,7 +99,7 @@ pub(super) fn parse_scoped_query(q: &str, index: Option<&[IndexedPath]>) -> Opti
     if q.is_empty() {
         return None;
     }
-    let lower = q.to_lowercase();
+    let lower = q.to_ascii_lowercase();
     let mut best: Option<(usize, usize)> = None; // (keyword_start, keyword_len)
     for kw in SCOPE_KEYWORDS {
         if let Some(pos) = lower.find(kw) {
@@ -253,7 +253,7 @@ pub(super) fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)
     if q.is_empty() {
         return None;
     }
-    let lower = q.to_lowercase();
+    let lower = q.to_ascii_lowercase();
     let mut best: Option<(usize, usize, &'static str)> = None;
     for kw in SCOPE_KEYWORDS {
         if let Some(pos) = lower.find(kw) {
