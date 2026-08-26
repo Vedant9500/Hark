@@ -515,6 +515,7 @@ pub(super) fn path_completions(
     query: &str,
     style: &PathStyle,
     mounts: &[MountInfo],
+    excludes: &ExcludeSet,
 ) -> Vec<SearchResult> {
     let expanded = expand_path_query(query, mounts);
     let query_ends_sep = query.ends_with('/') || query == "~";
@@ -547,6 +548,11 @@ pub(super) fn path_completions(
             continue;
         }
         let path = entry.path();
+        // Same confidentiality filter as every other live-listing path —
+        // without it typing `/home/u/.ssh/` would list key material.
+        if should_skip_entry(&path, excludes) {
+            continue;
+        }
         let is_dir = path.is_dir();
         results.push(SearchResult {
             id: format!("path:{}", path.display()),
@@ -601,5 +607,39 @@ mod unicode_glob_tests {
         assert!(!glob_match("a?c", "ac"));
         assert!(!glob_match("*.rs", "readme.md"));
         assert!(glob_match("**", "anything"));
+    }
+
+    #[test]
+    fn path_completions_skip_secret_dirs() {
+        use super::{path_completions, ExcludeSet, PathStyle};
+
+        let base = std::env::temp_dir().join(format!(
+            "hark-comp-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let ssh = base.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::write(ssh.join("id_ed25519"), b"key").unwrap();
+        std::fs::write(ssh.join("known_hosts"), b"host").unwrap();
+        std::fs::write(base.join("readme.md"), b"hi").unwrap();
+
+        let excludes = ExcludeSet::from_list(&[]);
+        let q = format!("{}/.ssh/", base.display());
+        let res = path_completions(&q, &PathStyle::Label, &[], &excludes);
+        assert!(
+            res.is_empty(),
+            "secrets must not be listed, got {:?}",
+            res.iter().map(|r| &r.title).collect::<Vec<_>>()
+        );
+
+        let q = format!("{}/read", base.display());
+        let res = path_completions(&q, &PathStyle::Label, &[], &excludes);
+        assert!(res.iter().any(|r| r.title == "readme.md"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

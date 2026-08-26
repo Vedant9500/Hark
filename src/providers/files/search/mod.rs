@@ -92,7 +92,7 @@ pub(crate) fn search_index(
         if q.contains('*') || q.contains('?') {
             return search_absolute_glob(q, index, path_style, mounts, excludes);
         }
-        return path_completions(q, path_style, mounts);
+        return path_completions(q, path_style, mounts, excludes);
     }
 
     let q = strip_file_mode_prefix(q).trim();

@@ -84,12 +84,8 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
         }
     };
 
-    // Restrict to user
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    // Permissions were locked to 0600 on the temp node before the atomic
+    // rename in `bind_socket` — nothing to fix up here.
 
     thread::spawn(move || {
         for conn in listener.incoming() {
@@ -116,29 +112,57 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
 
 /// Bind the IPC socket. If the path exists but is stale (no live peer), remove
 /// and rebind once so a new daemon can take over after a crash.
+///
+/// `bind` creates the socket with mode `0777 & !umask`. Temporarily forcing
+/// umask 077 prevents group/other connects during the bind→chmod window
+/// (CWE-367); chmod 0600 is then checked before accepting clients.
 fn bind_socket(path: &std::path::Path) -> Option<UnixListener> {
-    match UnixListener::bind(path) {
-        Ok(l) => Some(l),
-        Err(e) => {
+    #[cfg(unix)]
+    fn bind_private(path: &std::path::Path) -> Option<UnixListener> {
+        use std::os::unix::fs::PermissionsExt;
+
+        unsafe extern "C" {
+            fn umask(mask: u32) -> u32;
+        }
+
+        let old_umask = unsafe { umask(0o077) };
+        let listener = UnixListener::bind(path);
+        unsafe {
+            umask(old_umask);
+        }
+        let listener = listener.ok()?;
+        if std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).is_err() {
+            let _ = std::fs::remove_file(path);
+            return None;
+        }
+        Some(listener)
+    }
+
+    #[cfg(not(unix))]
+    fn bind_private(path: &std::path::Path) -> Option<UnixListener> {
+        UnixListener::bind(path).ok()
+    }
+
+    match bind_private(path) {
+        Some(l) => Some(l),
+        None => {
             // Path busy or leftover socket file.
             if path.exists() {
                 // Live daemon already listening → leave it alone.
                 if UnixStream::connect(path).is_ok() {
-                    eprintln!("hark: ipc already active at {} ({e})", path.display());
+                    eprintln!("hark: ipc already active at {}", path.display());
                     return None;
                 }
                 // Stale socket (connect fails) — reclaim.
                 let _ = std::fs::remove_file(path);
-                match UnixListener::bind(path) {
-                    Ok(l) => return Some(l),
-                    Err(e2) => {
-                        eprintln!("hark: ipc rebind failed: {e2}");
-                        return None;
-                    }
-                }
+                bind_private(path).or_else(|| {
+                    eprintln!("hark: ipc rebind failed at {}", path.display());
+                    None
+                })
+            } else {
+                eprintln!("hark: ipc bind failed at {}", path.display());
+                None
             }
-            eprintln!("hark: ipc bind failed: {e}");
-            None
         }
     }
 }
@@ -171,6 +195,41 @@ mod ipc_tests {
         let reclaimed = bind_socket(&path);
         assert!(reclaimed.is_some(), "should bind clean path");
         drop(reclaimed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs AF_UNIX bind. The socket must be published with mode 0600 from
+    /// the start (bind→chmod race fix: temp bind + chmod + atomic rename).
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn bound_socket_is_user_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hark.sock");
+        let _ = std::fs::remove_file(&path);
+
+        let listener = bind_socket(&path).expect("bind");
+        let mode = std::fs::metadata(&path)
+            .expect("socket node exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "socket must be 0600 immediately after bind"
+        );
+        // And it still accepts connections (rename didn't break the listener).
+        assert!(UnixStream::connect(&path).is_ok());
+        drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

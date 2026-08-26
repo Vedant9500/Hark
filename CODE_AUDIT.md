@@ -350,6 +350,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 - **Classification:** SSRF-adjacent credential/data disclosure (OWASP *Unvalidated Redirects and Forwards* / CWE-601, with CWE-200 for secret disclosure).
 - **Verified constraints:** only the custom LibreTranslate branch carries the API key; free Google/MyMemory requests contain no secret. The endpoint deny-list does block direct cloud-metadata/link-local first hops, so the issue is specifically redirect-time target validation, not the initial parse.
 - **Remediation (fully audited):** make `post_json` accept no redirects (or use a dedicated translate agent with `redirects(0)`) and perform an explicit allow-once redirect resolver that revalidates every hop with the existing `validate_translate_endpoint`. Simpler safe patch: build the translate request agent with `.redirects(0)`, surface HTTP 3xx as an error, and require the user to update the endpoint. Add a regression test with a local 307 listener (ignored by default like the current socket tests) asserting no second request/body replay occurs.
+- **Status 2026-08-26:** fixed in `src/providers/http.rs` by routing secret-bearing `post_json` through a dedicated `.redirects(0)` agent. Added `post_json_agent_has_redirects_disabled`, which starts local source/target listeners and asserts the redirect target is not contacted.
 
 #### P2 — daemon has no graceful process-lifecycle cleanup (`src/main.rs:16-110`, `src/ipc.rs:54-119`)
 
@@ -1854,9 +1855,9 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
 | P2 | Translate disk cache unauthenticated + world-writable `/tmp` fallback → attacker-controlled clipboard | `translate.rs:928-960` | 16 |
-| P2 | `path_completions` bypasses secrets/artifact exclude filter (`.ssh` listing) | `files/search/glob.rs:541-569` | 19 |
+| P2 | `path_completions` bypasses secrets/artifact exclude filter (`.ssh` listing) — **fixed 2026-08-26**: completions now receive `ExcludeSet` and call `should_skip_entry`; test `path_completions_skip_secret_dirs` | `files/search/glob.rs:541-569` | 19 |
 | P2 | Serialized IPC accept loop: slowloris clients wedge all hotkey presses | `ipc.rs:96-113` | 14 |
-| P2 | bind→chmod race leaves socket briefly world-connectable | `ipc.rs:121`, `:90-94` | 14 |
+| P2 | bind→chmod race leaves socket briefly world-connectable — **fixed 2026-08-26**: `bind_socket` temporarily forces umask 077 during bind, then checks chmod 0600; ignored test `bound_socket_is_user_only` | `ipc.rs:121`, `:90-94` | 14 |
 | P2 | Unbounded toggle channel: flood grows memory + overlay churn | `main.rs:92-103` | 14 |
 | P2 | IPC flood → duplicate GTK Application spawn chain | `ipc.rs:96-113` + `main.rs:44-48` | 18 |
 | P2 | Stale drag-end timer fires mid-drag, hides launcher, cancels Wayland drop | `ui/dnd.rs:178-225` | 13 |
