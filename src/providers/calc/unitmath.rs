@@ -175,16 +175,14 @@ fn parse_expr(s: &str) -> Option<(Qty, bool, bool, bool)> {
     Some((qty, op, unitful, frac))
 }
 
-struct P<'a> {
-    _b: &'a [u8],
+struct P {
     chars: Vec<char>,
     i: usize,
 }
 
-impl<'a> P<'a> {
-    fn new(s: &'a str) -> Self {
+impl P {
+    fn new(s: &str) -> Self {
         P {
-            _b: s.as_bytes(),
             chars: s.chars().collect(),
             i: 0,
         }

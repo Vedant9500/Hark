@@ -604,7 +604,7 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
         "eet" | "eest" => "Europe/Bucharest",
         "wet" | "west" => "Europe/Lisbon",
         "bst" => "Europe/London", // British Summer — London handles GMT/BST
-        "ist" => "Asia/Kolkata", // India Standard Time
+        "ist" => "Asia/Kolkata",  // India Standard Time
         "ist-india" | "india" => "Asia/Kolkata",
         "jst" | "japan" => "Asia/Tokyo",
         "kst" | "korea" => "Asia/Seoul",
@@ -686,17 +686,17 @@ pub(crate) fn display_tz_label(token: &str) -> String {
 /// DST-observing entries only resolve while their current offset matches —
 /// verified at lookup time in `tz_for_offset`.
 const HALF_HOUR_ZONES: &[(i32, &str)] = &[
-    (19800, "Asia/Kolkata"),      // +5:30
-    (20700, "Asia/Kathmandu"),    // +5:45
-    (12600, "Asia/Tehran"),       // +3:30
-    (16200, "Asia/Kabul"),        // +4:30
-    (23400, "Asia/Yangon"),       // +6:30
-    (-9000, "America/St_Johns"),  // -2:30 NDT (DST); std NST is -3:30 and fails check then
-    (-34200, "Pacific/Marquesas"), // -9:30 fixed
-    (34200, "Australia/Darwin"),  // +9:30 fixed
-    (31500, "Australia/Eucla"),   // +8:45
+    (19800, "Asia/Kolkata"),        // +5:30
+    (20700, "Asia/Kathmandu"),      // +5:45
+    (12600, "Asia/Tehran"),         // +3:30
+    (16200, "Asia/Kabul"),          // +4:30
+    (23400, "Asia/Yangon"),         // +6:30
+    (-9000, "America/St_Johns"),    // -2:30 NDT (DST); std NST is -3:30 and fails check then
+    (-34200, "Pacific/Marquesas"),  // -9:30 fixed
+    (34200, "Australia/Darwin"),    // +9:30 fixed
+    (31500, "Australia/Eucla"),     // +8:45
     (37800, "Australia/Lord_Howe"), // +10:30 (+11 DST — fails check then)
-    (45900, "Pacific/Chatham"),   // +12:45 (+13:45 DST)
+    (45900, "Pacific/Chatham"),     // +12:45 (+13:45 DST)
 ];
 
 /// Map exact UTC offset seconds to a resolvable zone. Whole hours use
@@ -763,10 +763,7 @@ fn parse_utc_offset_token(t: &str) -> Option<i32> {
         return None;
     }
     let (h, m) = match compact.len() {
-        1 | 2 => (
-            compact.parse::<i32>().ok()?,
-            0,
-        ),
+        1 | 2 => (compact.parse::<i32>().ok()?, 0),
         3 => (
             compact[..1].parse::<i32>().ok()?,
             compact[1..].parse::<i32>().ok()?,
@@ -898,7 +895,9 @@ mod offset_token_tests {
         assert_eq!(label, "UTC-09:30");
         if let Some(tz) = tz_for_offset(off) {
             assert_eq!(
-                tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc(),
+                tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                    .fix()
+                    .local_minus_utc(),
                 off
             );
         } else {
@@ -909,7 +908,11 @@ mod offset_token_tests {
     fn offset_of(token: &str) -> Option<i32> {
         let (tz, label) = resolve_tz(token)?;
         assert!(!label.is_empty(), "empty label for {token}");
-        Some(tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc())
+        Some(
+            tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                .fix()
+                .local_minus_utc(),
+        )
     }
 
     #[test]
@@ -931,15 +934,30 @@ mod offset_token_tests {
     #[test]
     fn offset_to_zone_half_hours() {
         let tz = tz_for_offset(19800).expect("+5:30 must map");
-        assert_eq!(tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc(), 19800);
+        assert_eq!(
+            tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                .fix()
+                .local_minus_utc(),
+            19800
+        );
         let tz = tz_for_offset(20700).expect("+5:45 must map");
-        assert_eq!(tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc(), 20700);
+        assert_eq!(
+            tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                .fix()
+                .local_minus_utc(),
+            20700
+        );
     }
 
     #[test]
     fn offset_to_zone_whole_hours() {
         let tz = tz_for_offset(-28800).expect("-8 must map");
-        assert_eq!(tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc(), -28800);
+        assert_eq!(
+            tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                .fix()
+                .local_minus_utc(),
+            -28800
+        );
     }
 
     #[test]
@@ -964,7 +982,16 @@ mod offset_token_tests {
     fn local_zone_matches_current_local_offset() {
         let (tz, label) = local_as_tz().expect("local zone resolvable");
         assert_eq!(label, "LOCAL");
-        let expected = Utc::now().with_timezone(&chrono::Local).offset().fix().local_minus_utc();
-        assert_eq!(tz.offset_from_utc_datetime(&Utc::now().naive_utc()).fix().local_minus_utc(), expected);
+        let expected = Utc::now()
+            .with_timezone(&chrono::Local)
+            .offset()
+            .fix()
+            .local_minus_utc();
+        assert_eq!(
+            tz.offset_from_utc_datetime(&Utc::now().naive_utc())
+                .fix()
+                .local_minus_utc(),
+            expected
+        );
     }
 }

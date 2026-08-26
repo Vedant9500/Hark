@@ -133,12 +133,12 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
     }
 
     if let Some(rest) = lower.strip_prefix("0x") {
-        if let Ok(v) = u64::from_str_radix(rest.trim(), 16) {
+        if let Ok(v) = i128::from_str_radix(rest.trim(), 16) {
             return Some(base_result(v, q));
         }
     }
     if let Some(rest) = lower.strip_prefix("0b") {
-        if let Ok(v) = u64::from_str_radix(rest.trim(), 2) {
+        if let Ok(v) = i128::from_str_radix(rest.trim(), 2) {
             return Some(base_result(v, q));
         }
     }
@@ -146,9 +146,9 @@ pub(crate) fn try_natural(q: &str) -> Option<SearchResult> {
     None
 }
 
-pub(crate) fn base_result(v: u64, original: &str) -> SearchResult {
+pub(crate) fn base_result(v: i128, original: &str) -> SearchResult {
     let title = format!("{v}");
-    let subtitle = format!("{original} → dec {v} · hex 0x{v:X} · bin 0b{v:b}");
+    let subtitle = format!("{original} → dec {v} · hex {v:#x} · bin {v:#b}");
     card_result(
         title.clone(),
         subtitle,

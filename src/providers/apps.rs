@@ -35,9 +35,13 @@ struct DesktopApp {
 /// tokens containing whitespace or quote characters are re-quoted here.
 fn quote_token(tok: &str) -> String {
     if !tok.is_empty()
-        && tok
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.' | ':' | '=' | '+' | '@' | ',' | '%' | '*'))
+        && tok.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '_' | '-' | '/' | '.' | ':' | '=' | '+' | '@' | ',' | '%' | '*'
+                )
+        })
     {
         return tok.to_string();
     }
@@ -56,7 +60,10 @@ fn quote_token(tok: &str) -> String {
 
 /// Join argv into an Exec-style string that survives a re-split unchanged.
 fn quote_join(argv: &[String]) -> String {
-    argv.iter().map(|t| quote_token(t)).collect::<Vec<_>>().join(" ")
+    argv.iter()
+        .map(|t| quote_token(t))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub struct AppProvider {
@@ -448,6 +455,15 @@ fn split_exec_args(exec: &str) -> Vec<String> {
 
     while let Some(c) = chars.next() {
         match c {
+            // Desktop Entry spec: outside quotes, `\` escapes the next char
+            // (`bar\ baz` is one token, `\\` is a literal backslash).
+            '\\' if !in_single && !in_double => {
+                // Drop the backslash; the escaped char keeps its literal value
+                // but loses any special meaning (whitespace stays in-token).
+                if let Some(escaped) = chars.next() {
+                    cur.push(escaped);
+                }
+            }
             '\'' if !in_double => {
                 in_single = !in_single;
             }
@@ -653,6 +669,19 @@ mod tests {
 
     #[test]
     fn split_exec_args_handles_quotes_and_field_codes() {
+        // Desktop Entry spec: unquoted backslash escapes the next char.
+        assert_eq!(
+            split_exec_args(r"/usr/bin/foo bar\ baz"),
+            vec!["/usr/bin/foo".to_string(), "bar baz".to_string()]
+        );
+        assert_eq!(
+            split_exec_args(r"/usr/bin/foo a\\b"),
+            vec!["/usr/bin/foo".to_string(), "a\\b".to_string()]
+        );
+        assert_eq!(
+            split_exec_args(r"/bin/echo 'single \ kept'"),
+            vec!["/bin/echo".to_string(), "single \\ kept".to_string()]
+        );
         assert_eq!(
             split_exec_args(r#"/usr/bin/foo --opt="bar baz" %F"#),
             vec![

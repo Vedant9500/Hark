@@ -2,6 +2,7 @@ mod hot;
 pub(crate) mod index;
 mod live_cache;
 mod search;
+use search::FILE_RESULT_LIMIT;
 
 use crate::config::{pretty_path, ConfigStore, ExcludeSet};
 use crate::providers::{Action, ResultKind, SearchResult};
@@ -317,7 +318,7 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
             .cmp(&a.score)
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
-    base.truncate(25);
+    base.truncate(FILE_RESULT_LIMIT);
 }
 
 /// Expand `~` for settings / promote UI.

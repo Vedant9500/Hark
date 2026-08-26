@@ -1203,13 +1203,12 @@ impl ExcludeSet {
             return false;
         }
         // Component name checks first (common case) — O(components) set lookups.
+        // Set stores ascii-lowercase keys — lowercase the component once and
+        // do a single lookup.
         if !self.names.is_empty() {
             for c in path.components() {
-                let name = c.as_os_str().to_string_lossy();
-                // Set stores ascii-lowercase keys; one lower per component.
-                if self.names.contains(name.as_ref())
-                    || self.names.contains(&name.to_ascii_lowercase())
-                {
+                let name_lower = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+                if self.names.contains(name_lower.as_str()) {
                     return true;
                 }
             }

@@ -1246,21 +1246,23 @@ fn decode_preview_media(path: &Path) -> Option<DecodedPixels> {
 
 /// Prefer FreeDesktop thumb; fall back to scaled original (single open each).
 fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels> {
-    if let Some(mut px) = pixbuf_to_pixels(&Pixbuf::from_file(thumb).ok()?) {
-        let kind = media_kind(original);
-        let is_pdf = original
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("pdf"))
-            .unwrap_or(false);
-        px.dims_label = if kind == MediaKind::Video {
-            format!("Video · {} × {}", px.width, px.height)
-        } else if is_pdf {
-            format!("PDF · {} × {}", px.width, px.height)
-        } else {
-            format!("Thumbnail · {} × {}", px.width, px.height)
-        };
-        return Some(px);
+    if let Ok(pb) = Pixbuf::from_file(thumb) {
+        if let Some(mut px) = pixbuf_to_pixels(&pb) {
+            let kind = media_kind(original);
+            let is_pdf = original
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("pdf"))
+                .unwrap_or(false);
+            px.dims_label = if kind == MediaKind::Video {
+                format!("Video · {} × {}", px.width, px.height)
+            } else if is_pdf {
+                format!("PDF · {} × {}", px.width, px.height)
+            } else {
+                format!("Thumbnail · {} × {}", px.width, px.height)
+            };
+            return Some(px);
+        }
     }
     // Thumb corrupt — fall through by kind.
     let kind = media_kind(original);

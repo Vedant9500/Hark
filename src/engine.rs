@@ -507,7 +507,6 @@ impl Engine {
             return Ok((id, name));
         }
         // App by name / desktop id
-        let q = t.to_lowercase();
         // Prefer exact desktop id without app: prefix
         if let Some(r) = self.apps.resolve_id(&format!("app:{t}")) {
             return Ok((r.id, r.title));
@@ -527,7 +526,6 @@ impl Engine {
         if let Some(r) = hits.first() {
             return Ok((r.id.clone(), r.title.clone()));
         }
-        let _ = q;
         Err(format!("No app or path matching “{t}”"))
     }
 

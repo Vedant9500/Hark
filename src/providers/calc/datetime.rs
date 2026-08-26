@@ -577,7 +577,6 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         ));
     }
 
-    let _ = now.hour(); // keep Timelike import used
     None
 }
 

@@ -120,6 +120,18 @@ pub(super) fn score_free_text_full(
     }
 
     if best_hot >= HOT_SKIP_FULL_SCORE {
+        // Strong hot hits — still run the fuzzy pass so fuzzy-only candidates
+        // aren't dropped and highlight spans stay consistent with the
+        // non-short-circuited path.
+        finish_free_text_fuzzy(
+            &mut heap,
+            index,
+            q,
+            q_lower,
+            matcher,
+            allow_fuzzy,
+            &mut fuzzy_spans,
+        );
         return heap_to_results(heap, index, q_lower, &fuzzy_spans, path_style, mounts);
     }
 
@@ -216,13 +228,15 @@ fn finish_free_text_fuzzy(
                 if heap.len() >= FILE_RESULT_LIMIT && *min_score >= STRONG_SCORE
         );
         fuzzy_left -= 1;
-        let Some((score, spans)) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) else {
-            continue;
-        };
-        if let Some(sp) = spans {
-            fuzzy_spans.insert(idx, sp);
+        if let Some((score, spans)) = score_fuzzy(item, q, q_lower, matcher, allow_path_fuzzy) {
+            if let Some(sp) = spans {
+                fuzzy_spans.insert(idx, sp);
+            }
+            push_heap(heap, score, item.depth, idx);
+        } else {
+            // Failed scoring didn't score — refund so it doesn't burn budget.
+            fuzzy_left += 1;
         }
-        push_heap(heap, score, item.depth, idx);
     }
 }
 

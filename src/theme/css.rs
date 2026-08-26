@@ -1,4 +1,4 @@
-use super::{Theme, sanitize_hex};
+use super::{sanitize_hex, Theme};
 
 pub fn is_light_theme(hex: &str) -> bool {
     // scheme.json values are external input — sanitize before byte slicing.
@@ -1206,8 +1206,14 @@ mod tests {
         let ui = UiThemeConfig::default();
         // Sanitized fallback (#ffffff) reads as light.
         assert!(is_light_theme(&theme.surface_container));
-        assert_eq!(rgba(&theme.surface_container, 0.5), "rgba(255, 255, 255, 0.5)");
-        assert_eq!(rgba(&theme.outline_variant, 0.5), "rgba(255, 255, 255, 0.5)");
+        assert_eq!(
+            rgba(&theme.surface_container, 0.5),
+            "rgba(255, 255, 255, 0.5)"
+        );
+        assert_eq!(
+            rgba(&theme.outline_variant, 0.5),
+            "rgba(255, 255, 255, 0.5)"
+        );
         let _ = render(&theme, &ui); // must not panic
     }
 }

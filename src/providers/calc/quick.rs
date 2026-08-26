@@ -27,7 +27,7 @@ fn base_keyword(s: &str) -> Option<u32> {
 
 /// Infer the source base of a bare literal: `0x`/`0b`/`0o` prefixes win;
 /// otherwise all digits → decimal, letters a–f → hex.
-fn infer_base(s: &str) -> Option<(u32, u64)> {
+fn infer_base(s: &str) -> Option<(u32, i128)> {
     let t = s.trim().to_ascii_lowercase();
     let (digits, base) = if let Some(h) = t.strip_prefix("0x") {
         (h, 16)
@@ -42,7 +42,7 @@ fn infer_base(s: &str) -> Option<(u32, u64)> {
     } else {
         return None;
     };
-    let v = u64::from_str_radix(digits, base).ok()?;
+    let v = i128::from_str_radix(digits, base).ok()?;
     Some((base, v))
 }
 
@@ -55,11 +55,11 @@ fn base_badge(s: &str) -> &'static str {
     }
 }
 
-fn base_card(v: u64, shown: &str, dst_base: u32, right_badge: &'static str) -> SearchResult {
+fn base_card(v: i128, shown: &str, dst_base: u32, right_badge: &'static str) -> SearchResult {
     let dec = v.to_string();
-    let hex = format!("0x{v:x}");
-    let bin = format!("0b{v:b}");
-    let oct = format!("0o{v:o}");
+    let hex = format!("{v:#x}");
+    let bin = format!("{v:#b}");
+    let oct = format!("{v:#o}");
     let out = match dst_base {
         16 => hex.trim_start_matches("0x").to_string(),
         2 => bin.trim_start_matches("0b").to_string(),
@@ -88,7 +88,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
     });
     // `1010 bin to dec` — explicit source base.
     static RE_SRC_BASE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^([0-9a-f]+)\s+(hex|bin|oct|dec)\s+(?:to|in|as)\s+(hex|bin|oct|dec)\s*$")
+        Regex::new(r"(?i)^([0-9a-f]+)\s+(hex(?:a(?:decimal)?)?|bin(?:ary)?|oct(?:al)?|dec(?:imal)?)\s+(?:to|in|as)\s+(hex(?:a(?:decimal)?)?|bin(?:ary)?|oct(?:al)?|dec(?:imal)?)\s*$")
             .unwrap()
     });
 
@@ -99,7 +99,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
         if src_base == dst_base {
             return None;
         }
-        let v = u64::from_str_radix(digits, src_base).ok()?;
+        let v = i128::from_str_radix(digits, src_base).ok()?;
         return Some(base_card(
             v,
             q.trim(),
@@ -503,8 +503,7 @@ fn parse_size_bytes(s: &str) -> Option<f64> {
 fn parse_speed_bps(s: &str) -> Option<f64> {
     let (v, u) = split_num_unit(s)?;
     let is_byte = u.ends_with('B')
-        || u
-            .chars()
+        || u.chars()
             .zip(u.chars().skip(1))
             .any(|(c, n)| c == 'B' && matches!(n, 'p' | 'P' | '/'))
         || u.to_ascii_lowercase().contains("byte");
@@ -700,7 +699,7 @@ fn rng_int(lo: i64, hi: i64) -> i64 {
         return lo;
     }
     let span = (hi as i128 - lo as i128 + 1) as u128; // ≤ 2^64, fits
-    // Rejection-sample a u128 against span to avoid modulo bias.
+                                                      // Rejection-sample a u128 against span to avoid modulo bias.
     loop {
         let v = ((next_u64() as u128) << 64) | (next_u64() as u128);
         let limit = u128::MAX - (u128::MAX % span);
@@ -1042,6 +1041,12 @@ mod tests {
         assert_eq!(r.title, "10");
         let r = try_quickwin("0x1f to dec").expect("0x");
         assert_eq!(r.title, "31");
+        // `hexa` keyword is reachable and >u64 literals convert (was silent None).
+        let r = try_quickwin("ff hexa to dec").expect("hexa keyword");
+        assert_eq!(r.title, "255");
+        let big = "f".repeat(20);
+        let r = try_quickwin(format!("{big} hex to dec").as_str()).expect(">u64 hex");
+        assert_eq!(r.title, i128::from_str_radix(&big, 16).unwrap().to_string());
         let r = try_quickwin("255 to oct").expect("oct");
         assert_eq!(r.title, "377");
         // Must not steal conversions / financial.
@@ -1233,10 +1238,9 @@ mod tests {
         assert_eq!(s.len(), 36);
         assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
         assert_eq!(&s[14..15], "4", "version nibble");
-        let re = Regex::new(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-        )
-        .unwrap();
+        let re =
+            Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+                .unwrap();
         assert!(re.is_match(s), "bad uuid format: {s}");
         let r = try_quickwin("password 20").expect("password");
         assert_eq!(r.title.len(), 20);

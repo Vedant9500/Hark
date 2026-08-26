@@ -499,16 +499,20 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
         let depth_hint = depth_hint.clone();
         depth_dec.connect_clicked(move |_| {
             let mut next = 2usize;
+            let mut changed = false;
             engine.config().update(|c| {
                 let d = c.index.max_depth.clamp(1, 6);
                 next = d.saturating_sub(1).max(1);
+                changed = next != d;
                 c.index.max_depth = next;
             });
             depth_val.set_text(&format!("{next}"));
             if let Some(h) = &depth_hint {
                 h.set_text(&depth_help_text(next));
             }
-            engine.force_reindex();
+            if changed {
+                engine.force_reindex();
+            }
         });
     }
     {
@@ -517,16 +521,20 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
         let depth_hint = depth_hint.clone();
         depth_inc.connect_clicked(move |_| {
             let mut next = 2usize;
+            let mut changed = false;
             engine.config().update(|c| {
                 let d = c.index.max_depth.clamp(1, 6);
                 next = (d + 1).min(6);
+                changed = next != d;
                 c.index.max_depth = next;
             });
             depth_val.set_text(&format!("{next}"));
             if let Some(h) = &depth_hint {
                 h.set_text(&depth_help_text(next));
             }
-            engine.force_reindex();
+            if changed {
+                engine.force_reindex();
+            }
         });
     }
 
@@ -845,13 +853,18 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
         let entry = entry.clone();
         let list = list.clone();
         add.connect_clicked(move |_| {
-            let p = entry.text().to_string().trim().to_string();
-            if p.is_empty() {
+            let raw = entry.text().to_string().trim().to_string();
+            if raw.is_empty() {
                 return;
             }
+            // Normalize like the pin path does so `~/x` and `/home/u/x`
+            // can't both be stored as separate rows.
+            let p = crate::providers::files::expand_user_path(&raw)
+                .to_string_lossy()
+                .to_string();
             engine.config().update(|c| {
-                if !c.index.extra_roots.contains(&p) {
-                    c.index.extra_roots.push(p);
+                if !c.index.extra_roots.iter().any(|r| r == &p) {
+                    c.index.extra_roots.push(p.clone());
                 }
             });
             entry.set_text("");
