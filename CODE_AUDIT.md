@@ -1368,22 +1368,23 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** the single-segment re-check of `contains('*')||contains('?')` duplicates the fully-handled earlier branch; the `Some` arm is unreachable. Behavior coincidentally correct; dead check invites mis-edits.
 - **Remediation:** delete the dead arm.
 
-#### P3 — ureq honors proxy env vars unscoped (`src/providers/http.rs:16-21`)
+#### P3 — ureq honors proxy env vars unscoped (`src/providers/http.rs:16-21`) — **not reproducible (verified 2026-08-27)**
 
 - **Root cause:** no `.proxy()` configuration; ureq 2.x default features read `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`. A hostile session env reroutes all provider traffic (including pasted translate text and the LibreTranslate api_key destination) through the attacker's proxy; TLS protects content but metadata/availability are exposed. CWE-441.
-- **Remediation:** configure proxy explicitly from user settings only, or document/validate env proxy use.
+- **Verification 2026-08-27:** the `proxy-from-env` Cargo feature is **not** in ureq's default feature list (`default = ["tls", "gzip"]`) and `cargo tree -e features` shows nothing enables it; `try_proxy_from_env` is `false` at runtime, so env proxies are never read. Latent only: if `proxy-from-env` is ever enabled (directly or transitively), revisit.
+- **Remediation (if it ever goes live):** configure proxy explicitly from user settings only, or document/validate env proxy use.
 
-#### P3 — MyMemory in-band error strings other than the two blocklisted render as translations and are cached (`src/providers/translate.rs:840-855`)
+#### P3 — MyMemory in-band error strings other than the two blocklisted render as translations and are cached (`src/providers/translate.rs:840-855`) — **fixed 2026-08-27**
 
 - **Root cause:** MyMemory returns HTTP 200 with status text inside `responseData.translatedText`; only two literal strings are rejected. The documented quota response (`MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS…`) becomes the displayed "translation", is copied by `Action::Copy`, and is disk-cached for 14 days. CWE-754.
 - **Remediation:** parse `responseStatus` and reject non-200; blocklist `MYMEMORY WARNING`.
 
-#### P3 — fx.rs accepts any `base`/`date` from network or disk (`src/providers/fx.rs:265-281`)
+#### P3 — fx.rs accepts any `base`/`date` from network or disk (`src/providers/fx.rs:265-281`) — **fixed 2026-08-27**
 
 - **Root cause:** only rates are sanity-checked. A tampered cache or compromised response with `"base":"USD"` produces silently wrong conversions with a legitimate-looking badge; `date` is never format- or freshness-checked, so a 1999 table freshly cached displays as current. CWE-20.
 - **Remediation:** require `base == "EUR"` (URL is EUR-based), validate `date` as ISO within N days of `fetched_at`, bound rates to a plausible range.
 
-#### P3 — LibreTranslate api_key sent plaintext to user-allowed `http://` endpoints (`src/providers/translate.rs:718-728`, `config.rs:499-535`)
+#### P3 — LibreTranslate api_key sent plaintext to user-allowed `http://` endpoints (`src/providers/translate.rs:718-728`, `config.rs:499-535`) — **fixed 2026-08-27** (key refused to non-loopback plain-HTTP endpoints; disk storage was already 0600)
 
 - **Root cause:** endpoint validation explicitly allows plain HTTP (loopback test at `config.rs:1430-1432`); a LAN endpoint sends the key in cleartext. Disk storage is already mode-0600 (acceptable); the transport is the gap.
 - **Remediation:** warn or refuse `api_key` + non-https endpoints unless the host is loopback.

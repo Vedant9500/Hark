@@ -269,6 +269,15 @@ fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
         rates: HashMap<String, f64>,
     }
     let api: Api = serde_json::from_slice(body).ok()?;
+    // The URL is EUR-based; any other base means a tampered or redirected
+    // response — conversions would be silently wrong with a legit-looking
+    // badge.
+    if !api.base.eq_ignore_ascii_case("eur") {
+        return None;
+    }
+    if !iso_date_ok(&api.date) || !date_within_days(&api.date, chrono::Local::now().date_naive(), 45) {
+        return None;
+    }
     if !sane_rates(&api.rates) {
         return None;
     }
@@ -278,6 +287,28 @@ fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
         rates: api.rates,
         fetched_at: now_secs(),
     })
+}
+
+/// `YYYY-MM-DD` and a real calendar date. Network responses must additionally
+/// be recent (±45 days): a forged far-past/future table must not enter the
+/// cache as "current". Disk caches skip a today-relative bound — serving a
+/// genuinely old table offline is by design ("stale cache" badge) — but a
+/// *freshly written* cache whose date disagrees with its own `fetched_at`
+/// by more than 45 days is tampered and rejected.
+fn iso_date_ok(date: &str) -> bool {
+    if date.len() != 10
+        || date.as_bytes().get(4) != Some(&b'-')
+        || date.as_bytes().get(7) != Some(&b'-')
+    {
+        return false;
+    }
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
+}
+
+fn date_within_days(date: &str, reference: chrono::NaiveDate, days: i64) -> bool {
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map(|d| (d - reference).num_days().abs() <= days)
+        .unwrap_or(false)
 }
 
 fn cache_path() -> PathBuf {
@@ -293,9 +324,23 @@ fn load_disk() -> Option<RatesCache> {
 }
 
 /// Deserialize + validate a disk cache; tampered or corrupt entries (zero /
-/// negative / non-finite rates) invalidate the whole cache → None → refetch.
+/// negative / non-finite rates, foreign base, malformed/forged date)
+/// invalidate the whole cache → None → refetch.
 fn parse_disk_cache(data: &str) -> Option<RatesCache> {
     let c: RatesCache = serde_json::from_str(data).ok()?;
+    if !c.base.eq_ignore_ascii_case("eur") {
+        return None;
+    }
+    if !iso_date_ok(&c.date) {
+        return None;
+    }
+    // `fetched_at` is our own timestamp; a table whose date contradicts it
+    // was tampered (e.g. a 1999 table written today).
+    let fetched = chrono::DateTime::from_timestamp(c.fetched_at as i64, 0)?
+        .date_naive();
+    if !date_within_days(&c.date, fetched, 45) {
+        return None;
+    }
     if !sane_rates(&c.rates) {
         return None;
     }
@@ -376,6 +421,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_rejects_foreign_base_and_bad_dates() {
+        // Audit P3 (Pass 16): tampered cache/response with wrong base or
+        // forged date must not be accepted as convertible.
+        let rates = serde_json::json!({ "USD": 1.1 });
+        // USD base — URL is EUR-based; reject.
+        let body = serde_json::json!({
+            "amount": 1.0, "base": "USD", "date": "2026-08-26", "rates": rates
+        });
+        assert!(parse_rates_body(body.to_string().as_bytes()).is_none());
+        // Malformed / non-calendar date — reject.
+        for bad in ["2026-13-01", "not-a-date", "2026/08/26"] {
+            let body = serde_json::json!({
+                "base": "EUR", "date": bad, "rates": { "USD": 1.1 }
+            });
+            assert!(parse_rates_body(body.to_string().as_bytes()).is_none(), "{bad}");
+        }
+        // Far-past table from the network — reject (would cache as current).
+        let body = serde_json::json!({
+            "base": "EUR", "date": "1999-01-01", "rates": { "USD": 1.1 }
+        });
+        assert!(parse_rates_body(body.to_string().as_bytes()).is_none());
+        // Valid shape — accept.
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let body = serde_json::json!({
+            "base": "EUR", "date": today, "rates": { "USD": 1.1 }
+        });
+        assert!(parse_rates_body(body.to_string().as_bytes()).is_some());
+    }
+
+    #[test]
+    fn disk_cache_rejects_tampered_date_vs_fetched_at() {
+        let good = serde_json::json!({
+            "base": "EUR", "date": "2025-08-01",
+            "rates": { "USD": 1.1 }, "fetched_at": 1754000000_u64
+        });
+        assert!(parse_disk_cache(&good.to_string()).is_some(), "date within 45d of fetched_at");
+        // 1999 table written "today": date contradicts fetched_at — reject.
+        let tampered = serde_json::json!({
+            "base": "EUR", "date": "1999-01-01",
+            "rates": { "USD": 1.1 }, "fetched_at": 1754000000_u64
+        });
+        assert!(parse_disk_cache(&tampered.to_string()).is_none());
+        // Foreign base on disk — reject.
+        let usd = serde_json::json!({
+            "base": "USD", "date": "2026-08-01",
+            "rates": { "USD": 1.1 }, "fetched_at": 1754000000_u64
+        });
+        assert!(parse_disk_cache(&usd.to_string()).is_none());
+    }
+
+    #[test]
     fn convert_uses_disk_without_network_when_present() {
         // If disk cache exists from the machine, convert must return Some quickly.
         // This does not assert network; only that convert does not require success.
@@ -447,20 +543,21 @@ mod tests {
         // Missing base/date.
         assert!(parse_rates_body(br#"{"rates":{"USD":1.1}}"#).is_none());
         // Zero / negative / non-finite rates would poison conversions — reject.
-        assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":0.0}}"#).is_none());
+        assert!(parse_rates_body(br#"{"base":"EUR","date":"2026-13-01","rates":{"USD":0.0}}"#).is_none());
         assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":-1.1}}"#).is_none());
         assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":1e999}}"#).is_none());
     }
 
     #[test]
     fn load_disk_cache_rejects_bad_rates() {
-        let ok = r#"{"base":"EUR","date":"d","rates":{"USD":1.1},"fetched_at":1}"#;
+        let ok = r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":1.1},"fetched_at":1754000000}"#;
         assert!(parse_disk_cache(ok).is_some());
         // Tampered cache entries must not reach conversions: invalid → None → refetch.
         for bad in [
-            r#"{"base":"EUR","date":"d","rates":{"USD":-1.1},"fetched_at":1}"#,
-            r#"{"base":"EUR","date":"d","rates":{"USD":0.0},"fetched_at":1}"#,
-            r#"{"base":"EUR","date":"d","rates":{"USD":1.1,"JPY":-0.01},"fetched_at":1}"#,
+            r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":-1.1},"fetched_at":1754000000}"#,
+            r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":0.0},"fetched_at":1754000000}"#,
+            r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":1.1,"JPY":-0.01},"fetched_at":1754000000}"#,
+            r#"{"base":"EUR","date":"d","rates":{"USD":1.1},"fetched_at":1754000000}"#,
         ] {
             assert!(parse_disk_cache(bad).is_none(), "{bad}");
         }

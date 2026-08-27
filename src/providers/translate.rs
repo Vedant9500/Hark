@@ -709,6 +709,15 @@ fn libretranslate(
 ) -> Result<(String, String), String> {
     crate::config::validate_translate_endpoint(&cfg.endpoint)
         .map_err(|e| format!("LibreTranslate endpoint: {e}"))?;
+    // Never send the API key in cleartext to a non-loopback host: plain-HTTP
+    // LAN endpoints would leak it to anyone on the path (CWE-319).
+    if let Some(key) = &cfg.api_key {
+        if !key.is_empty() && plaintext_endpoint(cfg.endpoint.trim()) {
+            return Err(
+                "LibreTranslate api_key requires https or a loopback endpoint".into(),
+            );
+        }
+    }
     let url = format!("{}/translate", cfg.endpoint.trim_end_matches('/'));
     // LibreTranslate: ISO 639-1 primary codes; "auto" when supported
     let src = api_source_lang(source, true, LangStyle::Primary);
@@ -727,6 +736,26 @@ fn libretranslate(
         .map_err(|e| format!("LibreTranslate {e}"))?;
     let translated = parse_libretranslate_body(&bytes)?;
     Ok((translated, "LibreTranslate".into()))
+}
+
+/// True when the endpoint is plain `http://` to a non-loopback host — key
+/// material must not be sent there.
+fn plaintext_endpoint(endpoint: &str) -> bool {
+    let lower = endpoint.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("http://") else {
+        return false; // https (or invalid; validation already ran)
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .trim_start_matches('[')
+        .split([']', ':'])
+        .next()
+        .unwrap_or("");
+    let h = host.trim_end_matches('.');
+    !(h == "localhost"
+        || h == "::1"
+        || h.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()))
 }
 
 /// Parse LibreTranslate response. Live API returns `translatedText`
@@ -847,6 +876,25 @@ fn parse_mymemory_body(bytes: &[u8]) -> Result<String, String> {
     }
     if upper.contains("QUERY LENGTH LIMIT") {
         return Err("MyMemory rate/length limit".into());
+    }
+    // MyMemory signals quota exhaustion in-band via the translated text
+    // itself; without this check the warning renders as the "translation",
+    // gets copied, and is disk-cached for 14 days.
+    if upper.contains("MYMEMORY WARNING") {
+        return Err("MyMemory quota exhausted".into());
+    }
+    // Live API returns HTTP 200 with a non-200 `responseStatus` on internal
+    // errors; treat anything other than ok/200 as a failure.
+    let status = v
+        .pointer("/responseStatus")
+        .and_then(|x| x.as_i64())
+        .or_else(|| {
+            v.pointer("/response_status").and_then(|x| x.as_i64())
+        });
+    match status {
+        None => {}
+        Some(s) if s == 200 || s == 0 => {}
+        Some(s) => return Err(format!("MyMemory status {s}")),
     }
     Ok(translated.trim().to_string())
 }
@@ -1425,6 +1473,52 @@ mod tests {
     fn mymemory_rejects_rate_limit() {
         let body = br#"{"responseData":{"translatedText":"QUERY LENGTH LIMIT EXCEEDED. MAX ALLOWED QUERY : 500 CHARS"}}"#;
         assert!(parse_mymemory_body(body).is_err());
+    }
+
+    #[test]
+    fn mymemory_rejects_quota_warning() {
+        // Audit P3 (Pass 16): documented quota response previously rendered
+        // as the translation, was copied, and got disk-cached for 14 days.
+        let body = br#"{"responseData":{"translatedText":"MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY"},"responseStatus":200}"#;
+        assert_eq!(
+            parse_mymemory_body(body).unwrap_err(),
+            "MyMemory quota exhausted"
+        );
+    }
+
+    #[test]
+    fn mymemory_rejects_non_200_response_status() {
+        // Live API returns HTTP 200 with an in-band error status.
+        let body = br#"{"responseData":{"translatedText":"something"},"responseStatus":429}"#;
+        assert!(parse_mymemory_body(body).is_err());
+        // String "200" (legacy shape) and explicit ok still parse.
+        let body = br#"{"responseData":{"translatedText":"ok text"},"responseStatus":200}"#;
+        assert_eq!(parse_mymemory_body(body).unwrap(), "ok text");
+    }
+
+    #[test]
+    fn api_key_refused_over_plaintext_non_loopback() {
+        // Audit P3 (Pass 16): the key must never go to plain-HTTP hosts
+        // outside loopback (CWE-319).
+        let cfg = TranslateConfig {
+            endpoint: "http://192.168.1.10:5000".into(),
+            api_key: Some("sekret".into()),
+            ..Default::default()
+        };
+        let err = libretranslate("hi", "en", "es", &cfg).unwrap_err();
+        assert!(err.contains("api_key"), "{err}");
+        // Loopback and https endpoints are exempt.
+        for ep in ["http://127.0.0.1:5000", "http://localhost:5000", "https://lt.example.org"] {
+            let cfg = TranslateConfig {
+                endpoint: ep.into(),
+                api_key: Some("sekret".into()),
+                ..Default::default()
+            };
+            // Expect a network-level error (no local listener), never the
+            // cleartext-refusal message.
+            let err = libretranslate("hi", "en", "es", &cfg).unwrap_err();
+            assert!(!err.contains("api_key"), "{ep}: {err}");
+        }
     }
 
     #[test]
