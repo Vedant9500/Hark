@@ -62,7 +62,15 @@ pub fn request_toggle() -> bool {
 /// writes after 1s, so a silent client cannot park the listener and wedge
 /// later toggles.
 pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
-    let path = socket_path();
+    spawn_listener_at(&socket_path(), on_toggle);
+}
+
+/// Bind `path` and serve toggles. Split from [`spawn_listener`] so tests can
+/// exercise the accept/handler logic on a scratch socket.
+pub fn spawn_listener_at(
+    path: &std::path::Path,
+    on_toggle: impl Fn() + Send + 'static + Clone,
+) {
 
     // Ensure the socket directory exists and is user-private. XDG_RUNTIME_DIR
     // is already 0700 by spec; the cache-dir fallback needs to be created and
@@ -76,7 +84,7 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
         }
     }
 
-    let listener = match bind_socket(&path) {
+    let listener = match bind_socket(path) {
         Some(l) => l,
         None => {
             eprintln!("hark: ipc bind failed for {}", path.display());
@@ -89,23 +97,27 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
 
     thread::spawn(move || {
         for conn in listener.incoming() {
-            let Ok(mut stream) = conn else { continue };
-            // A client that connects and writes nothing must not park the
-            // listener thread forever (later toggles queue behind it): time out
-            // the read and skip the connection. The timeout error surfaces as
-            // `Err`, which `unwrap_or(0)` maps to n == 0 below.
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let mut buf = [0u8; 64];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            if n == 0 {
-                continue;
-            }
-            let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
-            if msg == "toggle" {
-                on_toggle();
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                let _ = stream.write_all(b"ok\n");
-            }
+            let Ok(stream) = conn else { continue };
+            // Handle each client on its own short-lived thread: the accept
+            // loop must never block on a slow/silent client, or one stalled
+            // connection wedges every later hotkey toggle. The read timeout
+            // below still bounds each handler thread's lifetime.
+            let on_toggle = on_toggle.clone();
+            thread::spawn(move || {
+                let mut stream = stream;
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 64];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+                if msg == "toggle" {
+                    on_toggle();
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                    let _ = stream.write_all(b"ok\n");
+                }
+            });
         }
     });
 }
@@ -277,6 +289,62 @@ mod ipc_tests {
         let mut buf = [0u8; 8];
         let n = stream.read(&mut buf).unwrap_or(0);
         assert!(std::str::from_utf8(&buf[..n]).unwrap_or("").contains("ok"));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A client that connects and stalls must not wedge later toggles
+    /// (slowloris fix: per-client handler threads off the accept loop).
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn stalled_client_does_not_wedge_later_toggles() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-slow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.sock");
+        let _ = std::fs::remove_file(&path);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_c = hits.clone();
+        spawn_listener_at(&path, move || {
+            hits_c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Give the listener a moment to bind.
+        let mut connected = false;
+        for _ in 0..50 {
+            if UnixStream::connect(&path).is_ok() {
+                connected = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(connected, "listener never bound");
+
+        // Slowloris client: connect and send nothing.
+        let _staller = UnixStream::connect(&path).expect("stall connect");
+        thread::sleep(Duration::from_millis(100));
+
+        // While the staller is silent, a normal toggle must still go through.
+        let mut s2 = UnixStream::connect(&path).expect("toggle connect");
+        s2.write_all(b"toggle\n").unwrap();
+        s2.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0u8; 8];
+        let n = s2.read(&mut buf).unwrap_or(0);
+        assert!(
+            std::str::from_utf8(&buf[..n]).unwrap_or("").contains("ok"),
+            "toggle wedged behind the stalling client"
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -280,7 +280,10 @@ impl Engine {
                 r.kind,
                 ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
             ) {
-                r.score += self.usage.boost(&r.id);
+                // Saturating: a tampered usage.json count can boost to
+                // i64::MAX; a plain += overflows and (panic=abort) kills
+                // the daemon on the next keystroke.
+                r.score = r.score.saturating_add(self.usage.boost(&r.id));
             }
         }
 
@@ -333,7 +336,8 @@ impl Engine {
                 path_resolves += 1;
             }
             if let Some(mut r) = self.resolve_id(&id) {
-                r.score = 50_000 + score;
+                // Saturating for the same poisoned-usage reason as above.
+                r.score = 50_000_i64.saturating_add(score);
                 if seen.insert(r.id.clone()) {
                     results.push(r);
                 }

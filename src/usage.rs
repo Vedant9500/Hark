@@ -39,14 +39,42 @@ pub struct UsageStore {
     last_save: Mutex<Instant>,
 }
 
+/// Upper bound for a per-id count. A tampered `usage.json` can carry
+/// `u64::MAX`; clamping on load keeps frecency's float→i64 cast from
+/// saturating and later score additions from overflowing (panic=abort).
+const MAX_COUNT: u64 = 1_000_000;
+
 impl UsageStore {
     pub fn load() -> Self {
-        let path = usage_path();
+        let p = usage_path();
+        let dir = p
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        Self::load_with_dir_impl(&dir)
+    }
+
+    /// Shared load logic (also used by the test-only `load_with_dir`).
+    /// Clamps poisoned `count` values and drops empty ids.
+    fn load_with_dir_impl(dir: &std::path::Path) -> Self {
+        let path = dir.join("usage.json");
         let mut data = if path.exists() {
-            fs::read_to_string(&path)
+            let f: UsageFile = fs::read_to_string(&path)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            UsageFile {
+                version: f.version,
+                entries: f
+                    .entries
+                    .into_iter()
+                    .filter(|(id, _)| !id.is_empty())
+                    .map(|(id, mut e)| {
+                        e.count = e.count.min(MAX_COUNT);
+                        (id, e)
+                    })
+                    .collect(),
+            }
         } else {
             UsageFile::default()
         };
@@ -78,6 +106,12 @@ impl UsageStore {
             dirty: AtomicBool::new(false),
             last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
         }
+    }
+
+    /// Test-only: real `load()` logic but from an explicit directory.
+    #[cfg(test)]
+    pub(crate) fn load_with_dir(dir: &std::path::Path) -> Self {
+        Self::load_with_dir_impl(dir)
     }
 
     pub fn record(&self, id: &str) {
@@ -312,6 +346,27 @@ mod usage_tests {
         store.flush();
         let n = store.inner.read().unwrap().entries.len();
         assert!(n <= MAX_ENTRIES, "entries={n} > {MAX_ENTRIES}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_clamps_poisoned_counts() {
+        // A corrupt-but-parseable usage.json with count: u64::MAX must not
+        // survive load as-is — frecency's float→i64 cast would saturate and
+        // later unsaturating adds aborted the daemon (panic=abort).
+        let (store, dir) = temp_store();
+        let poisoned = format!(
+            r#"{{"version":1,"entries":{{"app:evil":{{"count":{},"last":0}}}}}}"#,
+            u64::MAX
+        );
+        fs::write(&store.path, poisoned).unwrap();
+
+        let loaded = UsageStore::load_with_dir(&dir);
+        let boost = loaded.boost("app:evil");
+        assert!(boost >= 0, "boost must never be negative, got {boost}");
+        let g = loaded.inner.read().unwrap();
+        let e = g.entries.get("app:evil").expect("entry kept");
+        assert_eq!(e.count, MAX_COUNT, "poisoned count clamped on load");
         let _ = fs::remove_dir_all(&dir);
     }
 }

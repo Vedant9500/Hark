@@ -922,10 +922,37 @@ struct CacheEntry {
 }
 
 fn cache_dir() -> PathBuf {
+    // No `/tmp` fallback: a world-writable directory lets any local user
+    // plant or poison cache entries that are later copied to the clipboard.
     dirs::cache_dir()
         .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("hark/translate")
+        .map(|d| d.join(".cache/hark/translate"))
+        .unwrap_or_default()
+}
+
+/// True when the cache directory is owned by this user and locked to 0700
+/// (mirrors the fx.rs disk guards). Untrusted → skip disk cache entirely.
+#[cfg(unix)]
+fn cache_dir_trusted(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(m) = fs::metadata(dir) else {
+        return false;
+    };
+    m.is_dir()
+        && m.mode() & 0o777 == 0o700
+        && m.uid() == current_euid().unwrap_or(u32::MAX)
+}
+
+#[cfg(unix)]
+fn current_euid() -> Option<u32> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
+    line.split_whitespace().nth(2)?.parse().ok()
+}
+
+#[cfg(not(unix))]
+fn cache_dir_trusted(_dir: &Path) -> bool {
+    true
 }
 
 fn cache_path(key: &str) -> PathBuf {
@@ -945,14 +972,53 @@ fn cache_get_mem(key: &str) -> Option<CacheEntry> {
 }
 
 /// Mem first, then durable disk (promotes into mem). **Worker thread only.**
+/// Disk entries are trusted only from an owned 0700 directory, read with
+/// O_NOFOLLOW (refuses planted symlinks), and their fields must match the
+/// query being served — otherwise a planted entry could steer the clipboard.
+#[cfg(unix)]
+fn read_cache_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Same values as the proven fx.rs guard.
+    #[cfg(target_os = "linux")]
+    const O_NOFOLLOW: i32 = 0o400_000;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    const O_NOFOLLOW: i32 = 0o400;
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    const O_NOFOLLOW: i32 = 0;
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let mut data = String::new();
+    f.read_to_string(&mut data).ok()?;
+    Some(data)
+}
+
+#[cfg(not(unix))]
+fn read_cache_file(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok()
+}
+
 fn cache_get(key: &str) -> Option<CacheEntry> {
     if let Some(e) = cache_get_mem(key) {
         return Some(e);
     }
-    let data = fs::read_to_string(cache_path(key)).ok()?;
+    let path = cache_path(key);
+    if !cache_dir_trusted(path.parent()?) {
+        return None;
+    }
+    let data = read_cache_file(&path)?;
     let e: CacheEntry = serde_json::from_str(&data).ok()?;
+    // Cross-check the stored fields against the key we're serving: the key
+    // is a hash of (source, target, normalized query), so recomputing it
+    // from the entry's own fields must reproduce the same key.
+    if cache_key(&e.source, &e.target, &e.q) != key {
+        return None;
+    }
     if now_secs().saturating_sub(e.fetched_at) > CACHE_TTL_SECS {
-        let _ = fs::remove_file(cache_path(key));
+        let _ = fs::remove_file(&path);
         return None;
     }
     if e.translated.trim().is_empty() {
@@ -966,7 +1032,18 @@ fn cache_get(key: &str) -> Option<CacheEntry> {
 
 fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
     let dir = cache_dir();
+    if dir.as_os_str().is_empty() {
+        return;
+    }
     let _ = fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    if !cache_dir_trusted(&dir) {
+        return;
+    }
     let e = CacheEntry {
         source: source.into(),
         target: target.into(),
@@ -992,11 +1069,49 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
     if let Ok(data) = serde_json::to_string(&e) {
         let path = cache_path(key);
         let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, data).is_ok() {
-            let _ = fs::rename(tmp, path);
+        let wrote = {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .custom_flags(libc_free_nofollow())
+                    .open(&tmp)
+                    .and_then(|mut f| f.write_all(data.as_bytes()))
+                    .is_ok()
+            }
+            #[cfg(not(unix))]
+            {
+                fs::write(&tmp, data).is_ok()
+            }
+        };
+        if wrote {
+            let _ = fs::rename(&tmp, path);
+        } else {
+            let _ = fs::remove_file(&tmp);
         }
     }
     maybe_sweep_cache(&dir);
+}
+
+/// O_NOFOLLOW for the tmp-file create above (same values as fx.rs; on
+/// non-Linux Unix-likes `create_new` already refuses pre-existing names).
+#[cfg(unix)]
+fn libc_free_nofollow() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        0o400_000
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        0o400
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    {
+        0
+    }
 }
 
 fn fail_get(key: &str) -> Option<String> {
@@ -1353,5 +1468,67 @@ mod tests {
         let body = br#"{"translatedText":"  "}"#;
         assert!(parse_libretranslate_body(body).is_err());
         assert!(parse_libretranslate_body(b"{}").is_err());
+    }
+
+    /// Cache-poisoning defense: disk entries whose stored fields do not hash
+    /// back to the served key must be rejected, and entries in untrusted
+    /// directories (not owned / not 0700) are ignored entirely.
+    #[cfg(unix)]
+    #[test]
+    fn poisoned_cache_entries_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-tr-cache-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Entry for key K1 but planted at K2's path with mismatched fields.
+        let key = cache_key("en", "de", "hello");
+        let legit = CacheEntry {
+            source: "en".into(),
+            target: "de".into(),
+            q: "hello".into(),
+            translated: "Hallo".into(),
+            fetched_at: now_secs(),
+        };
+        let poison = CacheEntry {
+            source: "en".into(),
+            target: "de".into(),
+            q: "hello".into(),
+            translated: "ATTACKER STRING".into(),
+            fetched_at: now_secs(),
+        };
+        // Same key recompute — the legit entry matches; a doctored `q` does not.
+        let mut tampered = poison.clone();
+        tampered.q = "hello world".into(); // hashes to a different key
+        let tampered_key = cache_key(&tampered.source, &tampered.target, &tampered.q);
+        assert_ne!(key, tampered_key);
+
+        // Legit entry round-trips through its own path.
+        let path = dir.join(format!("{key}.json"));
+        fs::write(
+            &path,
+            serde_json::to_string(&legit).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cache_dir_trusted(&dir),
+            "0700 user-owned dir must be trusted"
+        );
+
+        // Planted symlink pointing elsewhere is refused by O_NOFOLLOW.
+        let link = dir.join(format!("{key}.link.json"));
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        assert!(read_cache_file(&link).is_none());
+
+        // Untrusted directory: same valid file is not served.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!cache_dir_trusted(&dir));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

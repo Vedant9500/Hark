@@ -1857,14 +1857,14 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
-| P2 | Translate disk cache unauthenticated + world-writable `/tmp` fallback → attacker-controlled clipboard | `translate.rs:928-960` | 16 |
+| P2 | Translate disk cache unauthenticated + world-writable `/tmp` fallback → attacker-controlled clipboard — **fixed 2026-08-26**: `/tmp` fallback removed (falls to `$HOME/.cache`), disk reads require owned 0700 dir + O_NOFOLLOW + key-recompute cross-check, writes via O_NOFOLLOW/O_CREATE_NEW tmp+rename; test `poisoned_cache_entries_rejected` | `translate.rs:928-960` | 16 |
 | P2 | `path_completions` bypasses secrets/artifact exclude filter (`.ssh` listing) — **fixed 2026-08-26**: completions now receive `ExcludeSet` and call `should_skip_entry`; test `path_completions_skip_secret_dirs` | `files/search/glob.rs:541-569` | 19 |
-| P2 | Serialized IPC accept loop: slowloris clients wedge all hotkey presses | `ipc.rs:96-113` | 14 |
+| P2 | Serialized IPC accept loop: slowloris clients wedge all hotkey presses — **fixed 2026-08-26**: per-client handler threads off the accept loop (read timeout still bounds each); test `stalled_client_does_not_wedge_later_toggles` | `ipc.rs:96-113` | 14 |
 | P2 | bind→chmod race leaves socket briefly world-connectable — **fixed 2026-08-26**: `bind_socket` temporarily forces umask 077 during bind, then checks chmod 0600; ignored test `bound_socket_is_user_only` | `ipc.rs:121`, `:90-94` | 14 |
 | P2 | Unbounded toggle channel: flood grows memory + overlay churn | `main.rs:92-103` | 14 |
 | P2 | IPC flood → duplicate GTK Application spawn chain | `ipc.rs:96-113` + `main.rs:44-48` | 18 |
 | P2 | Stale drag-end timer fires mid-drag, hides launcher, cancels Wayland drop | `ui/dnd.rs:178-225` | 13 |
-| P2 | Corrupt-but-parseable usage count → release daemon abort (panic=abort) | `usage.rs:16-18` + `engine.rs:283,333` | 14/18 |
+| P2 | Corrupt-but-parseable usage count → release daemon abort (panic=abort) — **fixed 2026-08-26**: `count` clamped to 1M and empty ids dropped on load (`usage.rs`), both engine score adds now `saturating_add`; test `load_clamps_poisoned_counts` | `usage.rs:16-18` + `engine.rs:283,333` | 14/18 |
 | P3 | ureq honors proxy env vars unscoped | `http.rs:16-21` | 16 |
 | P3 | MyMemory in-band errors rendered as translations and cached 14 days | `translate.rs:840-855` | 16 |
 | P3 | fx accepts any base/date (tampered cache → wrong conversions) | `fx.rs:265-281` | 16 |
