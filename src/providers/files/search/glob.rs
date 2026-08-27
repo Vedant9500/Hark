@@ -104,7 +104,11 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
             } else if item.name_lower.starts_with(pat.as_str()) {
                 score = 40_000 + pat.len() as i64 * 100;
             } else if item.name_lower.contains(pat.as_str()) {
-                score = 32_000 + pat.len() as i64 * 50;
+                // Contains band sits below DEEP_SKIP_IF_INDEX_SCORE: a
+                // substring-only hit must not cancel the remaining deep
+                // jobs (audit P3 — `todo.md` finding only `todo.md.bak`
+                // used to abort walks of the other roots).
+                score = 24_000 + pat.len() as i64 * 50;
             }
         } else if item.name_lower == *pat {
             score = 50_000;
@@ -133,7 +137,22 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
         .as_deref()
         .or_else(|| gq.segments.last().map(|s| s.as_str()))
         .unwrap_or("");
-    apply_path_boosts(item, q_hint, score)
+    let boosted = apply_path_boosts(item, q_hint, score);
+    // Contains-band hits must stay below DEEP_SKIP_IF_INDEX_SCORE even after
+    // depth/scope boosts — a substring-only answer must not cancel the
+    // remaining deep jobs (audit P3).
+    if let Some(s) = boosted {
+        let contains_class = gq.name_pat.as_deref().is_some_and(|pat| {
+            !pat.contains('*') && !pat.contains('?')
+                && item.name_lower != pat
+                && item.name_lower.contains(pat)
+                && !item.name_lower.starts_with(pat)
+        });
+        if contains_class {
+            return Some(s.min(super::DEEP_SKIP_IF_INDEX_SCORE - 1));
+        }
+    }
+    boosted
 }
 
 /// Find `seg` as a full path component at or after `start`; returns index after the match.
@@ -158,9 +177,29 @@ pub(super) fn find_path_segment(path_lower: &str, seg: &str, start: usize) -> Op
     None
 }
 
+/// Literal pattern that names a file with an extension (`main.rs`): the user
+/// is being specific. Same shape check as `name_looks_like_file`.
+fn pat_names_file_with_ext(pat: &str) -> bool {
+    match pat.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && !ext.is_empty()
+                && ext.len() <= 8
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
 pub(super) fn name_matches_pat(name_lower: &str, pat: &str) -> bool {
     if pat.contains('*') || pat.contains('?') {
         return glob_match(pat, name_lower);
+    }
+    // A literal `main.rs` pattern must not serve `main.rs.bak` / `xmain.rsy`
+    // as scoped-search hits (audit P2). Extension-less patterns keep the
+    // fuzzy prefix/contains behavior (`report` → `report.md`).
+    if pat_names_file_with_ext(pat) {
+        return name_lower == pat;
     }
     name_lower == pat || name_lower.starts_with(pat) || name_lower.contains(pat)
 }
@@ -584,7 +623,27 @@ pub(super) fn path_completions(
 
 #[cfg(test)]
 mod unicode_glob_tests {
-    use super::glob_match;
+    use super::{glob_match, name_matches_pat};
+
+    #[test]
+    fn literal_pattern_with_extension_requires_exact_name() {
+        // Audit P2: `main.rs under ~/dev` used to match `main.rs.bak`,
+        // `main.rs.orig`, `xmain.rsy` via contains.
+        assert!(name_matches_pat("main.rs", "main.rs"));
+        assert!(!name_matches_pat("main.rs.bak", "main.rs"));
+        assert!(!name_matches_pat("xmain.rsy", "main.rs"));
+        assert!(!name_matches_pat("main.rs.orig", "main.rs"));
+    }
+
+    #[test]
+    fn extensionless_literal_keeps_fuzzy_matching() {
+        // `report` (no ext) must still surface `report.md` / `report-2026`.
+        assert!(name_matches_pat("report.md", "report"));
+        assert!(name_matches_pat("report-2026", "report"));
+        assert!(name_matches_pat("my-report", "report"));
+        // Non-file-shaped patterns (dirs like `widgets`) unchanged.
+        assert!(name_matches_pat("widgets-old", "widgets"));
+    }
 
     #[test]
     fn question_mark_consumes_one_character_not_one_byte() {

@@ -1321,19 +1321,19 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 
 ### New verified findings
 
-#### P1 — `to_lowercase()` byte-offset mismatch panics slicing the original query (`src/providers/files/search/plan.rs:101-114`, `257-286`)
+#### P1 — `to_lowercase()` byte-offset mismatch panics slicing the original query (`src/providers/files/search/plan.rs:101-114`, `257-286`) — **fixed 2026-08-26** (both parsers now use length-preserving `to_ascii_lowercase`, so keyword byte offsets index the original safely; regression test in commit a8d01c2)
 
 - **Root cause:** both `parse_scoped_query` and `parse_scope_hint_query` locate the scope keyword (` in `, ` within `, … — pure ASCII) in a lowercased copy (`lower.find(kw)`) and then slice the **original** string with those byte offsets (`q[..kw_start]`, `q[kw_start + kw_len..]`). `str::to_lowercase()` is not length-preserving: `İ` (U+0130, 2 bytes) lowercases to 3 bytes; `ẞ` (3 bytes) to 2 bytes. Any length-changing character before the keyword shifts the offset so the slice lands mid-codepoint → panic on the GTK main thread; even when it lands on a boundary, the split is silently wrong (`İ in docs` yields scope `"ocs"`).
 - **Failure pathway:** query `İ in 文档` → `parse_scope_hint_query` finds `" in "` at byte 3 of the lowercased string, but `文` starts at byte 6 of the original → `q[7..]` is not a char boundary → daemon crash. Note Pass 4's "scoped-query keyword slicing uses find-returned boundaries" clearance covered a different (since-rewritten) code path; this parser predates or escaped that review.
 - **CWE-20** (panic = local DoS via a typed query).
 - **Remediation:** find the keyword with an ASCII-case-insensitive match on the original string (`match_indices` + `eq_ignore_ascii_case` — exact, since keywords are ASCII), or map offsets through `char_indices`. Add regression tests with `İ`/`ẞ` before a scope keyword.
 
-#### P2 — nonexistent absolute scope silently walks `/` for the full deep budget (`src/providers/files/search/deep.rs:285-290`)
+#### P2 — nonexistent absolute scope silently walks `/` for the full deep budget (`src/providers/files/search/deep.rs:285-290`) — **fixed 2026-08-28** (missing scope only falls back to the parent unless that parent is `/`; a root-level miss yields no scoped job — pinned roots still searched; regression test revert-proofed)
 
 - **Root cause:** for `abs_root` scopes, `abs.is_dir()` false → `abs.parent()`, whose parent of `/nonxistent` is `/` (of `~/Dcouments` is `$HOME`). The walk then burns `DEEP_VISIT_CAP_ASYNC` (40,000 entries) / 200 ms per keystroke across the root filesystem, yields zero hits, and never surfaces "directory doesn't exist". CWE-20/CWE-755.
 - **Remediation:** walk up at most one level and abort if the resulting root is `/` for a non-`/` scope; or emit a "scope not found" result.
 
-#### P2 — deep-scoped literal names match by substring (`src/providers/files/search/glob.rs:161-166`, consumed at `deep.rs:715-717`)
+#### P2 — deep-scoped literal names match by substring (`src/providers/files/search/glob.rs:161-166`, consumed at `deep.rs:715-717`) — **fixed 2026-08-28** (`name_matches_pat`: literal patterns naming a file with an extension require exact match; extension-less patterns keep prefix/contains behavior; regression tests revert-proofed)
 
 - **Root cause:** `name_matches_pat` for a non-glob pattern accepts `contains`; `main.rs under ~/dev` therefore returns `main.rs.bak`, `main.rs.orig`, `xmain.rsy` at the 32,000 "contains" band. Wrong results presented as scoped search.
 - **Remediation:** for literal patterns in the deep/scoped path, require exact or stem-exact matching, or at minimum rank contains-band hits below `DEEP_SKIP_IF_INDEX_SCORE`.
@@ -1348,7 +1348,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** the only gate is byte size (`MAX_CODE_BYTES = 2 MiB`); `set_text` + `set_language` (full-buffer re-highlight) + char-wrap of a ~2M-char minified line run on the GTK main thread — seconds to minutes of unresponsiveness, repeatable by keyboard navigation onto any minified asset. CWE-400.
 - **Remediation:** cap line count (plain label past ~20k lines) and longest single line (skip highlight or truncate past ~5,000 chars), measured while streaming in the worker.
 
-#### P3 — `index_is_strong` threshold sits below the deep "contains" band (`src/providers/files/search/mod.rs:64-65`, `deep.rs:136-140`, `813`)
+#### P3 — `index_is_strong` threshold sits below the deep "contains" band (`src/providers/files/search/mod.rs:64-65`, `deep.rs:136-140`, `813`) — **fixed 2026-08-28** (contains band lowered to 24,000 in `score_glob_item`/`score_live_hit`, and `score_glob_item` clamps contains-class hits below `DEEP_SKIP_IF_INDEX_SCORE` *after* boosts; regression test with boost-heavy item revert-proofed)
 
 - **Root cause:** `DEEP_SKIP_IF_INDEX_SCORE = 30_000` (documented "Exact/prefix band"), but a single contains-band live hit scores 32,000+boosts and cancels all remaining deep jobs — a `todo.md` query whose first job finds only `todo.md.bak`-style substring hits never walks the other roots.
 - **Remediation:** raise the gate above the contains band (~34,000) or make it band-aware (exact ≥49,500 / prefix ≥39,500).
@@ -1582,7 +1582,7 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - **Trace:** serde accepts `count: u64::MAX` (no clamp, `usage.rs:16-18`) → `frecency`'s float→int cast saturates to `i64::MAX` (`:205-220`) → non-saturating `r.score += boost` (`engine.rs:283`, `:333`) → the Pass 14 finding said "wraps negative in release", but `Cargo.toml:58` sets **`panic = "abort"`**, so the overflow panic kills the whole daemon in release builds too, on every keystroke matching the poisoned id. CWE-190 + CWE-754.
 - **Remediation:** `saturating_add` at both sites (one-line fix) and/or clamp `count` on load.
 
-#### P1 — composite chain: exclude-`"/"` config + missing-path scoped query → deterministic daemon abort (Phase-4 chain 5, VERIFIED)
+#### P1 — composite chain: exclude-`"/"` config + missing-path scoped query → deterministic daemon abort (Phase-4 chain 5, VERIFIED) — **fixed 2026-08-28** (both legs closed independently: empty exclude patterns skipped in `ExcludeSet::from_list` [commit a8d01c2]; missing absolute scope no longer falls back to `/` in `plan_deep_for_scoped` — the `/` walk never starts, so `windows(0)` is never reached through this path)
 
 - **Trace:** `index.exclude = ["/"]` survives load (no sanitize) → `ExcludeSet::from_list` pushes an empty pattern (`config.rs:1185-1195`) → any scoped query at a missing absolute path (`report.md in /nonxistent`) falls back to walking `/` (Pass 16 finding, `deep.rs:285-290`) → the walk's first entry hits `should_skip_entry(root="/")` (`deep.rs:646`) → `ExcludeSet::matches` calls `comps.windows(0)` (`config.rs:1220-1234`) → **panic** — and the deep walk thread (`ui/mod.rs:2676`) has no `catch_unwind`, with `panic = "abort"` the entire daemon dies. Deterministic, repeatable, user-input-triggered. CWE-20 + CWE-754. (Compounds two individually-known findings into a P1 chain; the `windows(0)` empty-pattern fix and the `/`-fallback fix each break the chain independently.)
 - **Remediation:** fix either leg (skip empty exclude patterns; or stop the `/` fallback) — and consider `catch_unwind` in the deep-walk worker as defense-in-depth.
@@ -1716,7 +1716,7 @@ Areas targeted per the Pass 19 close-out: `calc/expr.rs`+`math.rs` at increased 
 
 ### New verified findings
 
-#### P1 — stack overflow abort via deeply nested parentheses in the expression parser (`src/providers/calc/expr.rs:238-241`, recursion cycle `:196-244`)
+#### P1 — stack overflow abort via deeply nested parentheses in the expression parser (`src/providers/calc/expr.rs:238-241`, recursion cycle `:196-244`) — **fixed 2026-08-26** (depth budget `MAX_DEPTH=200` threaded through parser + printer; verified empirically 2026-08-28: 15k nested parens return `None`, daemon survives)
 
 - **Root cause:** each `(` token recurses through the full `parse_primary → parse_expr → parse_add → parse_mul → parse_unary → parse_pow → parse_primary` cycle (`expr.rs:132-244`) with no depth counter anywhere. `looks_like_math` (`math.rs:20-35`) passes for `"(".repeat(15000) + "1+1" + ")".repeat(15000)`, and the tokenizer happily emits the tokens.
 - **Empirical proof** (standalone harness compiled from the exact `expr.rs`, project untouched): on a default 2 MiB spawned thread (the background search thread's configuration), **d = 15,000 nested parens (30 KB query) aborts with "stack overflow"**; d = 10,000 survives. Stack overflow is a runtime abort, not a catchable `Option` — with `panic = "abort"` this kills the daemon. Paste-only (not typeable), but a typed/pasted query crashing the daemon. CWE-787/CWE-674.

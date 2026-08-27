@@ -26,7 +26,7 @@ use crate::providers::files::index::{
 };
 use crate::providers::{title_match_indices, Action, ResultKind, SearchResult};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::WalkDir;
 
@@ -60,6 +60,14 @@ pub(crate) struct DeepJob {
     name_pat: Option<String>,
     dir_scope: bool,
     deep: DeepMode,
+}
+
+impl DeepJob {
+    /// Roots the job will walk — test/debug visibility only.
+    #[cfg(test)]
+    pub(crate) fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
 }
 
 /// Plan live deep work from the index snapshot only (no WalkDir).
@@ -266,6 +274,18 @@ fn plan_deep_for_glob(
     .collect()
 }
 
+/// Test hook: `plan_deep_for_scoped` without the strong-index gate.
+#[cfg(test)]
+pub(super) fn plan_deep_for_scoped_test_hook(
+    sq: &ScopedQuery,
+    index: &[IndexedPath],
+    results: &[SearchResult],
+    deep: DeepMode,
+    deep_roots: &[String],
+) -> Vec<DeepJob> {
+    plan_deep_for_scoped(sq, index, results, deep, deep_roots)
+}
+
 fn plan_deep_for_scoped(
     sq: &ScopedQuery,
     index: &[IndexedPath],
@@ -283,9 +303,17 @@ fn plan_deep_for_scoped(
         let root = if abs.is_dir() {
             abs.clone()
         } else {
-            abs.parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| abs.clone())
+            // Missing scope: walking the parent of `/nonexistent` lands on
+            // `/`, burning the whole visit budget scanning the filesystem —
+            // and with an exclude entry like `/` it aborts the daemon
+            // (Phase-4 chain 5). Give up on the scope instead; the pinned
+            // roots below still get searched.
+            match abs.parent() {
+                Some(p) if p != Path::new("/") => p.to_path_buf(),
+                _ => {
+                    return Vec::new();
+                }
+            }
         };
         let mut roots = vec![root];
         prepend_unique(&mut roots, &pinned);
@@ -808,7 +836,10 @@ fn score_live_hit(
             } else if item.name_lower.starts_with(pat) {
                 score = 40_000 + pat.len() as i64 * 100;
             } else if item.name_lower.contains(pat) {
-                score = 32_000 + pat.len() as i64 * 50;
+                // Below DEEP_SKIP_IF_INDEX_SCORE — substring-only live hits
+                // must not count as a strong answer (keeps other deep jobs
+                // alive). Mirrors the glob.rs contains band.
+                score = 24_000 + pat.len() as i64 * 50;
             }
         } else {
             score = 38_000 + segments.len() as i64 * 2_000;

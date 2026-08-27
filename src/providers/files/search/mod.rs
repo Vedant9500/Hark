@@ -613,3 +613,123 @@ mod hot_skip_tests {
         assert!(!hot_strong_enough(0, 10));
     }
 }
+
+#[cfg(test)]
+mod missing_scope_tests {
+    use super::deep::{plan_deep_jobs, DeepMode};
+    use super::IndexedPath;
+
+    fn make_indexed(path: std::path::PathBuf, name: String, is_dir: bool, depth: u16, is_mnt: bool) -> IndexedPath {
+        IndexedPath {
+            path_lower: path.to_string_lossy().to_ascii_lowercase(),
+            path,
+            name_lower: name.to_ascii_lowercase(),
+            name,
+            is_dir,
+            depth,
+            low_value: false,
+            high_value: false,
+            is_mnt,
+        }
+    }
+
+    #[test]
+    fn missing_absolute_scope_does_not_walk_filesystem_root() {
+        // Audit P2 (Pass 16) / Phase-4 chain 5 leg: `report.md in /nonxistent`
+        // used to fall back to the parent of the missing path — `/` for a
+        // root-level miss — burning the whole visit budget on a filesystem
+        // scan (and panicking via windows(0) with an exclude-"/" config).
+        let index = vec![make_indexed(
+            std::path::PathBuf::from("/home/u/proj"),
+            "proj".into(),
+            true,
+            1,
+            false,
+        )];
+        let query = "report.md in /definitely-not-a-real-dir-xyz";
+        let sq =
+            super::plan::parse_scoped_query(query, Some(&index)).expect("parses");
+        // Direct call: `plan_deep_jobs` returns [] earlier in the pipeline
+        // (scope-hint gate), so exercise the scoped planner itself.
+        let jobs = super::deep::plan_deep_for_scoped_test_hook(
+            &sq,
+            &index,
+            &[], // weak index results — forces the deep-walk path
+            DeepMode::Sync,
+            &[],
+        );
+        assert!(
+            jobs.iter().all(|j| j.roots().iter().all(|r| {
+                r != std::path::Path::new("/") && r.parent() != Some(std::path::Path::new("/"))
+            })),
+            "no job may walk the filesystem root, got {jobs:?}"
+        );
+        // Pipeline-level: no jobs at all for the missing absolute scope.
+        let pipeline = plan_deep_jobs(
+            &index,
+            query,
+            &[],
+            DeepMode::Sync,
+            &[],
+            &[],
+        );
+        assert!(
+            pipeline.iter().all(|j| !j
+                .roots()
+                .iter()
+                .any(|r| r == std::path::Path::new("/"))),
+            "pipeline must not root any job at /, got {pipeline:?}"
+        );
+    }
+
+    #[test]
+    fn contains_band_hit_does_not_cancel_deep_jobs() {
+        // Audit P3: a single contains-band hit (32_000+, now 24_000+) used
+        // to satisfy index_is_strong and cancel all remaining deep jobs —
+        // `todo.md` whose first job found only `todo.md.bak`-style substring
+        // hits never walked the other roots. Exercise the real producer:
+        // search_glob scoring a substring-only index hit.
+        use super::IndexedPath;
+        use crate::providers::ResultKind;
+
+        fn mk(path: &str) -> IndexedPath {
+            IndexedPath {
+                path: std::path::PathBuf::from(path),
+                name: path.rsplit('/').next().unwrap().to_string(),
+                name_lower: path.rsplit('/').next().unwrap().to_ascii_lowercase(),
+                path_lower: path.to_ascii_lowercase(),
+                is_dir: false,
+                depth: 2,
+                low_value: false,
+                // Boost-heavy item: without the post-boost clamp these push
+                // the contains band (24k) above DEEP_SKIP_IF_INDEX_SCORE.
+                high_value: true,
+                is_mnt: true,
+            }
+        }
+
+        let index = vec![mk("/home/u/x/q3-report.md")];
+        // Extension-less scoped pattern: `report in x` → prefix/contains
+        // matching still applies; this item is contains-only (`q3-report.md`
+        // does not start with `report`) and must score below
+        // DEEP_SKIP_IF_INDEX_SCORE so remaining deep jobs survive.
+        let sq = super::plan::parse_scoped_query("report in x", Some(&index))
+            .or_else(|| {
+                super::plan::parse_scoped_query("report in /home/u/x", Some(&index))
+            })
+            .expect("parses");
+        let gq = super::plan::scoped_to_glob(&sq);
+        let results =
+            super::glob::search_glob(&index, &gq, &crate::config::PathStyle::Label, &[]);
+        assert_eq!(results.len(), 1);
+        let hit = &results[0];
+        assert_eq!(hit.kind, ResultKind::File);
+        assert!(
+            hit.score < super::DEEP_SKIP_IF_INDEX_SCORE,
+            "contains-band hit scored {} — must sit below {} so deep jobs survive",
+            hit.score,
+            super::DEEP_SKIP_IF_INDEX_SCORE
+        );
+        assert!(!super::deep::index_is_strong(&results));
+    }
+}
