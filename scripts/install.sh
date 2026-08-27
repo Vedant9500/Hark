@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/install.sh
+#   hark update                     # same thing, from the installed binary
 #   ./scripts/install.sh --no-restart
 #   ./scripts/install.sh --restart-only   # skip build (binary already installed)
 set -euo pipefail

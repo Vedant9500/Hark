@@ -211,6 +211,7 @@ Also:
 |-----|---------|
 | `hark --daemon` | Resident process |
 | `hark` | Toggle (or start if no daemon) |
+| `hark update` / `hark --update` | Rebuild + reinstall from the dev checkout, restart daemon (forwards `--no-restart` / `--restart-only`) |
 | `hark --search "q"` | Headless search debug (index + optional deep) |
 | `hark --bench` | Latency (median / p95), index rebuild, RSS / CPU (build with `--features bench`) |
 
