@@ -2,12 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Unique-name counter for temp files (N16 torn-write race).
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+// Temp-file naming for saves is handled inside `config::write_private_file`.
 
 /// Soft cap: after this, drop coldest entries by frecency.
 const MAX_ENTRIES: usize = 500;
@@ -95,7 +94,7 @@ impl UsageStore {
     /// debounce-write lands in /tmp, never the working directory.
     #[cfg(test)]
     pub(crate) fn new_empty() -> Self {
-        static N: AtomicU64 = AtomicU64::new(0);
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir =
             std::env::temp_dir().join(format!("hark-usage-empty-{}-{}", std::process::id(), n));
@@ -212,14 +211,8 @@ impl UsageStore {
                 Err(_) => return,
             }
         };
-        // Unique temp name — a fixed sibling lets two concurrent savers
-        // truncate each other's tmp and rename a torn JSON into place.
-        let tmp = self.path.with_extension(format!(
-            "json.tmp-{}-{}",
-            std::process::id(),
-            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
+        // Shared atomic write: unique 0600 tmp, fsync, rename.
+        if crate::config::write_private_file(&self.path, &data) {
             *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         } else {
             // Write failed — stay dirty so the next flush retries.
@@ -283,10 +276,9 @@ fn usage_path() -> PathBuf {
 #[cfg(test)]
 mod usage_tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
 
     fn temp_store() -> (UsageStore, PathBuf) {
-        static N: AtomicU64 = AtomicU64::new(0);
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "hark-usage-{}-{}-{}",

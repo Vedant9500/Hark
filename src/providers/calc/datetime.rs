@@ -718,6 +718,21 @@ mod datetime_tests {
 
     #[test]
     fn day_lookup_weekday() {
+        // Compute weekday names so no-year assertions stay valid whenever the
+        // test runs: no-year dates roll forward to the next occurrence.
+        fn weekday_of(date: NaiveDate) -> String {
+            date.format("%A").to_string()
+        }
+        fn next_occurrence(month: u32, day: u32, today: NaiveDate) -> NaiveDate {
+            let y = today.year()
+                + if (month, day) < (today.month(), today.day()) {
+                    1
+                } else {
+                    0
+                };
+            NaiveDate::from_ymd_opt(y, month, day).unwrap()
+        }
+        let today = Local::now().date_naive();
         let r = try_datetime("day on 27 august 2026").expect("lookup");
         assert_eq!(r.title, "2026-08-27");
         let conv = r.conversion.expect("card");
@@ -725,16 +740,28 @@ mod datetime_tests {
         assert_eq!(conv.right_title, "Thursday");
         assert!(matches!(&r.action, crate::providers::Action::Copy(s) if s == "Thursday"));
         let r = try_datetime("what day is 26 aug").expect("lookup");
-        assert_eq!(r.conversion.expect("card").right_title, "Wednesday");
+        assert_eq!(
+            r.conversion.expect("card").right_title,
+            weekday_of(next_occurrence(8, 26, today))
+        );
         let r = try_datetime("on 26 aug").expect("lookup");
-        assert_eq!(r.conversion.expect("card").right_title, "Wednesday");
+        assert_eq!(
+            r.conversion.expect("card").right_title,
+            weekday_of(next_occurrence(8, 26, today))
+        );
         let r = try_datetime("day on 26 dec").expect("lookup");
-        assert_eq!(r.conversion.expect("card").right_title, "Saturday");
+        assert_eq!(
+            r.conversion.expect("card").right_title,
+            weekday_of(next_occurrence(12, 26, today))
+        );
         let r = try_datetime("day on 27/08/2026").expect("numeric lookup");
         assert_eq!(r.conversion.expect("card").right_title, "Thursday");
         // Past month without year rolls to next year.
         let r = try_datetime("day on 26 feb").expect("rollover");
-        assert_eq!(r.conversion.expect("card").right_title, "Friday");
+        assert_eq!(
+            r.conversion.expect("card").right_title,
+            weekday_of(next_occurrence(2, 26, today))
+        );
         // Unparseable remainder falls through, not an early error.
         assert!(try_datetime("day of year").is_some());
     }

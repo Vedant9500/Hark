@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -583,23 +584,59 @@ fn is_blocked_translate_host(host: &str) -> bool {
 }
 
 fn parse_ipv4_literal(host: &str) -> Option<[u8; 4]> {
+    // Recognize every inet_aton-style form, not just dotted-decimal, so
+    // `2130706173`, `0x7f.1`, and `0177.0.0.1` can't slip past the blocklist
+    // (SSRF defense-in-depth for the translate endpoint).
+    if host.contains(':') {
+        return None; // IPv6 handled separately
+    }
     let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() != 4 {
+    if parts.is_empty() || parts.len() > 4 {
         return None;
     }
-    let mut out = [0u8; 4];
-    for (i, p) in parts.iter().enumerate() {
-        // Only dotted-decimal; reject empty / leading-plus / hex.
-        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+    // Parse one part as u32: decimal, 0x-hex, or 0-leading octal.
+    let parse_part = |p: &str| -> Option<u32> {
+        if p.is_empty() || p.len() > 10 {
             return None;
         }
-        let n: u32 = p.parse().ok()?;
-        if n > 255 {
-            return None;
+        let bytes = p.as_bytes();
+        if bytes.starts_with(b"0x") || bytes.starts_with(b"0X") {
+            if bytes.len() == 2 {
+                return None;
+            }
+            u32::from_str_radix(&p[2..], 16).ok()
+        } else if bytes.len() > 1 && bytes[0] == b'0' {
+            u32::from_str_radix(&p[1..], 8).ok()
+        } else {
+            p.parse::<u32>().ok()
         }
-        out[i] = n as u8;
+    };
+    let nums: Vec<u32> = parts.iter().map(|p| parse_part(p)).collect::<Option<_>>()?;
+    // inet_aton semantics: intermediate parts are single bytes; the LAST part
+    // occupies the remaining low bytes (one per missing part + its own).
+    // Example: 1.2.3.4 → 4 single bytes; 169.254.43910 → 169.254 + low16=43910.
+    let mut value: u32 = 0;
+    for (i, n) in nums.iter().enumerate() {
+        if i + 1 < nums.len() {
+            if *n > 255 {
+                return None;
+            }
+            value = (value << 8) | *n;
+        }
     }
-    Some(out)
+    let last = *nums.last()? as u64;
+    let low_bytes = (5 - nums.len()) as u32; // len=4→1 byte … len=1→4 bytes
+    let low_max = (1u64 << (8 * u64::from(low_bytes))) - 1;
+    if last > low_max {
+        return None;
+    }
+    let shift = 8 * low_bytes;
+    value = if shift >= 32 {
+        last as u32 // single-part form: value was 0 anyway
+    } else {
+        (value << shift) | last as u32
+    };
+    Some(value.to_be_bytes())
 }
 
 fn is_blocked_ipv4(ip: [u8; 4]) -> bool {
@@ -850,40 +887,72 @@ impl ConfigStore {
 
 /// Atomic disk write: tmp + chmod 0600 + rename (owner-only — translate
 /// api_key and other secrets must not be group/world readable).
+///
+/// Delegates to [`write_private_file`], which serializes tmp-write→rename
+/// under a process-wide lock (concurrent worker-thread `update` vs GTK
+/// Settings writers), creates the tmp with mode 0600, and fsyncs before
+/// rename so a crash cannot publish a truncated file.
 fn write_config_disk(path: &Path, data: &str) {
     if data.is_empty() {
         return;
     }
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    // Unique temp name so concurrent writers can't truncate each other (N16).
-    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = path.with_extension(format!(
-        "json.tmp-{}-{}",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    if fs::write(&tmp, data).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-        }
-        if fs::rename(&tmp, path).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-            }
-        }
-    }
+    write_private_file(path, data.as_bytes());
 }
 
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
         .join("hark/config.json")
+}
+
+/// Atomic owner-only write: unique tmp created with mode 0600 (never
+/// group/world-readable, CWE-732), fsync, rename into place. Shared by the
+/// config/typos/usage stores; data must be small JSON (buffered in memory).
+pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> bool {
+    static SAVE_LOCK: Mutex<()> = Mutex::new(());
+    let _g = SAVE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write_ok = (|| -> std::io::Result<()> {
+        let mut f = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp)?
+            }
+            #[cfg(not(unix))]
+            {
+                fs::File::create(&tmp)?
+            }
+        };
+        f.write_all(data)?;
+        f.sync_all()?;
+        Ok(())
+    })()
+    .is_ok();
+    if write_ok {
+        if fs::rename(&tmp, path).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+            }
+            return true;
+        }
+        let _ = fs::remove_file(&tmp);
+    }
+    false
 }
 
 /// Copy a corrupt config aside (`config.json.invalid`) so the user can recover
@@ -1305,6 +1374,32 @@ mod exclude_set_tests {
 #[cfg(test)]
 mod config_store_tests {
     use super::*;
+
+    #[test]
+    fn ssrf_non_decimal_ip_literals_blocked() {
+        // Audit P3: decimal/hex/octal/short forms of blocked ranges must not
+        // pass the endpoint blocklist as pseudo-hostnames.
+        // 169.254.169.254 metadata — alternative encodings.
+        assert!(is_blocked_translate_host("2852039166")); // decimal
+        assert!(is_blocked_translate_host("0xa9.0xfe.0xa9.0xfe")); // hex dotted
+        assert!(is_blocked_translate_host("0xa9fea9fe")); // hex single
+        assert!(is_blocked_translate_host("169.254.43910")); // short 3-part
+        assert!(is_blocked_translate_host("0251.0376.0251.0376")); // octal
+        // 224.0.0.1 multicast — decimal + hex forms.
+        assert!(is_blocked_translate_host("3758096385"));
+        assert!(is_blocked_translate_host("0xe0000001"));
+        // 0.0.0.0/8 — single zero and decimal forms.
+        assert!(is_blocked_translate_host("0"));
+        assert!(is_blocked_translate_host("0.0.0.0"));
+        // IPv4-mapped IPv6 with a bad v4 tail.
+        assert!(is_blocked_translate_host("::ffff:169.254.169.254"));
+        // Ordinary hostnames and normal literals still pass through
+        // (loopback deliberately allowed: local LibreTranslate use case).
+        assert!(!is_blocked_translate_host("translate.example.org"));
+        assert!(!is_blocked_translate_host("192.168.1.5"));
+        assert!(!is_blocked_translate_host("127.0.0.1"));
+        assert!(!is_blocked_translate_host("::ffff:192.168.1.5"));
+    }
 
     #[test]
     fn merge_missing_excludes_only_adds_absent() {

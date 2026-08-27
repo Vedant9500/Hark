@@ -897,7 +897,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Impact:** garbage calculator card (CWE-20 numeric validation).
 - **Remediation:** add `!value.is_finite()` to the rejection guard at `fueleco.rs:66`, mirroring the EMI/financial guards.
 
-#### P3 — atomic store writes are not fsynced; crash can leave a truncated store (`src/typos.rs:215-219`, `src/usage.rs:175-179`, `config.rs:826-843`)
+#### P3 — atomic store writes are not fsynced; crash can leave a truncated store (`src/typos.rs:215-219`, `src/usage.rs:175-179`, `config.rs:826-843`) — **fixed 2026-08-27**
 
 - **Root cause:** all three stores write via `fs::write(tmp)` + `fs::rename(tmp, path)`. `fs::write` performs no `fsync`; on power loss the rename can be journaled while the data blocks are not, leaving a zero-length or truncated file on next boot — which the silent-wipe issue above then destroys. The orphaned `*.json.tmp` is also never cleaned up on rename failure.
 - **Impact:** durability gap (CWE-755); interacts with the wipe finding to destroy data after a crash.
@@ -968,7 +968,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `capacity` parses into `Option<u8>` (0–255); some firmware momentarily reports >100 while charging, rendering `battery 101%`. Cosmetic/environmental, no crash.
 - **Remediation:** clamp to `c.min(100)` after parse.
 
-#### P3 — store tmp files briefly world-readable before chmod (`src/config.rs:826-836`; same pattern in typos/usage)
+#### P3 — store tmp files briefly world-readable before chmod (`src/config.rs:826-836`; same pattern in typos/usage) — **fixed 2026-08-27**
 
 - **Root cause:** `fs::write` creates `*.json.tmp` with default umask (typically 0644); the `translate` API key inside config is on disk group/world-readable for the window between write and `set_permissions(0o600)`. CWE-732.
 - **Remediation:** create with `OpenOptions::new().mode(0o600)` before writing.
@@ -978,7 +978,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `HarkConfig` and nested structs have no `deny_unknown_fields` and no preserved-extra map; unknown keys parse as defaults and are permanently erased on the next `save()`. A typo'd key reads as default rather than erroring. Related: `backup_invalid_config` overwrites `config.json.invalid` on each successive failure, retaining only the latest corrupt version.
 - **Remediation:** `deny_unknown_fields` (the backup path already exists) or a `#[serde(flatten)] extra: Map` preserved on rewrite.
 
-#### P3 — decimal/hex-IP and DNS-resolvable SSRF literals pass the translate-endpoint blocklist (`src/config.rs:585-600`)
+#### P3 — decimal/hex-IP and DNS-resolvable SSRF literals pass the translate-endpoint blocklist (`src/config.rs:585-600`) — **fixed 2026-08-27** (inet_aton-style literal forms; DNS resolution at request time remains a documented blocklist limitation)
 
 - **Root cause:** `parse_ipv4_literal` accepts only dotted-decimal, so `http://2130706173` (decimal 127.0.0.1) is treated as a hostname and passes; any DNS name resolving to link-local/metadata IPs also passes. The code comment claims SSRF protection ("block cloud-metadata / link-local targets"). Low severity: the endpoint is user-configured local settings, not remote input; the blocklist is defense-in-depth only.
 - **Remediation:** resolve the host at request time and re-check the resolved IP, or document the blocklist as literal-only.

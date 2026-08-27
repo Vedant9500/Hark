@@ -217,15 +217,8 @@ impl TypoStore {
                 Err(_) => return,
             }
         };
-        // Unique temp name — a fixed sibling lets two concurrent savers
-        // truncate each other's tmp and rename a torn JSON into place.
-        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let tmp = self.path.with_extension(format!(
-            "json.tmp-{}-{}",
-            std::process::id(),
-            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &self.path).is_ok() {
+        // Shared atomic write: unique 0600 tmp, fsync, rename.
+        if crate::config::write_private_file(&self.path, &data) {
             *self.last_save.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         } else {
             self.dirty.store(true, Ordering::Release);
