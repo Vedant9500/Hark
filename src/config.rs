@@ -1385,7 +1385,7 @@ mod config_store_tests {
         assert!(is_blocked_translate_host("0xa9fea9fe")); // hex single
         assert!(is_blocked_translate_host("169.254.43910")); // short 3-part
         assert!(is_blocked_translate_host("0251.0376.0251.0376")); // octal
-        // 224.0.0.1 multicast — decimal + hex forms.
+                                                                   // 224.0.0.1 multicast — decimal + hex forms.
         assert!(is_blocked_translate_host("3758096385"));
         assert!(is_blocked_translate_host("0xe0000001"));
         // 0.0.0.0/8 — single zero and decimal forms.

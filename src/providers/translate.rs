@@ -19,6 +19,10 @@ pub(crate) const TRANSLATE_SCORE: i64 = 100_000;
 const TRANSLATE_PENDING_SCORE: i64 = 95_000;
 const TRANSLATE_FAIL_SCORE: i64 = 80_000;
 const CACHE_TTL_SECS: u64 = 14 * 24 * 3600;
+/// Per-entry stored-text cap (bytes). Entries larger than this are never
+/// written to disk and evicted on read, so pasted text beyond the user's
+/// configured preference can't linger durably.
+const CACHE_ENTRY_MAX_BYTES: usize = 2000;
 /// Avoid hammering free APIs / spinning workers on repeated failures.
 const FAIL_CACHE_SECS: u64 = 90;
 const PENDING_PREFIX: &str = "translate:pending:";
@@ -713,9 +717,7 @@ fn libretranslate(
     // LAN endpoints would leak it to anyone on the path (CWE-319).
     if let Some(key) = &cfg.api_key {
         if !key.is_empty() && plaintext_endpoint(cfg.endpoint.trim()) {
-            return Err(
-                "LibreTranslate api_key requires https or a loopback endpoint".into(),
-            );
+            return Err("LibreTranslate api_key requires https or a loopback endpoint".into());
         }
     }
     let url = format!("{}/translate", cfg.endpoint.trim_end_matches('/'));
@@ -888,9 +890,7 @@ fn parse_mymemory_body(bytes: &[u8]) -> Result<String, String> {
     let status = v
         .pointer("/responseStatus")
         .and_then(|x| x.as_i64())
-        .or_else(|| {
-            v.pointer("/response_status").and_then(|x| x.as_i64())
-        });
+        .or_else(|| v.pointer("/response_status").and_then(|x| x.as_i64()));
     match status {
         None => {}
         Some(s) if s == 200 || s == 0 => {}
@@ -986,9 +986,7 @@ fn cache_dir_trusted(dir: &Path) -> bool {
     let Ok(m) = fs::metadata(dir) else {
         return false;
     };
-    m.is_dir()
-        && m.mode() & 0o777 == 0o700
-        && m.uid() == current_euid().unwrap_or(u32::MAX)
+    m.is_dir() && m.mode() & 0o777 == 0o700 && m.uid() == current_euid().unwrap_or(u32::MAX)
 }
 
 #[cfg(unix)]
@@ -1072,6 +1070,12 @@ fn cache_get(key: &str) -> Option<CacheEntry> {
     if e.translated.trim().is_empty() {
         return None;
     }
+    // Enforce the per-entry cap on read too — entries written before the
+    // cap existed (or after the user lowered limits) must not keep serving.
+    if e.q.len() > CACHE_ENTRY_MAX_BYTES || e.translated.len() > CACHE_ENTRY_MAX_BYTES {
+        let _ = fs::remove_file(&path);
+        return None;
+    }
     if let Ok(mut g) = mem_ok().lock() {
         g.insert(key.to_string(), e.clone());
     }
@@ -1090,6 +1094,10 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
     if !cache_dir_trusted(&dir) {
+        return;
+    }
+    // Per-entry byte cap: oversized pasted text must not persist durably.
+    if q.len() > CACHE_ENTRY_MAX_BYTES || translated.len() > CACHE_ENTRY_MAX_BYTES {
         return;
     }
     let e = CacheEntry {
@@ -1201,16 +1209,24 @@ fn maybe_sweep_cache(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<_> = rd
+    let mut files: Vec<(std::path::PathBuf, u64)> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .map(|p| {
+            let sz = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            (p, sz)
+        })
         .collect();
     const MAX: usize = 500;
-    if files.len() <= MAX {
+    // Byte budget bounds total disk use between sweeps (entry-count cap
+    // alone lets a 500 × 5 KB backlog linger regardless of preference).
+    const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
+    let total: u64 = files.iter().map(|(_, s)| *s).sum();
+    if files.len() <= MAX && total <= MAX_TOTAL_BYTES {
         return;
     }
-    files.sort_by_key(|p| {
+    files.sort_by_key(|(p, _)| {
         fs::metadata(p)
             .and_then(|m| m.modified())
             .ok()
@@ -1218,8 +1234,18 @@ fn maybe_sweep_cache(dir: &Path) {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     });
-    let remove_n = files.len() - MAX;
-    for p in files.into_iter().take(remove_n) {
+    let mut remove_n = files.len().saturating_sub(MAX);
+    let mut bytes_after = total;
+    if total > MAX_TOTAL_BYTES {
+        for (i, (_, sz)) in files.iter().enumerate() {
+            if bytes_after <= MAX_TOTAL_BYTES {
+                break;
+            }
+            remove_n = remove_n.max(i + 1);
+            bytes_after = bytes_after.saturating_sub(*sz);
+        }
+    }
+    for (p, _) in files.into_iter().take(remove_n) {
         let _ = fs::remove_file(p);
     }
 }
@@ -1508,7 +1534,11 @@ mod tests {
         let err = libretranslate("hi", "en", "es", &cfg).unwrap_err();
         assert!(err.contains("api_key"), "{err}");
         // Loopback and https endpoints are exempt.
-        for ep in ["http://127.0.0.1:5000", "http://localhost:5000", "https://lt.example.org"] {
+        for ep in [
+            "http://127.0.0.1:5000",
+            "http://localhost:5000",
+            "https://lt.example.org",
+        ] {
             let cfg = TranslateConfig {
                 endpoint: ep.into(),
                 api_key: Some("sekret".into()),
@@ -1604,11 +1634,7 @@ mod tests {
 
         // Legit entry round-trips through its own path.
         let path = dir.join(format!("{key}.json"));
-        fs::write(
-            &path,
-            serde_json::to_string(&legit).unwrap(),
-        )
-        .unwrap();
+        fs::write(&path, serde_json::to_string(&legit).unwrap()).unwrap();
         assert!(
             cache_dir_trusted(&dir),
             "0700 user-owned dir must be trusted"

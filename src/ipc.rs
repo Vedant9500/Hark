@@ -67,11 +67,7 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
 
 /// Bind `path` and serve toggles. Split from [`spawn_listener`] so tests can
 /// exercise the accept/handler logic on a scratch socket.
-pub fn spawn_listener_at(
-    path: &std::path::Path,
-    on_toggle: impl Fn() + Send + 'static + Clone,
-) {
-
+pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + 'static + Clone) {
     // Ensure the socket directory exists and is user-private. XDG_RUNTIME_DIR
     // is already 0700 by spec; the cache-dir fallback needs to be created and
     // locked down here.

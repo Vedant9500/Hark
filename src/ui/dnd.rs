@@ -199,6 +199,12 @@ fn end_session(session: &DragSession) {
 
     let session = session.clone();
     glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+        // A new drag begun inside the window must not have its keyboard
+        // mode reset or the launcher hidden mid-drag (would cancel the
+        // Wayland data source). Only settle once no drag is active.
+        if session.active.get() {
+            return;
+        }
         ignore.set(false);
         set_layer_keyboard_exclusive(&session);
         // gio::Application::default is the running app (not gtk::Application::default,

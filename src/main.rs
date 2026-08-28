@@ -21,11 +21,15 @@ fn main() {
 
     let daemon = args.iter().any(|a| a == "--daemon");
     let bench = args.iter().any(|a| a == "--bench");
-    // Headless one-shot: `hark --search "optimization.md in hark"`
-    let search_q = args
-        .iter()
-        .position(|a| a == "--search")
-        .and_then(|i| args.get(i + 1).cloned());
+    // Headless one-shot: `hark --search "optimization.md in hark"`.
+    // A missing operand must be a usage error, not a silent fallthrough
+    // into resident GUI mode (hangs scripts/keybinds, exec-once leftovers).
+    let search_q = parse_search_arg(&args);
+    if matches!(search_q, Some(None)) {
+        eprintln!("usage: hark --search \"query\"");
+        std::process::exit(2);
+    }
+    let search_q = search_q.flatten();
     args.retain(|a| a != "--daemon" && a != "--bench" && a != "--search");
     if let Some(q) = search_q.as_ref() {
         args.retain(|a| a != q);
@@ -95,19 +99,31 @@ fn main() {
         let state = state.clone();
         let pending_toggle = pending_toggle.clone();
         let app_weak = app_weak.clone();
-        let (tx, rx) = async_channel::unbounded::<()>();
+        // Capacity 1 + try_send: a toggle flood (IPC spam, stuck hotkey)
+        // collapses into at most one queued event instead of growing an
+        // unbounded channel and queuing rapid show/hide churn on the loop.
+        // A dropped send means a toggle is already pending — exactly the
+        // coalescing semantics we want.
+        let (tx, rx) = async_channel::bounded::<()>(1);
         ipc::spawn_listener(move || {
-            let _ = tx.send_blocking(());
+            let _ = tx.try_send(());
         });
         glib::spawn_future_local(async move {
+            // One activation request while the window is still being built —
+            // a flood must not queue an activate chain; pending_toggle is
+            // consumed by the activate handler itself.
+            let mut activate_requested = false;
             while let Ok(()) = rx.recv().await {
                 if let Some(launcher) = state.borrow().as_ref() {
                     launcher.toggle();
                 } else {
                     // Window not ready yet — mark pending and force activate.
                     pending_toggle.set(true);
-                    if let Some(app) = app_weak.upgrade() {
-                        app.activate();
+                    if !activate_requested {
+                        activate_requested = true;
+                        if let Some(app) = app_weak.upgrade() {
+                            app.activate();
+                        }
                     }
                 }
             }
@@ -180,6 +196,14 @@ fn run_search_once(query: &str) {
 
 /// Recognize the update invocation: `hark update` (subcommand, first arg
 /// only — `hark --search update` must stay a search) or `hark --update`.
+/// Parse the `--search` flag. `Some(None)` = flag present with no operand
+/// (usage error), `None` = flag absent, `Some(Some(q))` = headless query.
+/// A missing operand must not silently fall through to resident GUI mode.
+fn parse_search_arg(args: &[String]) -> Option<Option<String>> {
+    let i = args.iter().position(|a| a == "--search")?;
+    Some(args.get(i + 1).cloned())
+}
+
 /// Returns the args to forward to the install script (its own flags, e.g.
 /// `--no-restart`), or None when this is not an update invocation.
 fn update_invocation(args: &[String]) -> Option<Vec<String>> {
@@ -210,7 +234,9 @@ fn run_update(forwarded: &[String]) {
         Some(r) if !r.is_empty() => std::path::PathBuf::from(r),
         _ => {
             // Fallback: a dev install lays out bin as <root>/target/release/hark.
-            let cur = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+            let cur = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.canonicalize().ok());
             let from_exe = cur
                 .as_deref()
                 .and_then(|p| p.parent()) // .../target/release
@@ -280,11 +306,33 @@ mod tests {
     #[test]
     fn update_not_confused_with_search_query_or_toggle() {
         // A search query "update" must not trigger the updater.
-        assert_eq!(update_invocation(&argv(&["hark", "--search", "update"])), None);
+        assert_eq!(
+            update_invocation(&argv(&["hark", "--search", "update"])),
+            None
+        );
         // Plain toggle/daemon invocations unaffected.
         assert_eq!(update_invocation(&argv(&["hark"])), None);
         assert_eq!(update_invocation(&argv(&["hark", "--daemon"])), None);
         // Bare positional that isn't "update" is not ours to handle.
         assert_eq!(update_invocation(&argv(&["hark", "foo"])), None);
+    }
+
+    #[test]
+    fn search_arg_requires_operand() {
+        // Flag absent.
+        assert_eq!(parse_search_arg(&argv(&["hark"])), None);
+        // Present with value.
+        assert_eq!(
+            parse_search_arg(&argv(&["hark", "--search", "foo bar"])),
+            Some(Some("foo bar".into()))
+        );
+        // Present with empty string — still an explicit operand.
+        assert_eq!(
+            parse_search_arg(&argv(&["hark", "--search", ""])),
+            Some(Some("".into()))
+        );
+        // Present with no operand — must be distinguishable so main exits 2
+        // instead of silently entering resident GUI mode.
+        assert_eq!(parse_search_arg(&argv(&["hark", "--search"])), Some(None));
     }
 }

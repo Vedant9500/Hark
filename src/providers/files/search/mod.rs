@@ -619,7 +619,13 @@ mod missing_scope_tests {
     use super::deep::{plan_deep_jobs, DeepMode};
     use super::IndexedPath;
 
-    fn make_indexed(path: std::path::PathBuf, name: String, is_dir: bool, depth: u16, is_mnt: bool) -> IndexedPath {
+    fn make_indexed(
+        path: std::path::PathBuf,
+        name: String,
+        is_dir: bool,
+        depth: u16,
+        is_mnt: bool,
+    ) -> IndexedPath {
         IndexedPath {
             path_lower: path.to_string_lossy().to_ascii_lowercase(),
             path,
@@ -647,8 +653,7 @@ mod missing_scope_tests {
             false,
         )];
         let query = "report.md in /definitely-not-a-real-dir-xyz";
-        let sq =
-            super::plan::parse_scoped_query(query, Some(&index)).expect("parses");
+        let sq = super::plan::parse_scoped_query(query, Some(&index)).expect("parses");
         // Direct call: `plan_deep_jobs` returns [] earlier in the pipeline
         // (scope-hint gate), so exercise the scoped planner itself.
         let jobs = super::deep::plan_deep_for_scoped_test_hook(
@@ -665,19 +670,11 @@ mod missing_scope_tests {
             "no job may walk the filesystem root, got {jobs:?}"
         );
         // Pipeline-level: no jobs at all for the missing absolute scope.
-        let pipeline = plan_deep_jobs(
-            &index,
-            query,
-            &[],
-            DeepMode::Sync,
-            &[],
-            &[],
-        );
+        let pipeline = plan_deep_jobs(&index, query, &[], DeepMode::Sync, &[], &[]);
         assert!(
-            pipeline.iter().all(|j| !j
-                .roots()
+            pipeline
                 .iter()
-                .any(|r| r == std::path::Path::new("/"))),
+                .all(|j| !j.roots().iter().any(|r| r == std::path::Path::new("/"))),
             "pipeline must not root any job at /, got {pipeline:?}"
         );
     }
@@ -714,13 +711,10 @@ mod missing_scope_tests {
         // does not start with `report`) and must score below
         // DEEP_SKIP_IF_INDEX_SCORE so remaining deep jobs survive.
         let sq = super::plan::parse_scoped_query("report in x", Some(&index))
-            .or_else(|| {
-                super::plan::parse_scoped_query("report in /home/u/x", Some(&index))
-            })
+            .or_else(|| super::plan::parse_scoped_query("report in /home/u/x", Some(&index)))
             .expect("parses");
         let gq = super::plan::scoped_to_glob(&sq);
-        let results =
-            super::glob::search_glob(&index, &gq, &crate::config::PathStyle::Label, &[]);
+        let results = super::glob::search_glob(&index, &gq, &crate::config::PathStyle::Label, &[]);
         assert_eq!(results.len(), 1);
         let hit = &results[0];
         assert_eq!(hit.kind, ResultKind::File);

@@ -275,7 +275,9 @@ fn parse_rates_body(body: &[u8]) -> Option<RatesCache> {
     if !api.base.eq_ignore_ascii_case("eur") {
         return None;
     }
-    if !iso_date_ok(&api.date) || !date_within_days(&api.date, chrono::Local::now().date_naive(), 45) {
+    if !iso_date_ok(&api.date)
+        || !date_within_days(&api.date, chrono::Local::now().date_naive(), 45)
+    {
         return None;
     }
     if !sane_rates(&api.rates) {
@@ -336,8 +338,7 @@ fn parse_disk_cache(data: &str) -> Option<RatesCache> {
     }
     // `fetched_at` is our own timestamp; a table whose date contradicts it
     // was tampered (e.g. a 1999 table written today).
-    let fetched = chrono::DateTime::from_timestamp(c.fetched_at as i64, 0)?
-        .date_naive();
+    let fetched = chrono::DateTime::from_timestamp(c.fetched_at as i64, 0)?.date_naive();
     if !date_within_days(&c.date, fetched, 45) {
         return None;
     }
@@ -435,7 +436,10 @@ mod tests {
             let body = serde_json::json!({
                 "base": "EUR", "date": bad, "rates": { "USD": 1.1 }
             });
-            assert!(parse_rates_body(body.to_string().as_bytes()).is_none(), "{bad}");
+            assert!(
+                parse_rates_body(body.to_string().as_bytes()).is_none(),
+                "{bad}"
+            );
         }
         // Far-past table from the network — reject (would cache as current).
         let body = serde_json::json!({
@@ -443,7 +447,10 @@ mod tests {
         });
         assert!(parse_rates_body(body.to_string().as_bytes()).is_none());
         // Valid shape — accept.
-        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
         let body = serde_json::json!({
             "base": "EUR", "date": today, "rates": { "USD": 1.1 }
         });
@@ -456,7 +463,10 @@ mod tests {
             "base": "EUR", "date": "2025-08-01",
             "rates": { "USD": 1.1 }, "fetched_at": 1754000000_u64
         });
-        assert!(parse_disk_cache(&good.to_string()).is_some(), "date within 45d of fetched_at");
+        assert!(
+            parse_disk_cache(&good.to_string()).is_some(),
+            "date within 45d of fetched_at"
+        );
         // 1999 table written "today": date contradicts fetched_at — reject.
         let tampered = serde_json::json!({
             "base": "EUR", "date": "1999-01-01",
@@ -543,14 +553,18 @@ mod tests {
         // Missing base/date.
         assert!(parse_rates_body(br#"{"rates":{"USD":1.1}}"#).is_none());
         // Zero / negative / non-finite rates would poison conversions — reject.
-        assert!(parse_rates_body(br#"{"base":"EUR","date":"2026-13-01","rates":{"USD":0.0}}"#).is_none());
+        assert!(
+            parse_rates_body(br#"{"base":"EUR","date":"2026-13-01","rates":{"USD":0.0}}"#)
+                .is_none()
+        );
         assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":-1.1}}"#).is_none());
         assert!(parse_rates_body(br#"{"base":"EUR","date":"d","rates":{"USD":1e999}}"#).is_none());
     }
 
     #[test]
     fn load_disk_cache_rejects_bad_rates() {
-        let ok = r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":1.1},"fetched_at":1754000000}"#;
+        let ok =
+            r#"{"base":"EUR","date":"2025-08-01","rates":{"USD":1.1},"fetched_at":1754000000}"#;
         assert!(parse_disk_cache(ok).is_some());
         // Tampered cache entries must not reach conversions: invalid → None → refetch.
         for bad in [

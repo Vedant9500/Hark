@@ -404,7 +404,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 
 ### New verified findings
 
-#### P2 — `hark --search` without a value silently enters resident/GUI mode (`src/main.rs:18-43`)
+#### P2 — `hark --search` without a value silently enters resident/GUI mode (`src/main.rs:18-43`) — **fixed 2026-08-28** (`parse_search_arg` returns `Option<Option<String>>`; missing operand → usage + exit 2; unit test covers present/absent/empty)
 
 - **Root cause:** `args.iter().position(|a| a == "--search").and_then(|i| args.get(i + 1).cloned())` maps a missing operand to `None`, exactly like no `--search` at all. There is no sentinel distinguishing “option present, value absent”.
 - **Verified failure path:** `./target/debug/hark --search` produced no stdout/stderr and kept running until interrupted; the empty-query branch that correctly emits usage/exit 2 is reached only when an explicit empty string is supplied.
@@ -450,7 +450,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Remediation:** explicit shutdown hook must call `UsageStore::flush()` and `TypoStore::flush()` after stopping GTK; alternatively make `record` arm a one-shot `glib::timeout_add_local_once(SAVE_DEBOUNCE)` so the latest dirty state is written even without process shutdown. Keep the existing atomic `.tmp` rename.
 - **Related existing tracker:** usage-race already captures the one-delayed-write race; this finding covers the distinct no-flush-on-signal loss.
 
-#### P3 — translate durable-cache entries can exceed configured query limits (`src/providers/translate.rs:924-1063`)
+#### P3 — translate durable-cache entries can exceed configured query limits (`src/providers/translate.rs:924-1063`) — **fixed 2026-08-28** (2 KB per-entry cap on read+write; sweep now also evicts by 2 MB total byte budget)
 
 - **Root cause:** `cache_put` stores the full `q` and `translated` strings without a length cap. Users can raise/lower `translate.max_chars` (100–5000), but every previously accepted request remains on disk for 14 days; 500 entries × 5 KB source + response can persist roughly 5 MB. `maybe_sweep_cache` bounds count, not bytes or per-entry size.
 - **Failure pathway:** paste many 5000-char strings → 500-entry cache cap is reached only after writes; disk grows before sweep; lowering `max_chars` does not shrink existing entries.
@@ -1547,9 +1547,9 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - **Root cause:** `and_local_timezone(from_tz).single()?` returns `None` when a wall-clock time falls in a DST gap (spring-forward) or is ambiguous (fall-back). `01:30 in new york` on a fall-back date yields nothing at all — no card, no error, the query just falls through.
 - **Remediation:** use `.earliest()`/`.latest()` with a disambiguation hint (or render both candidates in the card) instead of `.single()?`.
 
-#### P2 — password/uuid silently fall back to predictable PRNG when `/dev/urandom` is unreadable (`src/providers/calc/quick.rs:652-678`)
+#### P2 — password/uuid silently fall back to predictable PRNG when `/dev/urandom` is unreadable (`src/providers/calc/quick.rs:652-678`) — **fixed 2026-08-28** (see P1 entry below; generation now refuses instead of falling back)
 
-- **Root cause:** `os_random_bytes` falls back to the xorshift stream whose seed floor is `nanos ^ (pid × golden-ratio)` — predictable to anyone who can guess start-time and pid (CWE-338). The fallback is silent: the card presents the result as a password with no warning. (Phase-4 chain 8 correctly refuted the *constant-seed* hypothesis — time+pid is the floor, urandom mixes in per-generation when available — but the degraded path remains an unflagged weak generator.)
+#### P1 — degraded RNG path can silently issue credentials (`src/providers/calc/quick.rs:642-662`) — **fixed 2026-08-28** (`os_random_bytes` removed; `csprng_bytes` returns Option and password/uuid refuse to produce output when `/dev/urandom` is unavailable)
 - **Remediation:** refuse to generate (error card) when urandom is unavailable, or label the output as non-cryptographic in that case.
 
 #### P2 — manual pins are structurally indistinguishable from learned aliases; one conflicting launch silently overwrites a pin (`src/typos.rs:289-296`, `168-171`)
@@ -1862,21 +1862,21 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P2 | `path_completions` bypasses secrets/artifact exclude filter (`.ssh` listing) — **fixed 2026-08-26**: completions now receive `ExcludeSet` and call `should_skip_entry`; test `path_completions_skip_secret_dirs` | `files/search/glob.rs:541-569` | 19 |
 | P2 | Serialized IPC accept loop: slowloris clients wedge all hotkey presses — **fixed 2026-08-26**: per-client handler threads off the accept loop (read timeout still bounds each); test `stalled_client_does_not_wedge_later_toggles` | `ipc.rs:96-113` | 14 |
 | P2 | bind→chmod race leaves socket briefly world-connectable — **fixed 2026-08-26**: `bind_socket` temporarily forces umask 077 during bind, then checks chmod 0600; ignored test `bound_socket_is_user_only` | `ipc.rs:121`, `:90-94` | 14 |
-| P2 | Unbounded toggle channel: flood grows memory + overlay churn | `main.rs:92-103` | 14 |
-| P2 | IPC flood → duplicate GTK Application spawn chain | `ipc.rs:96-113` + `main.rs:44-48` | 18 |
-| P2 | Stale drag-end timer fires mid-drag, hides launcher, cancels Wayland drop | `ui/dnd.rs:178-225` | 13 |
+| P2 | Unbounded toggle channel: flood grows memory + overlay churn — **fixed 2026-08-28**: bounded(1) channel + `try_send`; a flood collapses into at most one pending toggle | `main.rs:92-103` | 14 |
+| P2 | IPC flood → duplicate GTK Application spawn chain — **fixed 2026-08-28**: per-client handler threads + bounded coalesced channel + single `app.activate()` request while the window is building | `ipc.rs:96-113` + `main.rs:44-48` | 18 |
+| P2 | Stale drag-end timer fires mid-drag, hides launcher, cancels Wayland drop — **fixed 2026-08-28**: 1200 ms one-shot callback bails when `session.active` (a newer drag is running) | `ui/dnd.rs:178-225` | 13 |
 | P2 | Corrupt-but-parseable usage count → release daemon abort (panic=abort) — **fixed 2026-08-26**: `count` clamped to 1M and empty ids dropped on load (`usage.rs`), both engine score adds now `saturating_add`; test `load_clamps_poisoned_counts` | `usage.rs:16-18` + `engine.rs:283,333` | 14/18 |
-| P3 | ureq honors proxy env vars unscoped | `http.rs:16-21` | 16 |
-| P3 | MyMemory in-band errors rendered as translations and cached 14 days | `translate.rs:840-855` | 16 |
-| P3 | fx accepts any base/date (tampered cache → wrong conversions) | `fx.rs:265-281` | 16 |
-| P3 | api_key sent plaintext to user-allowed http:// endpoints | `translate.rs:718-728` | 16 |
-| P3 | IPC fallback socket path: silent mkdir/chmod failure, symlink-able `/tmp/hark` | `ipc.rs:14-19,68-77` | 14 |
-| P3 | Store tmp files briefly world-readable before chmod (CWE-732) | `config.rs:826-836` | 13 |
-| P3 | Decimal/hex-IP SSRF literals pass translate-endpoint blocklist | `config.rs:585-600` | 13 |
-| P3 | Online installer: no tarball integrity check despite published SHA256SUMS | `dist/install.sh:31-34` | 20 |
-| P3 | PKGBUILD hard-links layer-shell but lists it only as optdepends | `packaging/aur/PKGBUILD:12-33` | 15 |
-| P3 | ffmpeg/pdftoppm resolved via inherited PATH with full env | `ui/preview.rs:1384-1442` | 16 |
-| P3 | `set_manual` accepts structurally invalid target ids (zombie aliases) | `typos.rs:279-282` | 18 |
+| P3 | ureq honors proxy env vars unscoped — **open (verified 2026-08-28)**: agents built with no explicit proxy config; ureq's default still applies `ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY` | `http.rs:16-21` | 16 |
+| P3 | MyMemory in-band errors rendered as translations and cached 14 days — **fixed**: `parse_mymemory_body` rejects quota/invalid/rate-length strings and non-200 `responseStatus`; tests `mymemory_rejects_quota_warning` etc. | `translate.rs:840-855` | 16 |
+| P3 | fx accepts any base/date (tampered cache → wrong conversions) — **fixed**: `parse_rates_body` requires base=EUR + valid/recent date; `parse_disk_cache` re-validates base/date-vs-`fetched_at`/sane rates; tests in fx.rs | `fx.rs:265-281` | 16 |
+| P3 | api_key sent plaintext to user-allowed http:// endpoints — **fixed**: `libretranslate` refuses non-empty key on non-loopback plain-HTTP endpoints (`plaintext_endpoint`); test `api_key_refused_over_plaintext_non_loopback` | `translate.rs:718-728` | 16 |
+| P3 | IPC fallback socket path: silent mkdir/chmod failure, symlink-able `/tmp/hark` — **fixed**: `/tmp` fallback removed from `socket_path()` (XDG cache/home only); dir forced 0700; umask-077 bind + chmod 0600 check | `ipc.rs:14-19,68-77` | 14 |
+| P3 | Store tmp files briefly world-readable before chmod (CWE-732) — **fixed**: shared `write_private_file` creates unique tmp with `mode(0o600)` at open (never world-readable), fsyncs, renames; test `save_sets_owner_only_permissions` | `config.rs:826-836` | 13 |
+| P3 | Decimal/hex-IP SSRF literals pass translate-endpoint blocklist — **fixed 2026-08-27**: `parse_ipv4_literal` handles inet_aton decimal/hex/octal/short forms; test `ssrf_non_decimal_ip_literals_blocked` (DNS resolution at request time remains a documented limitation) | `config.rs:585-600` | 13 |
+| P3 | Online installer: no tarball integrity check despite published SHA256SUMS — **open (verified 2026-08-28)**: `dist/install.sh` still curls straight into `tar -xzf`, no digest check | `dist/install.sh:31-34` | 20 |
+| P3 | PKGBUILD hard-links layer-shell but lists it only as optdepends — **open (verified 2026-08-28)**: `optdepends` unchanged; build still conditional on builder's pkg-config, binary can require `libgtk4-layer-shell.so.0` with no dep edge | `packaging/aur/PKGBUILD:12-33` | 15 |
+| P3 | ffmpeg/pdftoppm resolved via inherited PATH with full env — **open (verified 2026-08-28)**: `Command::new("ffmpeg")`/`("pdftoppm")` at preview.rs:1448/:1486, no env scoping | `ui/preview.rs:1384-1442` | 16 |
+| P3 | `set_manual` accepts structurally invalid target ids (zombie aliases) — **open (verified 2026-08-28)**: only checks the `app:`/`path:` prefix, never that the id resolves to a live result | `typos.rs:279-282` | 18 |
 
 ### 💾 Data Integrity / Persistence
 

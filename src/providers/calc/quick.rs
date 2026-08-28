@@ -648,17 +648,11 @@ fn read_urandom(n: usize) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// n random bytes: OS entropy when available, else our PRNG stream. Never panics.
-fn os_random_bytes(n: usize) -> Vec<u8> {
-    if let Some(b) = read_urandom(n) {
-        return b;
-    }
-    let mut buf = vec![0u8; n];
-    for chunk in buf.chunks_mut(8) {
-        let v = next_u64().to_le_bytes();
-        chunk.copy_from_slice(&v[..chunk.len()]);
-    }
-    buf
+/// Credential-grade random bytes from the OS CSPRNG. None on any failure —
+/// callers must refuse to produce output rather than fall back to the
+/// predictable xorshift stream (CWE-338).
+fn csprng_bytes(n: usize) -> Option<Vec<u8>> {
+    read_urandom(n)
 }
 
 fn initial_seed() -> u64 {
@@ -811,9 +805,8 @@ fn try_random(q: &str) -> Option<SearchResult> {
 // UUID v4 + password
 // ---------------------------------------------------------------------------
 
-fn uuid_v4() -> String {
+fn uuid_v4(bytes: Vec<u8>) -> String {
     let mut b = [0u8; 16];
-    let bytes = os_random_bytes(16);
     b.copy_from_slice(&bytes);
     b[6] = (b[6] & 0x0f) | 0x40; // version 4
     b[8] = (b[8] & 0x3f) | 0x80; // variant 10
@@ -829,7 +822,7 @@ fn try_uuid(q: &str) -> Option<SearchResult> {
     if lower != "uuid" {
         return None;
     }
-    let s = uuid_v4();
+    let s = uuid_v4(csprng_bytes(16)?);
     Some(card_result(
         s.clone(),
         "UUID v4".into(),
@@ -853,17 +846,24 @@ fn try_password(q: &str) -> Option<SearchResult> {
         .and_then(|m| m.as_str().parse::<usize>().ok())
         .unwrap_or(16);
     len = len.clamp(4, 128);
+    // Passwords are credentials: only OS entropy is acceptable. If the
+    // CSPRNG is unavailable, fail (None → "no result") rather than emit a
+    // predictable value presented as a password (CWE-338).
+    let entropy = || csprng_bytes(len.max(64));
+    let mut pool = entropy()?;
+    let mut pool_i = 0;
     // Rejection sampling over bytes keeps draws uniform across the 62 chars.
     let mut s = String::with_capacity(len);
     while s.len() < len {
-        for b in os_random_bytes(len) {
-            if b < 248 {
-                // 62 * 4 = 248 accepted values → b % 62 is unbiased.
-                s.push(PASSWORD_CHARS[(b % 62) as usize] as char);
-                if s.len() == len {
-                    break;
-                }
-            }
+        if pool_i >= pool.len() {
+            pool = entropy()?;
+            pool_i = 0;
+        }
+        let b = pool[pool_i];
+        pool_i += 1;
+        if b < 248 {
+            // 62 * 4 = 248 accepted values → b % 62 is unbiased.
+            s.push(PASSWORD_CHARS[(b % 62) as usize] as char);
         }
     }
     Some(card_result(
@@ -1224,9 +1224,9 @@ mod tests {
     }
 
     #[test]
-    fn os_random_bytes_differs() {
-        let a = os_random_bytes(32);
-        let b = os_random_bytes(32);
+    fn csprng_bytes_differs() {
+        let a = csprng_bytes(32).expect("urandom");
+        let b = csprng_bytes(32).expect("urandom");
         assert_eq!(a.len(), 32);
         assert_ne!(a, b, "two 32-byte draws identical");
     }

@@ -143,7 +143,8 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
     // remaining deep jobs (audit P3).
     if let Some(s) = boosted {
         let contains_class = gq.name_pat.as_deref().is_some_and(|pat| {
-            !pat.contains('*') && !pat.contains('?')
+            !pat.contains('*')
+                && !pat.contains('?')
                 && item.name_lower != pat
                 && item.name_lower.contains(pat)
                 && !item.name_lower.starts_with(pat)
