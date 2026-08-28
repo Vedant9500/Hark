@@ -7,10 +7,7 @@ pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
 arch=('x86_64')
 url="https://github.com/Vedant9500/Hark"
 license=('MIT')
-depends=('gtk4' 'gtksourceview5' 'glib2' 'xdg-utils')
-optdepends=(
-  'gtk4-layer-shell: true overlay mode on Hyprland/Wayland compositors'
-)
+depends=('gtk4' 'gtksourceview5' 'glib2' 'gtk4-layer-shell' 'xdg-utils')
 makedepends=('cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Hark/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('8698433a64f16689e85119ab8a58eab7aa21e84f8b6752839faef721f27589a2')
@@ -26,11 +23,9 @@ build() {
   cd "Hark-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  local features=()
-  if pkg-config --exists gtk4-layer-shell-0; then
-    features=(--features layer-shell)
-  fi
-  cargo build --frozen --release "${features[@]}"
+  # layer-shell is a hard depends: always built in, so the installed
+  # binary never references a library the package doesn't pull in.
+  cargo build --frozen --release --features layer-shell
 }
 
 check() {

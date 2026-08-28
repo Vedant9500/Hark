@@ -112,6 +112,9 @@ tar -C "$DIST/stage" -czf "$TARBALL" "$PKG_NAME"
 
 # Online installer (downloads latest tarball from GitHub Releases)
 ONLINE_INSTALLER="$DIST/install.sh"
+# Digest embedded at package time so the installer can verify the asset
+# before executing anything from it (audit Pass 20, CWE-494).
+TARBALL_SHA="$(sha256sum "$TARBALL" | awk '{print $1}')"
 cat > "$ONLINE_INSTALLER" <<EOF
 #!/usr/bin/env bash
 # Hark online installer — downloads the latest release and installs user-local.
@@ -133,6 +136,9 @@ case "\$ARCH_RAW" in
 esac
 
 ASSET="hark-\${VERSION}-\${ARCH}-linux.tar.gz"
+# SHA-256 of this exact asset, embedded at package time. The installer
+# fails closed if the download doesn't match.
+EXPECT_SHA="${TARBALL_SHA}"
 # Prefer exact version asset; fall back to latest redirect layout
 BASE="https://github.com/\${REPO}/releases"
 URL_VERSIONED="\${BASE}/download/v\${VERSION}/\${ASSET}"
@@ -152,6 +158,15 @@ else
   echo "  tried: \$URL_VERSIONED" >&2
   echo "  tried: \$URL_LATEST" >&2
   echo "Set the correct GitHub repo or install from source: https://github.com/\${REPO}" >&2
+  exit 1
+fi
+
+echo "Verifying checksum…"
+ACTUAL_SHA="\$(sha256sum "\$TMP/pkg.tar.gz" | awk '{print \$1}')"
+if [[ "\$ACTUAL_SHA" != "\$EXPECT_SHA" ]]; then
+  echo "error: checksum mismatch (CWE-494)" >&2
+  echo "  expected \$EXPECT_SHA" >&2
+  echo "  got      \$ACTUAL_SHA" >&2
   exit 1
 fi
 

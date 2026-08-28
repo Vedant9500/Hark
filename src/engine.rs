@@ -483,7 +483,16 @@ impl Engine {
     /// Manual alias from Settings. `target` is an app name, desktop id, or path.
     pub fn add_typo_alias(&self, alias: &str, target: &str) -> Result<String, String> {
         let (id, label) = self.resolve_alias_target(target)?;
-        self.typos.set_manual(alias, &id)?;
+        // Resolve-check the final id too: pins must reference live results,
+        // never zombie ids (audit Pass 18).
+        let files = &self.files;
+        let apps = &self.apps;
+        self.typos.set_manual(alias, &id, |candidate| {
+            if let Some(path) = candidate.strip_prefix("path:") {
+                return files.resolve_path(&PathBuf::from(path)).is_some();
+            }
+            apps.resolve_id(candidate).is_some()
+        })?;
         Ok(label)
     }
 

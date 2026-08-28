@@ -11,6 +11,10 @@ const CONNECT: Duration = Duration::from_secs(2);
 const TOTAL: Duration = Duration::from_secs(4);
 
 /// Shared agent so TLS/DNS sessions can be reused across worker requests.
+/// `no_proxy`: hark talks only to fixed, trusted hosts (Frankfurter,
+/// translate APIs, the user's LibreTranslate endpoint) — an inherited
+/// `ALL_PROXY`/`HTTP_PROXY` env var would silently route that traffic
+/// (including secret-bearing requests) through an attacker-chosen host.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -18,6 +22,7 @@ fn agent() -> &'static ureq::Agent {
             .timeout_connect(CONNECT)
             .timeout(TOTAL)
             .user_agent("hark-launcher/0.1")
+            .try_proxy_from_env(false)
             .build()
     })
 }
@@ -35,6 +40,7 @@ fn no_redirect_agent() -> &'static ureq::Agent {
             .timeout(TOTAL)
             .user_agent("hark-launcher/0.1")
             .redirects(0)
+            .try_proxy_from_env(false)
             .build()
     })
 }
@@ -60,6 +66,7 @@ fn background_agent() -> &'static ureq::Agent {
             .timeout_connect(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
             .user_agent("hark-launcher/0.1")
+            .try_proxy_from_env(false)
             .build()
     })
 }
@@ -135,6 +142,27 @@ mod tests {
     /// The secret-bearing POST agent must not follow redirects: a 307/308
     /// from a configured endpoint would replay the key-bearing body to an
     /// arbitrary host.
+    /// Audit P3 (Pass 16): agents must ignore inherited proxy env vars —
+    /// otherwise an `ALL_PROXY`/`HTTP_PROXY` set in the session routes
+    /// hark's traffic (incl. secret-bearing POSTs) through it.
+    #[test]
+    fn agents_ignore_proxy_env() {
+        // Agents are process-wide OnceLocks; setting the env here only
+        // proves the builder flag exists and compiles into each agent.
+        // Functional proof: `try_proxy_from_env(false)` makes the agent skip
+        // env proxy resolution entirely.
+        std::env::set_var("ALL_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:1");
+        // With no_proxy, a request to a dead proxy address must NOT be
+        // attempted; the connect error names the real host/port instead.
+        let err = get_bytes("http://127.0.0.1:2/x").unwrap_err();
+        assert!(!err.to_ascii_lowercase().contains(":1"), "{err}");
+        std::env::remove_var("ALL_PROXY");
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("HTTPS_PROXY");
+    }
+
     #[test]
     fn post_json_agent_has_redirects_disabled() {
         use std::io::{Read, Write as _};

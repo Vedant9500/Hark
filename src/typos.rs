@@ -278,11 +278,22 @@ impl TypoStore {
     }
 
     /// Manual pin from Settings (v3). `alias` is normalized; overwrites target.
-    pub fn set_manual(&self, alias: &str, result_id: &str) -> Result<(), String> {
+    /// `resolve` checks the id against live providers so a structurally-valid
+    /// but nonexistent id (`app:ghost.desktop`, `path:/gone`) can't be pinned
+    /// as a zombie alias that later launches nothing.
+    pub fn set_manual(
+        &self,
+        alias: &str,
+        result_id: &str,
+        resolve: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
         let key = normalize_alias(alias)
             .ok_or_else(|| "Typo must be 3–24 letters (single word, no paths/math)".to_string())?;
         if !result_id.starts_with("app:") && !result_id.starts_with("path:") {
             return Err("Target must be an app or file result".into());
+        }
+        if !resolve(result_id) {
+            return Err("Target not found — pick an existing app or file".into());
         }
         let now = now_secs();
         {
@@ -579,7 +590,7 @@ mod tests {
         assert!(store.remove("wats"));
         assert_eq!(store.len(), 0);
         store
-            .set_manual("ffox", "app:firefox.desktop")
+            .set_manual("ffox", "app:firefox.desktop", |_| true)
             .expect("manual");
         assert_eq!(
             store.lookup("ffox").map(|(id, _)| id),
@@ -587,7 +598,16 @@ mod tests {
         );
         store.clear_all();
         assert_eq!(store.len(), 0);
-        assert!(store.set_manual("x", "app:a.desktop").is_err());
+        assert!(store.set_manual("x", "app:a.desktop", |_| true).is_err());
+        // Zombie ids: structurally valid prefix but no live result — the
+        // resolver callback rejects them (audit Pass 18).
+        assert!(store
+            .set_manual("ffox", "app:ghost.desktop", |_| false)
+            .is_err());
+        assert!(store
+            .set_manual("ffox", "path:/nonexistent/file", |_| false)
+            .is_err());
+        assert_eq!(store.len(), 0);
         store.flush();
         let _ = fs::remove_file(&store.path);
     }
