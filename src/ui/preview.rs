@@ -1444,8 +1444,40 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> bool {
     }
 }
 
+/// Minimal environment for external decoders (audit Pass 16): ffmpeg /
+/// pdftoppm run with user-controlled file arguments, so an inherited env
+/// (LD_PRELOAD, FFREPORT, HOME hooks…) must not reach them. PATH is kept
+/// for discoverability but only standard system prefixes are honored —
+/// resolves the binary the same way a login shell would, without
+/// executing anything out of a user-writable directory.
+fn converter_command(bin: &str) -> Command {
+    let mut cmd = Command::new(resolve_system_binary(bin).unwrap_or_else(|| bin.into()));
+    cmd.env_clear();
+    cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    if let Some(home) = std::env::var_os("HOME") {
+        cmd.env("HOME", home);
+    }
+    // ffmpeg needs no AVFoundation/fontconfig vars on Linux; pdftoppm
+    // needs none beyond HOME. Locale only affects log strings.
+    cmd.env("LC_ALL", "C");
+    cmd
+}
+
+/// Absolute path for `bin` from the standard system prefixes, first hit
+/// wins. None means "not found" → caller falls back to the bare name
+/// (PATH lookup above still constrains it to the same prefixes).
+fn resolve_system_binary(bin: &str) -> Option<PathBuf> {
+    for dir in ["/usr/local/bin", "/usr/bin", "/bin"] {
+        let p = Path::new(dir).join(bin);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 fn run_ffmpeg_frame(path: &Path, out: &Path, ss: &str) -> bool {
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = converter_command("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error", "-ss", ss, "-i"])
         .arg(path)
         .args([
@@ -1483,7 +1515,7 @@ fn decode_pdf_page(path: &Path) -> Option<DecodedPixels> {
         return None;
     }
 
-    let mut cmd = Command::new("pdftoppm");
+    let mut cmd = converter_command("pdftoppm");
     cmd.args([
         "-f",
         "1",

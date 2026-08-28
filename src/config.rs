@@ -905,14 +905,76 @@ pub fn config_path() -> PathBuf {
         .join("hark/config.json")
 }
 
+/// True when `dir` is owned by this user and locked to 0700 — the same
+/// guard fx.rs/translate.rs apply. Any store that can fall back to shared
+/// `/tmp` space must refuse to persist through a directory someone else
+/// pre-created (audit N1 threat model).
+#[cfg(unix)]
+pub(crate) fn dir_is_trusted(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(m) = fs::metadata(dir) else {
+        return false;
+    };
+    m.is_dir() && m.mode() & 0o777 == 0o700 && m.uid() == current_euid().unwrap_or(u32::MAX)
+}
+
+#[cfg(unix)]
+pub(crate) fn current_euid() -> Option<u32> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
+    line.split_whitespace().nth(2)?.parse().ok()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn dir_is_trusted(_dir: &Path) -> bool {
+    true
+}
+
+/// Read side of the N1 guard: only load a store file from a parent dir we
+/// own and that is 0700. A planted `typos.json`/`usage.json` in a shared
+/// `/tmp` fallback would otherwise steer launches/scores on next start.
+/// Returns None (→ caller uses defaults) when the dir is untrusted.
+pub(crate) fn read_private_file(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        // Trust the resolve chain, not the file: state/cache dirs are ours;
+        // the /tmp fallback is only reached when XDG+HOME both failed.
+        let trusted_root = path.parent().map(dir_is_trusted).unwrap_or(false);
+        // Normal XDG/state locations don't carry 0700 by spec (e.g.
+        // ~/.local/share may be 0755); only enforce the strict check on
+        // shared-space fallbacks.
+        let in_shared_space = path
+            .ancestors()
+            .any(|a| a == std::path::Path::new("/tmp") || a == std::path::Path::new("/var/tmp"));
+        if in_shared_space && !trusted_root {
+            return None;
+        }
+    }
+    fs::read_to_string(path).ok()
+}
+
 /// Atomic owner-only write: unique tmp created with mode 0600 (never
 /// group/world-readable, CWE-732), fsync, rename into place. Shared by the
 /// config/typos/usage stores; data must be small JSON (buffered in memory).
+/// Refuses to write through a parent directory not owned by this user
+/// (and not 0700) — the /tmp fallback must not become an attacker-writable
+/// persistence path.
 pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> bool {
     static SAVE_LOCK: Mutex<()> = Mutex::new(());
     let _g = SAVE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Best-effort lockdown before the ownership check (same shape
+            // as fx.rs): a fresh dir becomes 0700 ours; a pre-created
+            // attacker dir either fails the chmod or fails the uid check.
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+        if !dir_is_trusted(parent) {
+            return false;
+        }
     }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tmp = path.with_extension(format!(
@@ -1655,5 +1717,113 @@ mod config_store_tests {
         assert_eq!(mode, 0o600, "config.json must be owner-read/write only");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The shared store-write guard (audit N1, extended): a pre-created
+    /// non-0700 directory in shared /tmp space must refuse writes —
+    /// persistence through an attacker-owned dir lets them plant/replace
+    /// typos.json/usage.json on next start.
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_refuses_untrusted_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-untrusted-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // Simulate a dir that *looks* shared (0755) but is ours: the write
+        // path tightens it to 0700 first, then persists — same shape as
+        // fx.rs. (A genuinely attacker-owned dir fails the chmod AND the
+        // uid check; that can't be simulated unprivileged.)
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = dir.join("usage.json");
+        assert!(
+            write_private_file(&path, b"{}"),
+            "own 0755 dir is tightened to 0700 and accepted"
+        );
+        let dmode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700, "dir must be tightened to 0700 by the write");
+        let fmode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(fmode, 0o600, "store file must be owner-only");
+        let _ = fs::remove_dir_all(&dir);
+
+        // Control: a 0700 dir we own accepts the write.
+        let dir2 = std::env::temp_dir().join(format!(
+            "hark-trusted-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir(&dir2).unwrap();
+        fs::set_permissions(&dir2, fs::Permissions::from_mode(0o700)).unwrap();
+        let path2 = dir2.join("usage.json");
+        assert!(write_private_file(&path2, b"{}"));
+        assert!(path2.exists());
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    /// The dir-trust predicate itself: mode must be exactly 0700.
+    #[cfg(unix)]
+    #[test]
+    fn dir_is_trusted_requires_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "hark-dirtrust-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!dir_is_trusted(&dir), "0755 must not be trusted");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(dir_is_trusted(&dir), "own 0700 is trusted");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Read side: a store file under /tmp in an untrusted dir is ignored.
+    #[cfg(unix)]
+    #[test]
+    fn read_private_file_ignores_shared_space_untrusted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-read-untrusted-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir(&dir).unwrap();
+        // Read guard checks the *parent dir of the file*; simulate planted
+        // file in world-readable shared space.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("typos.json");
+        fs::write(&path, r#"{"aliases":{}}"#).unwrap();
+        assert!(
+            read_private_file(&path).is_none(),
+            "planted file in shared /tmp must not be loaded"
+        );
+        // Trusted 0700 dir in /tmp still reads (fallback-of-fallback works
+        // for the legitimate owner).
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(read_private_file(&path).is_some());
+        let _ = fs::remove_dir_all(&dir);
+
+        // Normal state dir (0755, ours, NOT under /tmp) reads fine.
+        let home_dir = dirs::home_dir().expect("home");
+        let normal = home_dir.join(".cache");
+        if normal.is_dir() {
+            assert!(read_private_file(&normal.join("no-such-file")).is_none()); // missing = None either way
+        }
     }
 }

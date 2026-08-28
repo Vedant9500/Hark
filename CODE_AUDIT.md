@@ -400,6 +400,54 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 
 ---
 
+## ⚔️ Fix-vs-fix tensions and conflicts (2026-08-28 cross-check)
+
+**Why this section exists:** audit fixes landed in ~20 separate commits across
+passes. Independent fixes can partially undo, weaken, or trade off against each
+other — a later fix re-adding lines an earlier security fix removed is a real
+failure mode observed here. Future sessions: **before editing any file touched
+by a security fix, read this table first**, and after any fix, check whether it
+re-introduces something a row below explicitly removed.
+
+### Historical conflict (resolved 2026-08-28): split store-write hardening
+
+Store-write hardening was implemented **twice, differently, on 2026-08-26/27**:
+`59a1481` consolidated unique-tmp + 0600 + fsync into
+`config::write_private_file`; the same day `ee88502` re-added the same
+`pid`/`0700`/`uid()` guard lines *inline* in fx.rs and translate.rs. Net result
+was not a regression, but the N1 dir-ownership guarantee existed in two shapes
+and **three stores (typos, usage, file-index) missed it entirely** while
+carrying the same `/tmp` fallback. Fixed 2026-08-28: `write_private_file` now
+does the chmod-0700 + uid check itself, and `read_private_file` refuses shared-
+`/tmp` files in untrusted dirs (see tracker rows store-dir / store-read).
+Lesson: **when a security fix lands in a shared helper, grep for sibling call
+sites that need the same guarantee** — per-file re-implementations drift.
+
+### Active tensions (deliberate tradeoffs — do NOT "fix" one side blindly)
+
+| Tension | Sides | Current resolution / escape hatch |
+|---|---|---|
+| Binary size vs binary ASLR | Packaging builds with `-C relocation-model=static` (non-PIE, −2.6 MB); PIE is a hardening property | Default = size. `HARK_KEEP_PIE=1` in `scripts/package-release.sh` flips to PIE. Dev/update builds stay PIE. |
+| Proxy support vs SSRF/secret exfiltration | `try_proxy_from_env(false)` on all ureq agents (audit P3) blocks `ALL_PROXY`-style hijack of key-bearing traffic; but corporate-proxy users lose connectivity | Default = security. If a proxy setting is ever added to Settings, it must be an explicit per-agent config, never re-enable env proxies globally. |
+| Redirect-following vs LibreTranslate usability | `redirects(0)` on secret-bearing POSTs (CWE-601); a legitimately-redirecting endpoint now errors | By design. User must fix their endpoint. Do not re-enable redirects for `post_json`. |
+| IPC per-client threads vs flood resources | Slowloris fix spawns one thread per client (2 s read timeout); a connect flood can spawn many short-lived threads | Accepted: threads are bounded by connect rate and die in ≤2 s. Revisit only if handlers grow work. |
+| `--search` strictness vs flag flexibility | Bare `--search` exits 2 (was: silent GUI hang); `--search --daemon`-style adjacency still consumes the next token as the query | By design (documented in main.rs test). |
+| First-FX-query latency vs background refresh | First currency query in a process pays ~5 ms (background DNS fetch contention); warming lazily avoids radios/CPU on idle daemons | Accepted: one-shot per process, 15-min backoff, 2 µs when cached. Do not add eager fetch on daemon boot. |
+| Converter env scoping vs exotic setups | ffmpeg/pdftoppm run env-cleared with fixed `PATH` prefixes + `HOME` (audit P3); Nix/flatpak/custom-prefix installs where ffmpeg is elsewhere lose previews | Default = security; binaries resolve from `/usr/local/bin:/usr/bin:/bin`, soft-fail if absent. If a resolution override is added, it must be an explicit absolute path from Settings, never inherited `PATH`. |
+| Manual pins vs auto-learner | `manual: true` pins are immune to conflicting-launch retargeting and pruning; learner still refreshes recency on same-target launches | Resolved 2026-08-28 (`typos.rs`). Legacy files without the field deserialize as `manual: false`. |
+| Store strictness vs test ergonomics | `write_private_file` refuses non-0700 dirs → unit tests that write stores into bare `/tmp` fail | Tests must create 0700 scratch subdirs (helpers updated 2026-08-28 in typos.rs/usage.rs). Keep this invariant for new tests. |
+
+### Cross-check protocol for future fixes
+
+1. Before removing lines for a security fix, `git log -S "<line>" -- <file>`
+   to see which earlier fix introduced them.
+2. After any fix, grep sibling call sites for the same pattern (the N1 lesson).
+3. If a fix trades away a property (ASLR, proxy, redirects, env access), add a
+   row to the table above instead of leaving the tradeoff implicit.
+
+
+---
+
 ## 🧪 Pass 4 adversarial and edge-case audit (2026-08-25)
 
 ### New verified findings
@@ -1875,7 +1923,10 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P3 | Decimal/hex-IP SSRF literals pass translate-endpoint blocklist — **fixed 2026-08-27**: `parse_ipv4_literal` handles inet_aton decimal/hex/octal/short forms; test `ssrf_non_decimal_ip_literals_blocked` (DNS resolution at request time remains a documented limitation) | `config.rs:585-600` | 13 |
 | P3 | Online installer: no tarball integrity check despite published SHA256SUMS — **fixed 2026-08-28**: generator embeds the asset SHA-256; installer verifies before extraction and fails closed (CWE-494) | `dist/install.sh:31-34` | 20 |
 | P3 | PKGBUILD hard-links layer-shell but lists it only as optdepends — **fixed 2026-08-28**: `gtk4-layer-shell` moved to `depends`; build enables the feature unconditionally | `packaging/aur/PKGBUILD:12-33` | 15 |
-| P3 | ffmpeg/pdftoppm resolved via inherited PATH with full env — **open (verified 2026-08-28)**: `Command::new("ffmpeg")`/`("pdftoppm")` at preview.rs:1448/:1486, no env scoping | `ui/preview.rs:1384-1442` | 16 |
+| P3 | ffmpeg/pdftoppm resolved via inherited PATH with full env — **fixed 2026-08-28**: `converter_command` runs both env-cleared with fixed system PATH prefixes + HOME; absolute-path resolution from `/usr/local/bin:/usr/bin:/bin` | `ui/preview.rs:1384-1442` | 16 |
+| store-dir | P2 | `config.rs` `write_private_file` + typos/usage/file-index | `/tmp` fallback stores had no dir-ownership guard (N1 applied only to fx/translate) — **fixed 2026-08-28**: chmod-0700 + uid check inside the shared helper; tests `write_private_file_refuses_untrusted_dir`, `dir_is_trusted_requires_0700` | 16 |
+| store-read | P2 | `typos.rs`/`usage.rs` load paths | Planted `typos.json`/`usage.json` in shared `/tmp` fallback loaded unvalidated (launch-hijack / ranking skew) — **fixed 2026-08-28**: `read_private_file` refuses shared-space files in untrusted dirs; test `read_private_file_ignores_shared_space_untrusted` | 16 |
+| pin-protect | P2 | `typos.rs` manual pins | One conflicting launch silently retargeted a manual pin (`count<=2` replace rule) — **fixed 2026-08-28**: `manual: true` flag; learner skips conflicting updates, pruner never evicts pins; test `manual_pin_not_retargeted_by_learner` | 18 |
 | P3 | `set_manual` accepts structurally invalid target ids (zombie aliases) — **fixed 2026-08-28**: `set_manual` takes a resolver callback; engine checks the id against live providers before pinning | `typos.rs:279-282` | 18 |
 
 ### 💾 Data Integrity / Persistence

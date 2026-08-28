@@ -38,6 +38,10 @@ struct AliasEntry {
     id: String,
     count: u64,
     last: u64,
+    /// Set by `set_manual` (Settings pins). The auto-learner never
+    /// retargets a manual pin, regardless of conflicting launches.
+    #[serde(default)]
+    manual: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -73,14 +77,11 @@ impl TypoStore {
 
     pub fn load() -> Self {
         let path = typo_path();
-        let mut data = if path.exists() {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            TypoFile::default()
-        };
+        // read_private_file refuses files in shared /tmp fallback space not
+        // owned by this user — a planted aliases file would steer launches.
+        let mut data: TypoFile = crate::config::read_private_file(&path)
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let now = now_secs();
         if data.aliases.len() > MAX_ALIASES {
             prune_aliases(&mut data.aliases, MAX_ALIASES, now);
@@ -165,7 +166,8 @@ impl TypoStore {
             Some(e) => {
                 // Conflicting target: only switch after the new id "wins" once
                 // more often — simple: replace if counts were low, else keep.
-                if e.count <= 2 {
+                // Manual pins (Settings) are never auto-retargeted.
+                if !e.manual && e.count <= 2 {
                     e.id = result_id.to_string();
                     e.count = 1;
                     e.last = now;
@@ -179,6 +181,7 @@ impl TypoStore {
                         id: result_id.to_string(),
                         count: 1,
                         last: now,
+                        manual: false,
                     },
                 );
             }
@@ -305,6 +308,7 @@ impl TypoStore {
                     // Manual pins start confirmed so they boost strongly.
                     count: STRONG_COUNT.max(2),
                     last: now,
+                    manual: true,
                 },
             );
             if g.aliases.len() > MAX_ALIASES {
@@ -458,6 +462,9 @@ fn prune_aliases(map: &mut HashMap<String, AliasEntry>, keep: usize, now: u64) {
     }
     let mut items: Vec<(String, i64)> = map
         .iter()
+        // Manual pins survive pruning — evicting a user's explicit pin
+        // because it hasn't fired recently is data loss.
+        .filter(|(_, e)| !e.manual)
         .map(|(k, e)| (k.clone(), alias_frecency(e.count, e.last, now)))
         .collect();
     items.sort_by_key(|a| a.1); // coldest first
@@ -505,15 +512,30 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
 
-    fn temp_store() -> TypoStore {
+    /// Scratch dir satisfying write_private_file's trust rule (0700,
+    /// owned): tests write real files, so they need a private subdir of
+    /// /tmp rather than /tmp itself.
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "hark-typos-{}-{}-{}.json",
+        let dir = std::env::temp_dir().join(format!(
+            "hark-typos-test-{}-{}-{}",
+            tag,
             std::process::id(),
-            n,
-            now_secs()
+            n
         ));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir(&dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        }
+        dir
+    }
+
+    fn temp_store() -> TypoStore {
+        let path = scratch_dir("store").join("typos.json");
         let _ = fs::remove_file(&path);
         TypoStore {
             inner: RwLock::new(TypoFile::default()),
@@ -608,6 +630,37 @@ mod tests {
             .set_manual("ffox", "path:/nonexistent/file", |_| false)
             .is_err());
         assert_eq!(store.len(), 0);
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn manual_pin_not_retargeted_by_learner() {
+        // Audit P2 (Pass 18): set_manual writes count=2 which the learner's
+        // `count <= 2` branch treated as unconfirmed — one conflicting
+        // launch silently retargeted the user's pin. The manual flag now
+        // makes the learner skip conflicting updates on pins entirely.
+        let store = temp_store();
+        store
+            .set_manual("ffox", "app:firefox.desktop", |_| true)
+            .expect("manual");
+        // Conflicting launch of the same alias pointing elsewhere:
+        store.learn_from_launch("ffox", &[], "app:ghost.desktop", "Ghost");
+        assert_eq!(
+            store.lookup("ffox").map(|(id, _)| id),
+            Some("app:firefox.desktop".into()),
+            "manual pin must survive a conflicting launch"
+        );
+        // Same-target launches still refresh recency (no manual check there):
+        store.learn_from_launch("ffox", &[], "app:firefox.desktop", "Firefox");
+        assert_eq!(
+            store.lookup("ffox").map(|(id, _)| id),
+            Some("app:firefox.desktop".into())
+        );
+        // Legacy files without the manual field still deserialize (false).
+        let legacy = r#"{"version":2,"aliases":{"ffox":{"id":"app:firefox.desktop","count":2,"last":1750000000}}}"#;
+        let f: TypoFile = serde_json::from_str(legacy).expect("legacy file");
+        assert!(!f.aliases["ffox"].manual);
         store.flush();
         let _ = fs::remove_file(&store.path);
     }

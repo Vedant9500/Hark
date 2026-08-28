@@ -57,25 +57,22 @@ impl UsageStore {
     /// Clamps poisoned `count` values and drops empty ids.
     fn load_with_dir_impl(dir: &std::path::Path) -> Self {
         let path = dir.join("usage.json");
-        let mut data = if path.exists() {
-            let f: UsageFile = fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-            UsageFile {
-                version: f.version,
-                entries: f
-                    .entries
-                    .into_iter()
-                    .filter(|(id, _)| !id.is_empty())
-                    .map(|(id, mut e)| {
-                        e.count = e.count.min(MAX_COUNT);
-                        (id, e)
-                    })
-                    .collect(),
-            }
-        } else {
-            UsageFile::default()
+        // read_private_file refuses files in shared /tmp fallback space not
+        // owned by this user — a planted usage table would skew ranking.
+        let mut data: UsageFile = crate::config::read_private_file(&path)
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        data = UsageFile {
+            version: data.version,
+            entries: data
+                .entries
+                .into_iter()
+                .filter(|(id, _)| !id.is_empty())
+                .map(|(id, mut e)| {
+                    e.count = e.count.min(MAX_COUNT);
+                    (id, e)
+                })
+                .collect(),
         };
         // Cap on load so old bloated files shrink once.
         let now = now_secs();
@@ -99,6 +96,12 @@ impl UsageStore {
         let dir =
             std::env::temp_dir().join(format!("hark-usage-empty-{}-{}", std::process::id(), n));
         let _ = std::fs::create_dir_all(&dir);
+        // write_private_file refuses non-0700 dirs; tests write real files.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
         Self {
             inner: RwLock::new(UsageFile::default()),
             path: dir.join("usage.json"),
@@ -287,6 +290,12 @@ mod usage_tests {
             now_secs()
         ));
         let _ = fs::create_dir_all(&dir);
+        // write_private_file refuses non-0700 dirs; tests write real files.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        }
         let path = dir.join("usage.json");
         let store = UsageStore {
             inner: RwLock::new(UsageFile::default()),
