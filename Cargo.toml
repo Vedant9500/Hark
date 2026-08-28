@@ -52,8 +52,8 @@ lofty = "0.25"
 
 [profile.release]
 lto = "thin"
-codegen-units = 16
-opt-level = 3
+codegen-units = 1
+opt-level = "s"
 strip = true
 panic = "abort"
 

@@ -64,9 +64,23 @@ fi
 
 echo "==> cargo build --release --locked ${FEATURES[*]:-}"
 # --locked: release artifacts must reproduce exactly from the committed Cargo.lock.
-cargo build --release --locked "${FEATURES[@]}"
-
-BIN="$ROOT/target/release/hark"
+#
+# Size: build against an explicit --target with relocation-model=static.
+# Non-PIE drops ~1.1 MB of .rela.dyn relocations; with the size-tuned
+# release profile the binary shrinks ~30% (8.9 MB → 6.2 MB) and file-backed
+# RSS drops (~5 MB). RUSTFLAGS must be target-scoped like this — applied to
+# host builds (proc-macros) it breaks linking. The explicit --target
+# requires `rustup target add x86_64-unknown-linux-gnu` (installed by
+# default with rustup). Set HARK_KEEP_PIE=1 to ship a PIE binary instead.
+TARGET_TRIPLE="x86_64-unknown-linux-gnu"
+if [[ "${HARK_KEEP_PIE:-}" == "1" ]]; then
+  cargo build --release --locked "${FEATURES[@]}"
+  BIN="$ROOT/target/release/hark"
+else
+  RUSTFLAGS="${RUSTFLAGS:-} -C relocation-model=static" \
+    cargo build --release --locked --target "$TARGET_TRIPLE" "${FEATURES[@]}"
+  BIN="$ROOT/target/$TARGET_TRIPLE/release/hark"
+fi
 if [[ ! -x "$BIN" ]]; then
   echo "error: missing $BIN" >&2
   exit 1
