@@ -304,7 +304,35 @@ impl IndexState {
             .map(|m| m.target.clone())
             .collect();
 
+        // Shared per-entry step for the sequential (deep roots) and
+        // round-robin (regular roots) walks. Returns true at MAX_INDEX.
         // Explicit params avoid overlapping borrows with `items.len()` checks.
+        let record = |path: &Path,
+                      root: &PathBuf,
+                      items: &mut Vec<IndexedPath>,
+                      seen: &mut std::collections::HashSet<PathBuf>|
+         -> bool {
+            if path == *root {
+                return false;
+            }
+            if !seen.insert(path.to_path_buf()) {
+                return false;
+            }
+            if should_skip_entry(path, &excludes) {
+                return false;
+            }
+            let is_mnt = mnt_targets.iter().any(|t| path.starts_with(t));
+            if let Some(item) = index_entry(path, root, is_mnt) {
+                items.push(item);
+                if items.len() >= MAX_INDEX {
+                    return true;
+                }
+                if items.len() % 250 == 0 {
+                    self.progress.store(items.len(), Ordering::Relaxed);
+                }
+            }
+            false
+        };
         let walk_root = |root: &PathBuf,
                          depth: usize,
                          items: &mut Vec<IndexedPath>,
@@ -320,35 +348,55 @@ impl IndexState {
                 .filter_entry(|e| should_descend(e.path(), root, &excludes))
                 .flatten()
             {
-                let path = entry.path().to_path_buf();
-                if path == *root {
-                    continue;
-                }
-                if !seen.insert(path.clone()) {
-                    continue;
-                }
-                if should_skip_entry(&path, &excludes) {
-                    continue;
-                }
-                let is_mnt = mnt_targets.iter().any(|t| path.starts_with(t));
-                if let Some(item) = index_entry(&path, root, is_mnt) {
-                    items.push(item);
-                    if items.len() >= MAX_INDEX {
-                        self.capped.store(true, Ordering::Relaxed);
-                        return true;
-                    }
-                    if items.len() % 250 == 0 {
-                        self.progress.store(items.len(), Ordering::Relaxed);
-                    }
+                if record(entry.path(), root, items, seen) {
+                    return true;
                 }
             }
             false
         };
 
-        for root in &roots {
-            if walk_root(root, max_depth, &mut items, &mut seen) {
-                break;
+        // Regular roots share the cap fairly (audit P3): the old sequential
+        // walk stopped mid-list on the first root to hit MAX_INDEX, so a
+        // large home directory starved mounts and extra_roots entirely.
+        // Round-robin across roots — each advances in bounded batches, so no
+        // root is shut out while another still has unscanned entries.
+        const RR_BATCH: usize = 64;
+        let live_roots: Vec<&PathBuf> = roots.iter().filter(|r| r.exists()).collect();
+        let mut walkers: Vec<_> = live_roots
+            .iter()
+            .map(|r| {
+                WalkDir::new(r)
+                    .follow_links(false)
+                    .max_depth(max_depth)
+                    .into_iter()
+                    .filter_entry(|e| should_descend(e.path(), r, &excludes))
+            })
+            .collect();
+        let mut capped = false;
+        while !capped && !walkers.is_empty() {
+            let mut i = 0;
+            while i < walkers.len() {
+                let root = live_roots[i];
+                let mut advanced = false;
+                for entry in walkers[i].by_ref().take(RR_BATCH).flatten() {
+                    advanced = true;
+                    if record(entry.path(), root, &mut items, &mut seen) {
+                        capped = true;
+                        break;
+                    }
+                }
+                if !advanced {
+                    walkers.remove(i);
+                } else {
+                    i += 1;
+                }
+                if capped {
+                    break;
+                }
             }
+        }
+        if capped {
+            self.capped.store(true, Ordering::Relaxed);
         }
         if items.len() < MAX_INDEX {
             for root in &deep_roots {
@@ -379,10 +427,11 @@ fn index_entry(path: &Path, root: &Path, mnt: bool) -> Option<IndexedPath> {
     if name.is_empty() {
         return None;
     }
-    let depth = path
-        .strip_prefix(root)
-        .map(|p| p.components().count() as u16)
-        .unwrap_or(path.components().count() as u16);
+    // No fabricated absolute-path depth (audit P3): a failed prefix means
+    // `..`/symlink-race weirdness — drop the entry instead of feeding a
+    // bogus depth to the mount-top ranking. Walk entries always carry their
+    // root prefix in practice, so this is unreachable on clean trees.
+    let depth = path.strip_prefix(root).ok()?.components().count() as u16;
     Some(make_indexed(path.to_path_buf(), name, is_dir, depth, mnt))
 }
 
@@ -1040,6 +1089,20 @@ mod tests {
 
         std::fs::remove_file(&link).ok();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn entry_outside_root_is_dropped_not_fabricated() {
+        // Audit P3: a failed `strip_prefix` must drop the entry instead of
+        // inventing an absolute-path depth for the mount-top ranking.
+        let dir = std::env::temp_dir().join(format!("hark_depth_test_{}", std::process::id()));
+        let file = dir.join("note.md");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        assert!(index_entry(&file, Path::new("/elsewhere"), false).is_none());
+        let item = index_entry(&file, &dir, false).expect("in-root entry indexes");
+        assert_eq!(item.depth, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

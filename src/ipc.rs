@@ -43,9 +43,15 @@ pub fn request_toggle() -> bool {
                 // reply. Everything past a successful write counts as delivered —
                 // the listener answers "ok\n" or nothing. An unexpected payload must
                 // NOT fall through to a rewrite: a second "toggle" would immediately
-                // undo the first.
+                // undo the first. A missing/mismatched ack is logged (audit P3)
+                // so a listener that died between write and dispatch is visible
+                // instead of a silently swallowed keypress — but the write
+                // still counts as delivered for old-daemon compatibility.
                 let mut buf = [0u8; 8];
-                let _ = stream.read(&mut buf);
+                match stream.read(&mut buf) {
+                    Ok(n) if buf.get(..n) == Some(b"ok\n".as_slice()) => {}
+                    _ => eprintln!("hark: ipc: toggle written but not acked"),
+                }
                 return true;
             }
             Err(_) => {
@@ -119,12 +125,28 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
             thread::spawn(move || {
                 let mut stream = stream;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut buf = [0u8; 64];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                if n == 0 {
+                // Accumulate until a full line arrives (audit P3): a single
+                // `read` can split `toggle\n` across packets and silently
+                // drop the toggle. Bounded: 4 chunks × 16 B covers the 7 B
+                // command with readahead room; timeouts bound each read.
+                let mut msg = Vec::with_capacity(16);
+                let mut chunk = [0u8; 16];
+                for _ in 0..4 {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            msg.extend_from_slice(&chunk[..n]);
+                            if msg.contains(&b'\n') || msg.len() >= 64 {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if msg.is_empty() {
                     return;
                 }
-                let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+                let msg = std::str::from_utf8(&msg).unwrap_or("").trim();
                 if msg == "toggle" {
                     on_toggle();
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
@@ -359,6 +381,60 @@ mod ipc_tests {
             "toggle wedged behind the stalling client"
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `toggle\n` split across two writes must still fire (audit P3): the
+    /// listener accumulates until a full line instead of one `read` per
+    /// connection.
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn split_write_still_toggles() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-split-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.sock");
+        let _ = std::fs::remove_file(&path);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_c = hits.clone();
+        spawn_listener_at(&path, move || {
+            hits_c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let mut connected = false;
+        for _ in 0..50 {
+            if UnixStream::connect(&path).is_ok() {
+                connected = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(connected, "listener never bound");
+
+        let mut s = UnixStream::connect(&path).expect("toggle connect");
+        s.write_all(b"tog").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        s.write_all(b"gle\n").unwrap();
+        let mut fired = false;
+        for _ in 0..100 {
+            if hits.load(Ordering::SeqCst) == 1 {
+                fired = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(fired, "split toggle never dispatched");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

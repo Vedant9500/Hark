@@ -409,7 +409,7 @@ impl Engine {
                     Ok(()) => ExecuteOutcome::Launched,
                     Err(err) => {
                         eprintln!("hark: launch failed: {err}");
-                        ExecuteOutcome::Failed
+                        ExecuteOutcome::Failed(err.to_string())
                     }
                 }
             }
@@ -421,7 +421,7 @@ impl Engine {
                     Ok(()) => ExecuteOutcome::Launched,
                     Err(err) => {
                         eprintln!("hark: open failed: {err}");
-                        ExecuteOutcome::Failed
+                        ExecuteOutcome::Failed(err.to_string())
                     }
                 }
             }
@@ -429,31 +429,38 @@ impl Engine {
                 Ok(()) => ExecuteOutcome::Launched,
                 Err(err) => {
                     eprintln!("hark: open terminal failed: {err}");
-                    ExecuteOutcome::Failed
+                    ExecuteOutcome::Failed(err.to_string())
                 }
             },
             Action::Copy(text) => match copy_to_clipboard(text) {
                 Ok(()) => ExecuteOutcome::Launched,
                 Err(err) => {
                     eprintln!("hark: copy failed: {err}");
-                    ExecuteOutcome::Failed
+                    ExecuteOutcome::Failed(err.to_string())
                 }
             },
             Action::SetQuery(q) => ExecuteOutcome::SetQuery(q.clone()),
             Action::OpenSettings => ExecuteOutcome::OpenSettings,
             Action::RevealPath(path) => {
-                crate::providers::files::reveal_in_file_manager(path);
-                ExecuteOutcome::Launched
+                match crate::providers::files::reveal_in_file_manager(path) {
+                    Ok(()) => ExecuteOutcome::Launched,
+                    Err(msg) => {
+                        eprintln!("hark: reveal failed: {msg}");
+                        ExecuteOutcome::Failed(msg)
+                    }
+                }
             }
             Action::TrashPath(path) => match crate::providers::files::trash_path(path) {
                 Ok(()) => {
-                    // Stale deep-cache hits can re-surface the trashed path.
-                    self.files.clear_live_cache();
+                    // Drop the path from the in-memory index + hot set now
+                    // (audit P3); the periodic rebuild is too far out and the
+                    // live cache alone doesn't cover phase-1 index hits.
+                    self.files.forget_path(path);
                     ExecuteOutcome::Refresh
                 }
                 Err(err) => {
                     eprintln!("hark: trash failed: {err}");
-                    ExecuteOutcome::Failed
+                    ExecuteOutcome::Failed(err)
                 }
             },
             Action::OpenWith(path) => ExecuteOutcome::OpenWith(path.clone()),
@@ -758,8 +765,8 @@ pub enum ExecuteOutcome {
     SetQuery(String),
     /// Keep the launcher open and re-run the current search (e.g. after trash).
     Refresh,
-    /// Action did not complete; keep the launcher open.
-    Failed,
+    /// Action did not complete; keep the launcher open and show the message.
+    Failed(String),
     /// Show system Open With dialog for this path (UI-owned).
     OpenWith(std::path::PathBuf),
     /// Toggle media preview panel (UI-owned).

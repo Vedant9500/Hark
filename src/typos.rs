@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -124,6 +124,9 @@ pub struct TypoStore {
     path: PathBuf,
     dirty: AtomicBool,
     last_save: Mutex<Instant>,
+    /// Highest wall-clock seen — same rollback pin as `UsageStore::max_now`
+    /// (audit P3): decay must keep progressing when the clock steps back.
+    max_now: AtomicU64,
 }
 
 impl TypoStore {
@@ -134,6 +137,7 @@ impl TypoStore {
             inner: RwLock::new(TypoFile::default()),
             path: std::path::PathBuf::from("<test>"),
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)
@@ -155,6 +159,7 @@ impl TypoStore {
             inner: RwLock::new(data),
             path,
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)
@@ -172,7 +177,7 @@ impl TypoStore {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let e = g.aliases.get(&key)?;
         let strong = e.count >= STRONG_COUNT
-            && (e.manual || alias_frecency(e.count, e.last, now_secs()) >= STRONG_FRECENCY);
+            && (e.manual || alias_frecency(e.count, e.last, self.now_clamped()) >= STRONG_FRECENCY);
         let boost = if strong { BOOST_STRONG } else { BOOST_WEAK };
         Some((e.id.clone(), boost))
     }
@@ -254,7 +259,7 @@ impl TypoStore {
     /// count grows monotonically with no escape (audit P2). Unconfirmed
     /// aliases always count (a weak alias needs its confirming observation).
     fn record_alias(&self, key: &str, result_id: &str, alias_driven: bool) {
-        let now = now_secs();
+        let now = self.now_clamped();
         let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         match g.aliases.get_mut(key) {
             Some(e) if e.id == result_id => {
@@ -341,7 +346,7 @@ impl TypoStore {
     /// All aliases, strongest first (for Settings).
     pub fn list(&self) -> Vec<TypoAlias> {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
-        let now = now_secs();
+        let now = self.now_clamped();
         let mut items: Vec<TypoAlias> = g
             .aliases
             .iter()
@@ -402,7 +407,7 @@ impl TypoStore {
         if !resolve(result_id) {
             return Err("Target not found — pick an existing app or file".into());
         }
-        let now = now_secs();
+        let now = self.now_clamped();
         {
             let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             g.aliases.insert(
@@ -635,6 +640,14 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+impl TypoStore {
+    /// Wall-clock pinned to the highest value this store has seen (audit P3).
+    fn now_clamped(&self) -> u64 {
+        let now = now_secs();
+        self.max_now.fetch_max(now, Ordering::Relaxed).max(now)
+    }
+}
+
 fn typo_path() -> PathBuf {
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
@@ -681,6 +694,7 @@ mod tests {
             inner: RwLock::new(TypoFile::default()),
             path,
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)

@@ -31,8 +31,12 @@ fn main() {
     }
     let search_q = search_q.flatten();
     args.retain(|a| a != "--daemon" && a != "--bench" && a != "--search");
-    if let Some(q) = search_q.as_ref() {
-        args.retain(|a| a != q);
+    // Drop only the flag's own operand (audit P3): a blanket retain would
+    // also strip a program-path collision (`hark --search gimp gimp` must
+    // keep the trailing `gimp`). The operand always exists here — a bare
+    // `--search` exits(2) above — so `i + 1` is in bounds.
+    if search_q.is_some() {
+        strip_search_args(&mut args);
     }
 
     if bench {
@@ -204,6 +208,16 @@ fn parse_search_arg(args: &[String]) -> Option<Option<String>> {
     Some(args.get(i + 1).cloned())
 }
 
+/// Remove the `--search` flag and its single operand, keeping any other arg
+/// that merely equals the operand.
+fn strip_search_args(args: &mut Vec<String>) {
+    if let Some(i) = args.iter().position(|a| a == "--search") {
+        if i + 1 < args.len() {
+            args.drain(i..=i + 1);
+        }
+    }
+}
+
 /// Returns the args to forward to the install script (its own flags, e.g.
 /// `--no-restart`), or None when this is not an update invocation.
 fn update_invocation(args: &[String]) -> Option<Vec<String>> {
@@ -334,5 +348,18 @@ mod tests {
         // Present with no operand — must be distinguishable so main exits 2
         // instead of silently entering resident GUI mode.
         assert_eq!(parse_search_arg(&argv(&["hark", "--search"])), Some(None));
+    }
+
+    #[test]
+    fn search_flag_strip_keeps_operand_collision() {
+        // Audit P3: only the flag's own operand goes; a trailing program
+        // arg equal to the query survives.
+        let mut args = argv(&["hark", "--search", "gimp", "gimp"]);
+        strip_search_args(&mut args);
+        assert_eq!(args, argv(&["hark", "gimp"]));
+        // No flag → untouched.
+        let mut args = argv(&["hark", "gimp"]);
+        strip_search_args(&mut args);
+        assert_eq!(args, argv(&["hark", "gimp"]));
     }
 }

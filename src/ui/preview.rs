@@ -1694,6 +1694,12 @@ fn decode_image_scaled(path: &Path) -> Option<DecodedPixels> {
         .map(|(_, w, h)| (w, h))
         .unwrap_or((0, 0));
     let pixbuf = Pixbuf::from_file_at_scale(path, DECODE_MAX_PX, DECODE_MAX_PX, true).ok()?;
+    // EXIF Orientation is metadata, not pixels: `from_file_at_scale` decodes
+    // phone photos sideways without this (audit P3). `None` = no/invalid tag,
+    // keep the pixbuf as decoded. (This tree never writes the shared
+    // FreeDesktop thumbnail cache, so there is no cache-poisoning leg —
+    // only the preview decode needed the fix.)
+    let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
     let mut px = pixbuf_to_pixels(&pixbuf)?;
     px.dims_label = if native_w > 0 && native_h > 0 {
         format!("{native_w} × {native_h}")
@@ -1971,5 +1977,82 @@ mod code_preview_tests {
         assert!(!p.truncated);
         assert!(!p.highlight_off);
         assert!(p.display.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod exif_orientation_tests {
+    use super::decode_image_scaled;
+    use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+
+    /// Minimal EXIF APP1 segment declaring Orientation = 6 (rotate 90 CW),
+    /// little-endian TIFF with a single IFD entry.
+    fn app1_orientation_6() -> Vec<u8> {
+        let seg = vec![
+            0xFF, 0xE1, // APP1 marker
+            0x00, 0x22, // length: 34 (includes these 2 bytes)
+            0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0"
+            0x49, 0x49, 0x2A, 0x00, // "II*\0" little-endian
+            0x08, 0x00, 0x00, 0x00, // IFD0 offset = 8
+            0x01, 0x00, // 1 entry
+            0x12, 0x01, // tag 0x0112 Orientation
+            0x03, 0x00, // type SHORT
+            0x01, 0x00, 0x00, 0x00, // count 1
+            0x06, 0x00, 0x00, 0x00, // value 6
+            0x00, 0x00, 0x00, 0x00, // next IFD = none
+        ];
+        assert_eq!(seg.len(), 2 + 34);
+        seg
+    }
+
+    fn write_jpeg(path: &std::path::Path, with_exif: bool) {
+        // Non-square so a 90° rotation visibly swaps dimensions.
+        let pb = Pixbuf::new(Colorspace::Rgb, false, 8, 4, 2).expect("pixbuf");
+        let mut bytes = pb
+            .save_to_bufferv("jpeg", &[])
+            .expect("jpeg encode")
+            .to_vec();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "SOI marker");
+        if with_exif {
+            let mut tagged = bytes[..2].to_vec();
+            tagged.extend_from_slice(&app1_orientation_6());
+            tagged.extend_from_slice(&bytes[2..]);
+            bytes = tagged;
+        }
+        std::fs::write(path, &bytes).unwrap();
+    }
+
+    #[test]
+    fn exif_orientation_6_rotates_preview() {
+        // Audit P3: phone photos decoded sideways without orientation applied.
+        let dir = std::env::temp_dir().join(format!(
+            "hark-exif-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let plain = dir.join("plain.jpg");
+        write_jpeg(&plain, false);
+        let px = decode_image_scaled(&plain).expect("plain decodes");
+        // `from_file_at_scale` fits the long edge to DECODE_MAX_PX (up or
+        // down); what matters is the tagged decode swaps the axes.
+        let (w, h) = (px.width, px.height);
+        assert!(w > h, "2:1 landscape must stay landscape, got {w}x{h}");
+
+        let rotated = dir.join("rotated.jpg");
+        write_jpeg(&rotated, true);
+        let px = decode_image_scaled(&rotated).expect("tagged decodes");
+        assert_eq!(
+            (px.width, px.height),
+            (h, w),
+            "orientation 6 must swap dimensions"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -640,6 +640,46 @@ mod missing_scope_tests {
     }
 
     #[test]
+    fn hot_short_circuit_keeps_exact_match() {
+        // Audit P2: a hot prefix-band hit (≥30,000) skips the full name scan,
+        // and the fuzzy pass ignores contains-items — so a non-hot file
+        // exactly matching the query was dropped entirely.
+        let index = vec![
+            make_indexed(
+                std::path::PathBuf::from("/home/u/notes-backup"),
+                "notes-backup".into(),
+                false,
+                3,
+                false,
+            ),
+            make_indexed(
+                std::path::PathBuf::from("/home/u/notes"),
+                "notes".into(),
+                false,
+                3,
+                false,
+            ),
+        ];
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let hits = super::rank::score_free_text_full(
+            &index,
+            "notes",
+            "notes",
+            &matcher,
+            true,
+            &crate::config::PathStyle::Label,
+            &[],
+            &[0],
+        );
+        let titles: Vec<&str> = hits.iter().map(|r| r.title.as_str()).collect();
+        assert!(
+            titles.contains(&"notes"),
+            "exact file dropped, got: {titles:?}"
+        );
+        assert_eq!(hits[0].title, "notes", "exact band must outrank hot prefix");
+    }
+
+    #[test]
     fn missing_absolute_scope_does_not_walk_filesystem_root() {
         // Audit P2 (Pass 16) / Phase-4 chain 5 leg: `report.md in /nonxistent`
         // used to fall back to the parent of the missing path — `/` for a

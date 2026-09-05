@@ -1332,7 +1332,10 @@ pub fn discover_mounts() -> Vec<MountInfo> {
 
 /// Mount targets we never treat as user volumes (EFI / ESP / bare boot).
 fn should_skip_mount_target(target: &str) -> bool {
-    if target.contains("EFI") || target.contains("/efi") || target.contains("efi/") {
+    // Whole-component match, case-insensitive (audit P3): a raw substring
+    // pruned real volumes (`/mnt/KEFIR` contains `EFI`, `/media/u/Defi/`
+    // contains `efi/`).
+    if target.split('/').any(|c| c.eq_ignore_ascii_case("efi")) {
         return true;
     }
     // Exact system boot mount (the old code intended this but never continued).
@@ -1751,9 +1754,17 @@ mod config_store_tests {
     #[test]
     fn skip_efi_and_boot_mount_targets() {
         assert!(should_skip_mount_target("/boot"));
-        assert!(should_skip_mount_target("/mnt/windowsEFI"));
+        assert!(should_skip_mount_target("/boot/efi"));
+        assert!(should_skip_mount_target("/efi"));
         assert!(should_skip_mount_target("/mnt/EFI"));
-        assert!(should_skip_mount_target("/run/media/user/ESP_EFI"));
+        // Audit P3: whole-component match — real volumes whose names merely
+        // contain the substring must survive.
+        assert!(!should_skip_mount_target("/mnt/KEFIR"));
+        assert!(!should_skip_mount_target("/mnt/kefir"));
+        assert!(!should_skip_mount_target("/media/u/Defi/"));
+        assert!(!should_skip_mount_target("/run/media/u/Reference"));
+        assert!(!should_skip_mount_target("/mnt/windowsEFI"));
+        assert!(!should_skip_mount_target("/run/media/user/ESP_EFI"));
         assert!(!should_skip_mount_target("/mnt/windows_d"));
         assert!(!should_skip_mount_target("/media/alice/Data"));
         assert!(!should_skip_mount_target("/run/media/alice/USB"));

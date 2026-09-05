@@ -961,7 +961,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** each animated conversion swap removes+re-adds `hark-conv-swap` and arms an independent one-shot timer that removes the class. Two swaps within 220 ms: the older timer fires mid-flight and strips the class, truncating the newer keyframe. Each timer also strongly clones `conv_root`, pinning the widget subtree up to 220 ms past teardown — bounded and self-terminating, so cosmetic.
 - **Remediation:** store a `RefCell<Option<glib::SourceId>>` per row; remove the previous timer before arming the new one.
 
-#### P3 — mount skip uses raw substring `contains("EFI")`/`contains("efi/")` (`src/config.rs:1042-1048`)
+#### P3 — mount skip uses raw substring `contains("EFI")`/`contains("efi/")` (`src/config.rs:1042-1048`) — **fixed 2026-09-05** (whole-component `eq_ignore_ascii_case("efi")`; KEFIR/Defi/Reference kept; existing test updated to the intended behavior)
 
 - **Root cause:** any mount whose path merely contains those substrings is skipped from indexing: `/mnt/KEFIR` (contains `"EFI"`), `/media/u/Defi/` (contains `"efi/"`), `/run/media/u/Reference`. The user's volume silently never appears in the index.
 - **Remediation:** match case-insensitively on whole path components (`target.split('/').any(|c| c.eq_ignore_ascii_case("efi"))`).
@@ -976,12 +976,12 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** the comment says "only switch after the new id wins once more often — replace if counts were low, else keep", but the code switches when `e.count <= 2`, and `STRONG_COUNT == 2` — so a twice-confirmed strong alias is reset to `count = 1` and retargeted by a single conflicting launch. There is no win tally at all.
 - **Remediation:** require the new id to be observed at least as often as the current count before switching, or switch only when `e.count < STRONG_COUNT`.
 
-#### P3 — clock rollback freezes decay/recency at maximum (`src/typos.rs:468-472`, `src/usage.rs:224-228`)
+#### P3 — clock rollback freezes decay/recency at maximum (`src/typos.rs:468-472`, `src/usage.rs:224-228`) — **fixed 2026-09-05** (`max_now` monotonic pin per store in usage + typos; all stamp/score sites clamped)
 
 - **Root cause:** `now_secs()` returns 0 on pre-epoch clock rollback (no panic); `age = now.saturating_sub(last)` = 0, so every entry scores full recency (`500`/`5000`) with `decay = 1.0` — rankings become count-only and pruning/top-N churn arbitrarily until the clock recovers. Entries recorded during rollback get `last = 0`.
 - **Remediation:** clamp `last` monotonic per store, or treat `now < last` as "use previous now".
 
-#### P3 — `top()` / `top_path_ids()` tie-break is HashMap-iteration-random (`src/usage.rs:118`, `148`)
+#### P3 — `top()` / `top_path_ids()` tie-break is HashMap-iteration-random (`src/usage.rs:118`, `148`) — **fixed 2026-09-05** (see hot-set eviction row; same change)
 
 - **Root cause:** `items.sort_by_key(|b| Reverse(b.1))` is stable, but the input order is `HashMap` iteration (randomized per process), so equal-frecency entries (e.g. hundreds of zero-use ids) yield different top-N sets across restarts; the file-search hot set churns between runs.
 - **Remediation:** tie-break on `(score, count, id)`.
@@ -1099,7 +1099,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** every accepted `toggle` enqueues one unit into an **unbounded** `async_channel`, and each drained unit runs a full `launcher.toggle()` on the main loop — no coalescing, bound, or rate limit. A local flood client (7-byte write per reconnect, >50k/s) grows memory unboundedly and queues thousands of show/hide cycles replaying long after the flood stops. CWE-400.
 - **Remediation:** coalesce (`if tx.is_empty() { tx.send_blocking(()) }`), or bounded channel with `try_send`, or collapse even-count pending toggles before invoking the UI.
 
-#### P2 — source/exclusion toggles never trigger reindex; index silently stale (`src/ui/settings.rs:543-547`, `563-568`, `846-857`, `947-955`)
+#### P2 — source/exclusion toggles never trigger reindex; index silently stale (`src/ui/settings.rs:543-547`, `563-568`, `846-857`, `947-955`) — **fixed 2026-09-05** (`force_reindex` on home/mount toggles and extra/exclude add/remove, change-gated; deep pins already reindexed)
 
 - **Root cause:** these handlers only call `engine.config().update(...)`; contrast the depth steppers (`settings.rs:509`, `529`) and `promote_deep_root` (`engine.rs:630`) which call `engine.force_reindex()`. After unchecking a mount or adding an exclusion, the running index still contains those files until the 30-minute TTL rebuild (`settings.rs:481`) or a manual Rebuild — no UI hint. The index fingerprint does change (`index.rs:210-224` hashes these fields), so staleness persists exactly until the next rebuild cycle. CWE-1251.
 - **Remediation:** call `engine.force_reindex()` after these mutations, or at minimum show an "index stale — rebuild required" badge.
@@ -1114,7 +1114,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** `r.score += self.usage.boost(&r.id)` — `boost` derives from a `u64 count` deserialized with no clamp (`usage.rs:47`); a hand-edited `count: 99999999999999999999` saturates `frecency`'s `as i64` cast to `i64::MAX`, and `50_000 + i64::MAX` panics in debug builds / wraps negative in release (result vanishes). The typo path already uses `saturating_add` (`engine.rs:559-562`). CWE-190.
 - **Remediation:** `r.score = r.score.saturating_add(self.usage.boost(&r.id))` at both sites, or clamp `count` on deserialization.
 
-#### P3 — hot-set short-circuit drops strictly better index results (`src/providers/files/search/rank.rs:110-125`)
+#### P3 — hot-set short-circuit drops strictly better index results (`src/providers/files/search/rank.rs:110-125`) — **fixed 2026-09-05** (cheap exact-name equality sweep before skipping the full scan; same exact-band score as the slow path; regression test proven to fail without the fix)
 
 - **Root cause:** when any hot path (≤64 entries) reaches the ≥30,000 prefix band, the full index scan is skipped entirely (documented Batch-B tradeoff). If a new file exactly matching the query name (50,000 band) is created after a frequently-opened prefix-matching file became hot, the exact match is never scanned for queries ≥4 chars.
 - **Remediation:** short-circuit only at the ≥50,000 exact band, or always run a cheap exact-name `HashMap` lookup before skipping.
@@ -1139,17 +1139,17 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** in the rare no-XDG/no-cache/no-home environment, the socket lands under `/tmp/hark`; all errors are ignored (`let _ = create_dir_all` succeeds through an attacker symlinked dir, `let _ = set_permissions`), so an attacker-controlled parent can host a supplanted socket the stale-reclaim path will `remove_file`/rebind. CWE-59.
 - **Remediation:** `create_dir` with no-follow semantics, verify parent `uid == geteuid()` and mode 0700, abort IPC on failure.
 
-#### P3 — single `read()` silently drops split-stream messages (`src/ipc.rs:103-105`)
+#### P3 — single `read()` silently drops split-stream messages (`src/ipc.rs:103-105`) — **fixed 2026-09-05** (bounded accumulate-until-newline loop; split-write round-trip test, passing)
 
 - **Root cause:** exactly one `read` syscall per connection; a client sending `tog` + `gle\n` in separate writes reads only `tog`, the `== "toggle"` compare fails, and the toggle is silently lost. Standard clients' 7-byte writes are atomic on unix sockets, so limited to nonstandard clients.
 - **Remediation:** loop on `read` until `\n` or buffer full within the timeout window.
 
-#### P3 — `args.retain` removes every arg equal to the search query (`src/main.rs:26-28`)
+#### P3 — `args.retain` removes every arg equal to the search query (`src/main.rs:26-28`) — **fixed 2026-09-05** (extracted `strip_search_args`: index-based flag+operand drain; collision test)
 
 - **Root cause:** `hark --search gimp gimp` strips both `gimp` tokens (including a program-path collision) instead of only the flag+operand pair.
 - **Remediation:** remove by index (`args.drain(i..=i+1)`) before any retain pass.
 
-#### P3 — `request_toggle` reports success without confirmed processing (`src/ipc.rs:44-49`)
+#### P3 — `request_toggle` reports success without confirmed processing (`src/ipc.rs:44-49`) — **fixed 2026-09-05** (missing/mismatched ack logged; write still counts as delivered for old-daemon compat)
 
 - **Root cause:** the ack read result is ignored; `true` is returned after write success even if the listener died between write and dispatch, so `main.rs:48-50` skips spawning an instance and the keypress silently does nothing.
 - **Remediation:** require `ok\n` within the timeout for the `true` return, or log acked vs unacked.
@@ -1215,12 +1215,12 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 
 ### New verified findings
 
-#### P2 — right-click on a conversion set opens the action panel for a different item (`src/ui/mod.rs:688-699`)
+#### P2 — right-click on a conversion set opens the action panel for a different item (`src/ui/mod.rs:688-699`) — **no-change, verified 2026-09-05** (claim does not match code: `rotate_left(row)` lands the clicked value at front and the row-selected handler sets `selected` to 0 before the panel reads index 0; traced end-to-end + invariant regression test)
 
 - **Root cause:** the right-click handler computes `idx = row.index()`, calls `list_rc.select_row(Some(&row))` — which synchronously fires the row-selected handler; for a conversion set that handler calls `conv_swap_to_front(&mut results, idx)` (`mod.rs:2262-2266`, rotating the vec) — and only then invokes `open_action_panel()`, which re-reads `results.borrow().get(selected)` against the now-rotated vec. The panel opens for whatever landed at the original index after rotation, not the right-clicked item (e.g. right-click "stone" on `100 kg in lb` → panel shows the row rotated into slot 2).
 - **Remediation:** snapshot `results.borrow().get(idx).cloned()` before `select_row`, or resolve the panel target by row identity rather than re-reading `selected` after the rotation.
 
-#### P2 — Tab on a conversion set replaces the query with the answer title (`src/ui/mod.rs:1437-1476`, `1494-1502`)
+#### P2 — Tab on a conversion set replaces the query with the answer title (`src/ui/mod.rs:1437-1476`, `1494-1502`) — **fixed 2026-09-05** (`completion_text_for` returns `None` for `ResultKind::Conversion`; Tab keeps the query; regression test)
 
 - **Root cause:** every conversion row's action is `Action::Copy`, and `completion_text_for` returns `Some(item.title.clone())` for it; Tab therefore replaces `100 kg in lb` with e.g. `220.462 lb` — which itself parses as a new conversion query, silently destroying the user's input and churning the result set.
 - **Remediation:** skip Tab when `is_conv_set(&results)`, or return `None` from `completion_text_for` for `ResultKind::Conversion`.
@@ -1235,37 +1235,37 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** `build()` enables `--features layer-shell` when `pkg-config gtk4-layer-shell-0` exists on the *builder's* machine; the resulting binary then requires `libgtk4-layer-shell.so.0`, but an `optdepends` entry creates no dependency edge. Users who install the package without the optdep get "error while loading shared libraries" at startup. CWE-1104-class packaging defect.
 - **Remediation:** enable the feature unconditionally and move `gtk4-layer-shell` to `depends`, or ship a `hark-layer-shell` split package.
 
-#### P3 — closing settings resets selection to row 0 unconditionally (`src/ui/mod.rs:540-555`)
+#### P3 — closing settings resets selection to row 0 unconditionally (`src/ui/mod.rs:540-555`) — **fixed 2026-09-05** (`close_settings` snapshots the selected id and re-asserts it post-refresh when still present)
 
 - **Root cause:** `close_settings` always runs a full `refresh_results` (which resets `selected` to 0), even when the query is unchanged and the user had a later row selected before opening settings; the selection-preserving `rebind_results_from_cache` path exists but is not used here.
 - **Remediation:** snapshot/restore `selected` around the refresh, or rebind from cache when the query is unchanged.
 
-#### P3 — `truncate(25)` in async merges can evict the selected row, resetting to the hero card (`src/ui/mod.rs:2844-2876`)
+#### P3 — `truncate(25)` in async merges can evict the selected row, resetting to the hero card (`src/ui/mod.rs:2844-2876`) — **fixed 2026-09-05** (`truncate_keep_selected` pins the selected row at the tail in both deep and translate merges; translate merge also preserves selection by id instead of resetting to 0; 3 tests)
 
 - **Root cause:** `apply_deep_hits`/`apply_translate_hits` preserve selection by id but fall back to `unwrap_or(0)` when deep hits push the selected row past the 25-item cap — landing on the conversion hero card and silently changing the displayed value without user action.
 - **Remediation:** clamp to `merged.len().saturating_sub(1)` and prefer re-asserting the same conversion id at its new position, or skip a merge that would evict the selected row.
 
-#### P3 — trash flow leaves `selected` pointing at the shifted-in neighbor (`src/ui/mod.rs:1907-1929`)
+#### P3 — trash flow leaves `selected` pointing at the shifted-in neighbor (`src/ui/mod.rs:1907-1929`) — **fixed 2026-09-05** (removed position captured pre-retain; `selected` decremented when the removal sat at/before it)
 
 - **Root cause:** rows are removed from `results` by id but `selected` keeps the pre-removal index; when the trashed row was at or before the selection, the index now names a different item. Clamped (`min(len-1)`), so no panic — unconsidered selection semantics only.
 - **Remediation:** decrement `selected` when the removed position was `< selected`, or resolve the post-trash selection by neighbor id.
 
-#### P3 — `%%` field code never decoded to literal `%` (`src/providers/apps.rs:489-493`, `425-427`)
+#### P3 — `%%` field code never decoded to literal `%` (`src/providers/apps.rs:489-493`, `425-427`) — **fixed 2026-09-05** (`split_exec_args` post-tokenize `%%`→`%` choke point covering parse/resolve/launch; regression test)
 
 - **Root cause:** the spec defines `%%` as an escaped literal percent; `is_field_code` omits it and no post-pass collapses it, so `Exec=foo --msg=100%%` launches with a literal `--msg=100%%` argument. CWE-1284.
 - **Remediation:** after stripping field codes, `.map(|p| p.replace("%%", "%"))` in both `parse_desktop_file` and `resolve_exec_binary`.
 
-#### P3 — `OnlyShowIn`/`NotShowIn`/`TryExec` keys have no parsing arm at all (`src/providers/apps.rs:383-399`)
+#### P3 — `OnlyShowIn`/`NotShowIn`/`TryExec` keys have no parsing arm at all (`src/providers/apps.rs:383-399`) — **fixed 2026-09-05** (parsed + filtered against `XDG_CURRENT_DESKTOP`, unknown desktop shows; `TryExec` probed via `which`; scoping matrix test)
 
 - **Root cause:** the key match covers only Name/GenericName/Keywords/Comment/Exec/Icon/Terminal/NoDisplay/Hidden/Type; there is no `XDG_CURRENT_DESKTOP` read in the file. A `.desktop` with `OnlyShowIn=KDE;` is listed and launchable under GNOME/Hyprland, where it misbehaves or fails.
 - **Remediation:** parse both keys, split on `;`, compare against `XDG_CURRENT_DESKTOP`, and filter in `reload()` alongside the `no_display` filter; implement `TryExec` (binary missing ⇒ skip) at the same site.
 
-#### P3 — duplicate-key precedence inconsistent: strings first-wins, booleans/Type last-wins (`src/providers/apps.rs:384-398`)
+#### P3 — duplicate-key precedence inconsistent: strings first-wins, booleans/Type last-wins (`src/providers/apps.rs:384-398`) — **fixed 2026-09-05** (seen-latches on Terminal/NoDisplay/Hidden/Type; dup-key regression test)
 
 - **Root cause:** string keys latch on first occurrence (`if field.is_empty()` guards); `Terminal`/`NoDisplay`/`Hidden` unconditionally overwrite — a trailing `NoDisplay=false` un-hides an entry the vendor hid, and a trailing `Terminal=true` force-wraps a GUI app.
 - **Remediation:** give every key a first-wins latch, consistent with the spec's "later duplicate keys are invalid".
 
-#### P3 — NoDisplay apps unfindable even by exact id (`src/providers/apps.rs:138`)
+#### P3 — NoDisplay apps unfindable even by exact id (`src/providers/apps.rs:138`) — **fixed 2026-09-05** (`hidden` side map consulted by `resolve_id` + `display_name_for_desktop_id`, excluded from search; regression test)
 
 - **Root cause:** `if app.no_display || … { continue; }` drops the entry entirely, so `resolve_id` and `display_name_for_desktop_id` cannot resolve stored `app:<id>` actions or default-app references to NoDisplay helpers (spec: hidden from menus but launchable/associatable).
 - **Remediation:** retain NoDisplay entries in a side map consulted by `resolve_id`/`display_name_for_desktop_id`, filtering them only out of `search`.
@@ -1275,7 +1275,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** after `indexing.store(true)` there is no `catch_unwind` and no Drop guard resetting the flag; any panic inside `build_index` leaves the UI spinning "indexing…" until a later build happens to complete. CWE-754.
 - **Remediation:** guard struct whose `Drop` stores `false`, or `catch_unwind` around the build body.
 
-#### P3 — `MAX_INDEX` eviction is silent walk-order truncation, home-biased (`src/providers/files/index.rs:237-258`, `307-311`)
+#### P3 — `MAX_INDEX` eviction is silent walk-order truncation, home-biased (`src/providers/files/index.rs:237-258`, `307-311`) — **fixed 2026-09-05** (round-robin across regular roots in bounded batches sharing the cap; per-entry step factored into a shared closure; deep-roots phase unchanged)
 
 - **Root cause:** roots are pushed home-first; hitting the 100,000 cap just stops the walk mid-root, so a large home dir starves mounts and `extra_roots` entirely — files on mounted drives become unsearchable, with only the `capped` flag as warning.
 - **Remediation:** interleave roots round-robin, or walk everything and rank/truncate afterward (the `low_value`/`high_value` fields already support ranking).
@@ -1290,7 +1290,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** `cache_ttl_stale` returns true on any meta read failure; if the cache file landed but the meta write did not (read-only/full cache dir), every 45-minute `ensure_fresh` performs a full rebuild walk instead of the no-I/O fast path.
 - **Remediation:** fall back to the cache file's own mtime for the TTL decision when the meta is unreadable.
 
-#### P3 — depth fallback fabricates absolute-path depth (`src/providers/files/index.rs:354-357`)
+#### P3 — depth fallback fabricates absolute-path depth (`src/providers/files/index.rs:354-357`) — **fixed 2026-09-05** (`strip_prefix` failure drops the entry; regression test)
 
 - **Root cause:** on `strip_prefix` failure (path with `..` components), depth becomes the absolute-path component count, feeding `is_high_value_path`'s `depth <= 2` check — such entries lose mount-top ranking. The `as u16` cast itself is safe (walk depth clamped ≤6).
 - **Remediation:** return `None` (drop the entry) on `strip_prefix` failure instead of fabricating a depth.
@@ -1401,12 +1401,12 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** `DEEP_SKIP_IF_INDEX_SCORE = 30_000` (documented "Exact/prefix band"), but a single contains-band live hit scores 32,000+boosts and cancels all remaining deep jobs — a `todo.md` query whose first job finds only `todo.md.bak`-style substring hits never walks the other roots.
 - **Remediation:** raise the gate above the contains band (~34,000) or make it band-aware (exact ≥49,500 / prefix ≥39,500).
 
-#### P3 — drive-prefix detection swallows words like `e:mail` into empty path completion (`src/providers/files/search/glob.rs:347-353`, `search/mod.rs:93-98`)
+#### P3 — drive-prefix detection swallows words like `e:mail` into empty path completion (`src/providers/files/search/glob.rs:347-353`, `search/mod.rs:93-98`) — **fixed 2026-09-05** (drive leg requires `:` + `/`/`\`/end; regression test)
 
 - **Root cause:** any `<alpha>:` token is routed to `path_completions`; with no matching mount the result is silently empty, and free-text search never runs.
 - **Remediation:** require the drive prefix to be followed by `/`/`\`/end-of-string, or verify a mount exists before diverting.
 
-#### P3 — deep-walk tie-breaks are arrival-order dependent (`src/providers/files/search/deep.rs:742-752`, `495-499`)
+#### P3 — deep-walk tie-breaks are arrival-order dependent (`src/providers/files/search/deep.rs:742-752`, `495-499`) — **fixed 2026-09-05** (id final tie-break in `merge_live`; top-K eviction compares (score, path); order-independence test)
 
 - **Root cause:** eviction `min_by_key` keeps the first equal-score entry; `sort_unstable_by` on `(score, title_lower)` leaves equal-score same-name different-directory hits in readdir order. Identical queries reorder across runs.
 - **Remediation:** add path as the final tie-break in `merge_live` and the eviction comparison.
@@ -1457,7 +1457,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** `Command::new("ffmpeg")` does a PATH search with inherited env; a writable PATH directory yields execution of a planted binary with session tokens in env. Defense-in-depth on a single-user desktop (CWE-426/CWE-911), hence P3.
 - **Remediation:** resolve absolute converter paths at startup from a config/`which`, and build a minimal child env.
 
-#### P3 — EXIF orientation never applied to JPEG previews or cached thumbnails (`src/ui/preview.rs:1484-1489`, `1181-1188`, `1249`)
+#### P3 — EXIF orientation never applied to JPEG previews or cached thumbnails (`src/ui/preview.rs:1484-1489`, `1181-1188`, `1249`) — **fixed 2026-09-05** (`apply_embedded_orientation` in `decode_image_scaled`; crafted-EXIF round-trip test proves the swap; no cache-write path exists in-tree)
 
 - **Root cause:** `Pixbuf::from_file_at_scale` ignores the EXIF Orientation tag; phone photos preview sideways and poison the shared FreeDesktop thumbnail cache with unrotated images.
 - **Remediation:** read orientation and `rotate_simple` before caching.
@@ -1504,37 +1504,37 @@ All 34 tracker items marked "fixed" were re-checked against the current source; 
 
 ### New verified findings
 
-#### P2 — reveal failure is invisible: `Launched` returned unconditionally (`src/providers/files/mod.rs:506-519`, `engine.rs:411-414`)
+#### P2 — reveal failure is invisible: `Launched` returned unconditionally (`src/providers/files/mod.rs:506-519`, `engine.rs:411-414`) — **fixed 2026-09-05** (`reveal_in_file_manager` returns `Result<(), String>`; failure maps to `ExecuteOutcome::Failed(msg)` with an alert dialog; missing-xdg-open also surfaced; regression test)
 
 - **Root cause:** `reveal_in_file_manager` returns `()`; missing paths and total failure (no DBus, no file managers) surface only as `eprintln!`, while the engine maps the call to `ExecuteOutcome::Launched` — the UI then hides the window (`ui/mod.rs:1893`) and nothing opens, with zero user feedback. CWE-754-class error handling.
 - **Remediation:** return `Result<(), String>` mirroring `trash_path`; map failure to `ExecuteOutcome::Failed` (keeps the window open) or surface a toast.
 
-#### P2 — trash failure builds a good error string but never shows it (`src/engine.rs:421-424`, `ui/mod.rs:1931-1933`)
+#### P2 — trash failure builds a good error string but never shows it (`src/engine.rs:421-424`, `ui/mod.rs:1931-1933`) — **fixed 2026-09-05** (`ExecuteOutcome::Failed` carries the message; both Enter and panel paths show a modal `AlertDialog` with the focus-loss guard held; window stays open)
 
 - **Root cause:** `trash_path` produces clear messages ("Path no longer exists", gio exit codes) but the engine only `eprintln!`s them; `ExecuteOutcome::Failed` in the UI merely refocuses the entry. A read-only mount or foreign-owned file yields a closed modal and a silently un-trashed file — stderr is not a user surface for a GTK app.
 - **Remediation:** show the error string in an AlertDialog/toast on `Failed`, at least for destructive actions.
 
-#### P3 — trashed hot/index entries stay searchable until TTL rebuild (`src/engine.rs:415-425`, `files/mod.rs:140-144`)
+#### P3 — trashed hot/index entries stay searchable until TTL rebuild (`src/engine.rs:415-425`, `files/mod.rs:140-144`) — **fixed 2026-09-05** (`FileProvider::forget_path`: index retain + live-cache clear + hot dirty; trash arm uses it; regression test)
 
 - **Root cause:** trash clears only the live cache; the in-memory index still contains the path (phase-1 scan matches it) and the hot set keeps its index position until the next rebuild intersected with usage. Retyping a prefix of a just-trashed hot file re-surfaces it; Enter opens a missing file.
 - **Remediation:** on successful trash, remove the entry from the in-memory index under its write lock (covers both index and hot paths).
 
-#### P3 — hot-set eviction nondeterministic on frecency ties (`src/usage.rs:124-142`, `hot.rs:96-112`)
+#### P3 — hot-set eviction nondeterministic on frecency ties (`src/usage.rs:124-142`, `hot.rs:96-112`) — **fixed 2026-09-05** (`top`/`top_path_ids` sort (score, count, id); determinism test)
 
 - **Root cause:** bucketed frecency yields many ties; stable sort keeps HashMap iteration order (randomized per process), so the 64-of-128 cut admits a random subset per session — top results for tied paths change across restarts. (Related to the Pass 13 `top()` tie-break finding; this is the hot-set consumer path.)
 - **Remediation:** deterministic tie-break (count, last, path id) in `top_path_ids`.
 
-#### P3 — `scoped_memo` single-slot cache never invalidated on index rebuild (`src/providers/files/mod.rs:272-299`)
+#### P3 — `scoped_memo` single-slot cache never invalidated on index rebuild (`src/providers/files/mod.rs:272-299`) — **fixed 2026-09-05** (`clear_scoped_memo` in `rebuild_index`/`force_rebuild`; unit test)
 
 - **Root cause:** the memoized `is_scoped_query` verdict is computed against the index state at query time and survives rebuilds. A scoped query evaluated while the background build is still populating the index memoizes `false`, and the wrong verdict steers `should_deep_search` until a different query evicts the slot.
 - **Remediation:** clear `scoped_memo` in `rebuild_index()`/`force_rebuild()` or store an index generation counter with the memo.
 
-#### P3 — xdg-open spawn success treated as open success; child stdio inherited (`src/providers/files/mod.rs:429-434`)
+#### P3 — xdg-open spawn success treated as open success; child stdio inherited (`src/providers/files/mod.rs:429-434`) — **half fixed pre-existing** (stdio nulled + reaped; verified 2026-09-05); exit-code leg no-change (no async error surface by design)
 
 - **Root cause:** `.spawn()` returns before handler lookup; a missing default app exits non-zero after the engine already returned `Launched` and hid the window. Unlike every other spawn in the file, no `.stdout/.stderr(Stdio::null())`.
 - **Remediation:** detach stdio; optionally waitpid on a worker thread and surface a late toast on non-zero exit.
 
-#### P3 — trash pre-check TOCTOU degrades the error message only (`src/providers/files/mod.rs:583-589`)
+#### P3 — trash pre-check TOCTOU degrades the error message only (`src/providers/files/mod.rs:583-589`) — **fixed 2026-09-05** (pre-check dropped; `gio`/`gvfs-trash` stderr mapped, vanished path stays friendly; mapping + end-to-end tests)
 
 - **Root cause:** classic exists-check-then-act; a file deleted in between yields the generic gio-exit message instead of "no longer exists". Not exploitable (argv-only, `--` separator, no shell). CWE-367 (cosmetic here).
 - **Remediation:** drop the pre-check; map gio's exit status/stderr to the friendly message.
@@ -1549,7 +1549,7 @@ All 34 tracker items marked "fixed" were re-checked against the current source; 
 - **Root cause:** the file-path branch short-circuits before the resolve cache; `Icon=/path/app.png`-style entries incur a synchronous `stat()` for every bound row on every keystroke — on a cold/hung NFS home this freezes input handling.
 - **Remediation:** cache the `(requested_path) → Option<PathBuf>` result or resolve asynchronously.
 
-#### P3 — conversion flip during an in-progress transition primes the outgoing panel (`src/ui/rows.rs:449-477`)
+#### P3 — conversion flip during an in-progress transition primes the outgoing panel (`src/ui/rows.rs:449-477`) — **no-change, verified 2026-09-05** (write-before-flip ordering means the flip target always holds the new value before being shown; no stale frame possible)
 
 - **Root cause:** `cur` is read from `visible_child_name()`, which GTK updates immediately while the 160–220 ms transition still runs; a second wheel press within the window writes the new value into the half-hidden panel and flips back to it — visible stutter. (Distinct from the Pass 13 stacked-timer finding; this is the Stack state machine itself.)
 - **Remediation:** track the side in a `Cell<bool>` on `PooledRow`, or coalesce if a transition is still running.
@@ -1714,22 +1714,22 @@ Areas targeted per the Pass 18 close-out: final-depth saturation re-sweeps of `u
 - **Failure pathway:** typing `/home/u/.ssh/` routes to completions (`starts_with('/')`) and lists `id_ed25519`, `known_hosts`, etc. — the index-era confidentiality exclusion is trivially bypassed by the simplest path-typing UI. CWE-200 / CWE-552.
 - **Remediation:** thread `excludes` into `path_completions` (already a parameter of `search_index`) and `continue` on `should_skip_entry(&path, excludes)`.
 
-#### P3 — mixed-coordinate-space monitor top margin (`src/ui/mod.rs:3011-3017`)
+#### P3 — mixed-coordinate-space monitor top margin (`src/ui/mod.rs:3011-3017`) — **no-change, verified 2026-09-05** (GTK4 `Monitor::geometry` is display-logical, same space as hyprctl — the remediation's scale-multiply would break matching; connector match covers the common case; unverifiable without scaled multi-monitor hardware)
 
 - **Root cause:** the Hyprland path derives the top margin from logical-space `geom.height / 5` while the GDK fallback uses a hardcoded physical-space `80`, and `.max(80)` clamps short logical panels; `gdk_monitor_for_hypr` containment compares Hypr logical coords against GDK physical geometry — on scaled multi-monitor setups the launcher sits at different heights between compositors and can bind to the wrong output. CWE-682.
 - **Remediation:** scale Hypr logical geometry by the GDK `scale_factor()` before comparison; derive the margin from the selected GDK monitor uniformly.
 
-#### P3 — `learn_typos` gating diverges between primary Enter and the secondary action panel (`src/ui/mod.rs:2052-2063` vs `1886-1906`)
+#### P3 — `learn_typos` gating diverges between primary Enter and the secondary action panel (`src/ui/mod.rs:2052-2063` vs `1886-1906`) — **fixed 2026-09-05** (single `should_learn(kind, spec_id)` shared by both paths; Command rows no longer learn via panel; gate-agreement test)
 
 - **Root cause:** two hand-maintained predicates: primary Enter excludes Calc/Conversion/Command by kind; the secondary panel filters by `spec.id`, and its `"reveal"`/`"terminal"` actions are offered on Command rows — firing `record_usage` for `cmd:` ids that primary Enter never records. Usage stats become activation-path-dependent. CWE-1077.
 - **Remediation:** extract one `should_learn(kind, spec_id)` used by both call sites.
 
-#### P3 — failed clipboard copy is silent; Ctrl+Enter closes the launcher with the clipboard untouched (`src/ui/mod.rs:975-989`, `engine.rs:402-408`)
+#### P3 — failed clipboard copy is silent; Ctrl+Enter closes the launcher with the clipboard untouched (`src/ui/mod.rs:975-989`, `engine.rs:402-408`) — **fixed 2026-09-05** (Ctrl+Enter checks the outcome: `Failed` keeps the window open with the alert dialog)
 
 - **Root cause:** `copy_to_clipboard` shells out to `wl-copy`/`xclip`; on systems with neither, `Action::Copy` returns `Failed` (only `eprintln!`), but the Ctrl+Enter fast path ignores the outcome and unconditionally hides the window — the user believes the result was copied. CWE-754.
 - **Remediation:** check the `ExecuteOutcome`; on `Failed` keep the window open and surface an inline error.
 
-#### P3 — `split_glob_path` silently drops mid-path wildcard components (`src/providers/files/search/glob.rs:329-344`)
+#### P3 — `split_glob_path` silently drops mid-path wildcard components (`src/providers/files/search/glob.rs:329-344`) — **fixed 2026-09-05** (per-segment `match_mid_glob`: bounded depth, excludes honored, sorted traversal; temp-dir regression test)
 
 - **Root cause:** for `/home/u/*/docs`, the parent is derived from the *first* metacharacter but the pattern from the *last* component — the live listing returns only the literal child `/home/u/docs`, inconsistent with the index supplement (which matches `docs` anywhere). Silent degradation with no user-facing signal. CWE-636.
 - **Remediation:** reject mid-component globs explicitly with a hint, or collect all post-metachar components into a per-segment match.
@@ -1976,45 +1976,45 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
-| P2 | Right-click on conversion set opens action panel for a different item | `ui/mod.rs:688-699` | 15 |
-| P2 | Tab on conversion set destroys query with answer title | `ui/mod.rs:1437-1502` | 15 |
-| P2 | Deep-scoped literal names match by substring (`main.rs.bak` for `main.rs`) | `glob.rs:161-166` | 16 |
-| P2 | Source/exclusion toggles never reindex; stale results up to 30 min | `settings.rs:543-955` | 14 |
-| P2 | "Reset appearance" desyncs symbolic-icons checkbox | `settings.rs:2057-2067` | 14 |
-| P2 | `index_is_strong` gate below contains-band cancels remaining deep jobs | `search/mod.rs:64-65` | 16 |
-| P2 | Hot-set short-circuit can drop strictly better index results | `rank.rs:110-125` | 14 |
-| P2 | Reveal failure invisible; `Launched` returned unconditionally | `files/mod.rs:506-519` | 17 |
-| P2 | Trash failure string built but never shown to user | `engine.rs:421-424` | 17 |
-| P2 | Empty exclude pattern → `windows(0)` panic (crash leg; see P1 chain) | `config.rs:1185-1227` | 13 |
-| P3 | `truncate(25)` merge can evict selected row → hero reset | `ui/mod.rs:2844-2876` | 15 |
-| P3 | Trash flow leaves `selected` on shifted-in neighbor | `ui/mod.rs:1907-1929` | 15 |
-| P3 | Settings close resets selection to row 0 | `ui/mod.rs:540-555` | 15 |
-| P3 | Drive-prefix swallows words (`e:mail`) into empty completion | `glob.rs:347-353` | 16 |
-| P3 | `split_glob_path` drops mid-path wildcard components | `glob.rs:329-344` | 19 |
-| P3 | Deep-walk tie-breaks arrival-order dependent | `deep.rs:742-752` | 16 |
-| P3 | Hot-set eviction nondeterministic on frecency ties | `usage.rs:124-142` | 17 |
-| P3 | `scoped_memo` stale across index rebuilds | `files/mod.rs:272-299` | 17 |
-| P3 | Trashed paths stay in index/hot set until TTL | `engine.rs:415-425` | 17 |
-| P3 | xdg-open spawn≠open; failure invisible | `files/mod.rs:429-434` | 17 |
-| P3 | Clock rollback freezes decay/recency at maximum | `typos.rs:468-472` | 13 |
-| P3 | Mount skip substring `contains("EFI")` prunes `/mnt/KEFIR` | `config.rs:1042-1048` | 13 |
-| P3 | `%%`/reserved field codes not decoded/stripped per spec | `apps.rs:489-493` | 15 |
-| P3 | `OnlyShowIn`/`NotShowIn`/`TryExec` ignored | `apps.rs:383-399` | 15 |
-| P3 | Duplicate-key precedence: strings first-wins, booleans last-wins | `apps.rs:384-398` | 15 |
-| P3 | NoDisplay apps unfindable even by exact id | `apps.rs:138` | 15 |
-| P3 | Panic during index build leaves `indexing=true` | `files/index.rs:168-181` | 15 |
-| P3 | MAX_INDEX eviction home-biased walk-order truncation | `files/index.rs:237-311` | 15 |
-| P3 | Depth fallback fabricates absolute-path depth | `files/index.rs:354-357` | 15 |
-| P3 | Failed clipboard copy silent; Ctrl+Enter closes anyway | `ui/mod.rs:975-989` | 19 |
-| P3 | learn_typos gating diverges primary vs secondary panel | `ui/mod.rs:2052-2063` | 19 |
-| P3 | Mixed-coordinate monitor margin (logical vs physical px) | `ui/mod.rs:3011-3017` | 19 |
-| P3 | `args.retain` removes every arg equal to the query | `main.rs:26-28` | 14 |
-| P3 | `request_toggle` reports success without ack | `ipc.rs:44-49` | 14 |
-| P3 | Single IPC read drops split-stream messages | `ipc.rs:103-105` | 14 |
-| P3 | EXIF orientation never applied (preview + shared thumb cache) | `ui/preview.rs:1484-1489` | 16 |
-| P3 | Alias + usage boosts stack above exact-match score | `engine.rs:283,557-565` | 18 |
-| P3 | Wheel flip primes outgoing panel mid-transition | `ui/rows.rs:449-477` | 17 |
-| P3 | Trash pre-check TOCTOU degrades error message | `files/mod.rs:583-589` | 17 |
+| P2 | Right-click on conversion set opens action panel for a different item — no-change (verified 2026-09-05: `rotate_left` lands clicked value at front, handler `selected.set(0)`, panel reads index 0; invariant test added) | `ui/mod.rs:688-699` | 15 |
+| P2 | Tab on conversion set destroys query with answer title ✅ fixed 2026-09-05 | `ui/mod.rs:1437-1502` | 15 |
+| P2 | Deep-scoped literal names match by substring (`main.rs.bak` for `main.rs`) — already fixed (`name_matches_pat` exact-match; verified 2026-09-05) | `glob.rs:161-166` | 16 |
+| P2 | Source/exclusion toggles never reindex; stale results up to 30 min ✅ fixed 2026-09-05 | `settings.rs:543-955` | 14 |
+| P2 | "Reset appearance" desyncs symbolic-icons checkbox — already fixed (`sym_cb.set_active(false)` in reset handler; verified 2026-09-05) | `settings.rs:2057-2067` | 14 |
+| P2 | `index_is_strong` gate below contains-band cancels remaining deep jobs — already fixed 2026-08-28 (contains clamp below `DEEP_SKIP_IF_INDEX_SCORE`; re-verified 2026-09-05) | `search/mod.rs:64-65` | 16 |
+| P2 | Hot-set short-circuit can drop strictly better index results ✅ fixed 2026-09-05 | `rank.rs:110-125` | 14 |
+| P2 | Reveal failure invisible; `Launched` returned unconditionally ✅ fixed 2026-09-05 | `files/mod.rs:506-519` | 17 |
+| P2 | Trash failure string built but never shown to user ✅ fixed 2026-09-05 | `engine.rs:421-424` | 17 |
+| P2 | Empty exclude pattern → `windows(0)` panic (crash leg; see P1 chain) — already fixed (`from_list` skips empties + regression test; re-verified 2026-09-05) | `config.rs:1185-1227` | 13 |
+| P3 | `truncate(25)` merge can evict selected row → hero reset ✅ fixed 2026-09-05 | `ui/mod.rs:2844-2876` | 15 |
+| P3 | Trash flow leaves `selected` on shifted-in neighbor ✅ fixed 2026-09-05 | `ui/mod.rs:1907-1929` | 15 |
+| P3 | Settings close resets selection to row 0 ✅ fixed 2026-09-05 | `ui/mod.rs:540-555` | 15 |
+| P3 | Drive-prefix swallows words (`e:mail`) into empty completion ✅ fixed 2026-09-05 | `glob.rs:347-353` | 16 |
+| P3 | `split_glob_path` drops mid-path wildcard components ✅ fixed 2026-09-05 | `glob.rs:329-344` | 19 |
+| P3 | Deep-walk tie-breaks arrival-order dependent ✅ fixed 2026-09-05 | `deep.rs:742-752` | 16 |
+| P3 | Hot-set eviction nondeterministic on frecency ties ✅ fixed 2026-09-05 | `usage.rs:124-142` | 17 |
+| P3 | `scoped_memo` stale across index rebuilds ✅ fixed 2026-09-05 | `files/mod.rs:272-299` | 17 |
+| P3 | Trashed paths stay in index/hot set until TTL ✅ fixed 2026-09-05 | `engine.rs:415-425` | 17 |
+| P3 | xdg-open spawn≠open; failure invisible — half fixed pre-existing (stdio nulled + reaped via `spawn_and_reap`/`spawn_detached`); exit-code leg no-change 2026-09-05 (no async error surface by design) | `files/mod.rs:429-434` | 17 |
+| P3 | Clock rollback freezes decay/recency at maximum ✅ fixed 2026-09-05 | `typos.rs:468-472` | 13 |
+| P3 | Mount skip substring `contains("EFI")` prunes `/mnt/KEFIR` ✅ fixed 2026-09-05 | `config.rs:1042-1048` | 13 |
+| P3 | `%%`/reserved field codes not decoded/stripped per spec ✅ fixed 2026-09-05 | `apps.rs:489-493` | 15 |
+| P3 | `OnlyShowIn`/`NotShowIn`/`TryExec` ignored ✅ fixed 2026-09-05 | `apps.rs:383-399` | 15 |
+| P3 | Duplicate-key precedence: strings first-wins, booleans last-wins ✅ fixed 2026-09-05 | `apps.rs:384-398` | 15 |
+| P3 | NoDisplay apps unfindable even by exact id ✅ fixed 2026-09-05 | `apps.rs:138` | 15 |
+| P3 | Panic during index build leaves `indexing=true` — already fixed (`IndexingGuard` Drop-guard; re-verified live 2026-09-05) | `files/index.rs:168-181` | 15 |
+| P3 | MAX_INDEX eviction home-biased walk-order truncation ✅ fixed 2026-09-05 | `files/index.rs:237-311` | 15 |
+| P3 | Depth fallback fabricates absolute-path depth ✅ fixed 2026-09-05 | `files/index.rs:354-357` | 15 |
+| P3 | Failed clipboard copy silent; Ctrl+Enter closes anyway ✅ fixed 2026-09-05 | `ui/mod.rs:975-989` | 19 |
+| P3 | learn_typos gating diverges primary vs secondary panel ✅ fixed 2026-09-05 | `ui/mod.rs:2052-2063` | 19 |
+| P3 | Mixed-coordinate monitor margin (logical vs physical px) — no-change, verified 2026-09-05 (GTK4 `Monitor::geometry` is already display-logical like hyprctl; scaling by `scale_factor` would break matching; connector match covers the common case) | `ui/mod.rs:3011-3017` | 19 |
+| P3 | `args.retain` removes every arg equal to the query ✅ fixed 2026-09-05 | `main.rs:26-28` | 14 |
+| P3 | `request_toggle` reports success without ack ✅ fixed 2026-09-05 (ack still optional for old daemons, but missing/mismatched ack is now logged) | `ipc.rs:44-49` | 14 |
+| P3 | Single IPC read drops split-stream messages ✅ fixed 2026-09-05 | `ipc.rs:103-105` | 14 |
+| P3 | EXIF orientation never applied (preview + shared thumb cache) ✅ fixed 2026-09-05 (preview decode applies it; tree never writes the shared cache so no poisoning leg) | `ui/preview.rs:1484-1489` | 16 |
+| P3 | Alias + usage boosts stack above exact-match score — already fixed (49,999 clamp; re-verified live 2026-09-05) | `engine.rs:283,557-565` | 18 |
+| P3 | Wheel flip primes outgoing panel mid-transition — no-change, verified 2026-09-05 (write-before-flip ordering guarantees the shown side always holds the new value; alternating sides is the designed directional behavior) | `ui/rows.rs:449-477` | 17 |
+| P3 | Trash pre-check TOCTOU degrades error message ✅ fixed 2026-09-05 | `files/mod.rs:583-589` | 17 |
 
 ### 🧮 Mathematical / Numeric — ✅ triaged 2026-09-05 (10 fixed, 2 already-fixed, 1 wontfix)
 

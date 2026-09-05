@@ -115,17 +115,33 @@ impl FileProvider {
 
     pub fn rebuild_index(&self) {
         self.state.ensure_fresh();
+        self.clear_scoped_memo();
         self.refresh_hot();
     }
 
     pub fn force_rebuild(&self) {
         self.state.force_rebuild();
+        self.clear_scoped_memo();
         self.refresh_hot();
     }
 
-    /// Mark hot set stale (e.g. after recording a path open).
-    pub fn clear_live_cache(&self) {
+    /// Drop the one-slot scoped-query verdict: it was computed against the
+    /// pre-rebuild index, and a stale `false` would steer `should_deep_search`
+    /// until a different query evicts the slot (audit P3).
+    fn clear_scoped_memo(&self) {
+        *self.scoped_memo.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    /// Forget a trashed path immediately (audit P3): the periodic rebuild is
+    /// up to 30 min out, and the live cache alone does not cover phase-1
+    /// index hits or the hot set. The hot set rebuilds lazily from the
+    /// pruned index via the dirty flag.
+    pub fn forget_path(&self, path: &Path) {
+        let mut index = self.state.index.write().unwrap_or_else(|p| p.into_inner());
+        index.retain(|item| item.path.as_path() != path);
+        drop(index);
         self.live_cache.clear();
+        self.hot.mark_dirty();
     }
 
     pub fn note_usage_changed(&self) {
@@ -515,36 +531,39 @@ pub fn desktop_id_display_name(desktop_id: &str) -> Option<String> {
 }
 
 /// Reveal `path` in the default file manager, selecting it when the manager supports it.
-pub fn reveal_in_file_manager(path: &Path) {
+///
+/// Returns `Err` with a user-readable message when nothing could be shown
+/// (audit P2): the engine maps this to `ExecuteOutcome::Failed`, which keeps
+/// the launcher open and shows the message instead of hiding with no effect.
+pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
     let path = if path.exists() {
         path.to_path_buf()
     } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
         parent.to_path_buf()
     } else {
-        eprintln!("hark: reveal: path missing: {}", path.display());
-        return;
+        return Err(format!("Path no longer exists: {}", path.display()));
     };
 
     // FreeDesktop FileManager1 — works even when Dolphin is already open as a
     // daemon, and is what most desktops implement for "show in folder".
     if reveal_via_file_manager1(&path) {
-        return;
+        return Ok(());
     }
 
     // KDE Dolphin (common on this host)
     if which_bin("dolphin").is_some() {
         spawn_detached("dolphin", &["--select", &path.to_string_lossy()]);
-        return;
+        return Ok(());
     }
     // GNOME Nautilus
     if which_bin("nautilus").is_some() {
         spawn_detached("nautilus", &["--select", &path.to_string_lossy()]);
-        return;
+        return Ok(());
     }
     // Elementary Files / Pantheon
     if which_bin("io.elementary.files").is_some() {
         spawn_detached("io.elementary.files", &[&path.to_string_lossy()]);
-        return;
+        return Ok(());
     }
     // Fallback: open containing folder (or the folder itself).
     let target = if path.is_dir() {
@@ -552,7 +571,11 @@ pub fn reveal_in_file_manager(path: &Path) {
     } else {
         path.parent().unwrap_or(path.as_path())
     };
-    spawn_detached("xdg-open", &[&target.to_string_lossy()]);
+    if which_bin("xdg-open").is_some() {
+        spawn_detached("xdg-open", &[&target.to_string_lossy()]);
+        return Ok(());
+    }
+    Err("No file manager found (tried FileManager1, dolphin, nautilus, xdg-open)".into())
 }
 
 /// `org.freedesktop.FileManager1.ShowItems` — select file(s) in the default manager.
@@ -589,33 +612,45 @@ fn reveal_via_file_manager1(path: &Path) -> bool {
 
 /// Move `path` to the FreeDesktop trash. Returns `Ok(())` on success.
 pub fn trash_path(path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Err("Path no longer exists".into());
-    }
+    // No exists() pre-check (audit P3): it races the trash call (TOCTOU) and
+    // the race loser's only symptom was a degraded message. Instead the gio
+    // stderr is mapped so a vanished path still reports friendlily.
     // `gio trash` is the portable FreeDesktop path (gvfs).
-    let status = Command::new("gio")
+    let out = Command::new("gio")
         .args(["trash", "--"])
         .arg(path)
-        .status()
+        .output()
         .map_err(|e| format!("gio trash failed to start: {e}"))?;
-    if status.success() {
+    if out.status.success() {
         return Ok(());
     }
     // Older hosts may only ship gvfs-trash.
     if which_bin("gvfs-trash").is_some() {
-        let status = Command::new("gvfs-trash")
+        let out2 = Command::new("gvfs-trash")
             .arg(path)
-            .status()
+            .output()
             .map_err(|e| format!("gvfs-trash failed to start: {e}"))?;
-        if status.success() {
+        if out2.status.success() {
             return Ok(());
         }
+        return Err(trash_err(&out2.stderr, "gvfs-trash"));
     }
-    Err(format!(
-        "Could not trash {} (gio exit {:?})",
-        path.display(),
-        status.code()
-    ))
+    Err(trash_err(&out.stderr, "gio trash"))
+}
+
+/// Map trash stderr to a user-readable message, keeping the friendly
+/// vanished-path wording for the TOCTOU loser.
+fn trash_err(stderr: &[u8], tool: &str) -> String {
+    let msg = String::from_utf8_lossy(stderr);
+    if msg.contains("No such file or directory") {
+        return "Path no longer exists".into();
+    }
+    let detail = msg.lines().next().unwrap_or("").trim();
+    if detail.is_empty() {
+        format!("{tool} failed")
+    } else {
+        format!("{tool} failed: {detail}")
+    }
 }
 
 fn spawn_detached(bin: &str, args: &[&str]) {
@@ -788,8 +823,123 @@ mod open_terminal_tests {
         assert_eq!(terminal_basename(Path::new("foot"), "foot"), "foot");
         // Custom binary names fall through to cwd-based launch (not xterm).
         assert_eq!(
-            terminal_basename(Path::new("/opt/myterm/bin/myterm"), "myterm"),
+            terminal_basename(Path::new("/opt/myterm/bin/myterm"), "unused"),
             "myterm"
         );
+    }
+
+    #[test]
+    fn reveal_missing_path_reports_error() {
+        // Audit P2: missing paths must surface as `Err` (mapped to
+        // `ExecuteOutcome::Failed`) instead of hiding the window silently.
+        let err = reveal_in_file_manager(Path::new("/nonexistent-hark-dir-9f3/missing-file.txt"))
+            .expect_err("missing path must fail");
+        assert!(err.contains("no longer exists"), "got: {err}");
+    }
+
+    #[test]
+    fn trash_stderr_maps_to_friendly_errors() {
+        // Audit P3: dropping the exists() pre-check must not degrade the
+        // vanished-path message for the TOCTOU loser.
+        assert_eq!(
+            trash_err(b"gio: foo: No such file or directory", "gio trash"),
+            "Path no longer exists"
+        );
+        assert_eq!(
+            trash_err(b"", "gio trash"),
+            "gio trash failed",
+            "empty stderr still reports the tool"
+        );
+        assert!(
+            trash_err(b"gio: permission denied", "gio trash").contains("permission denied"),
+            "unexpected failures surface gio's own message"
+        );
+    }
+
+    #[test]
+    fn trash_missing_path_reports_gone() {
+        // End-to-end through gio when present: no pre-check, yet a vanished
+        // path still reports as gone rather than a raw exit code.
+        if which_bin("gio").is_none() {
+            return;
+        }
+        let err = trash_path(Path::new("/nonexistent-hark-dir-9f3/gone.txt"))
+            .expect_err("missing path must fail");
+        assert!(
+            err.contains("no longer exists"),
+            "vanished path must stay friendly, got: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod forget_path_tests {
+    use super::*;
+    use crate::config::{ConfigStore, HarkConfig};
+    use crate::usage::UsageStore;
+    use std::sync::Arc;
+
+    fn test_provider(dir: &std::path::Path) -> FileProvider {
+        let cfg = ConfigStore::with_path(HarkConfig::default(), dir.join("config.json"));
+        FileProvider::new_empty(Arc::new(cfg), Arc::new(UsageStore::new_empty()))
+    }
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn trash_forgets_path_from_index() {
+        // Audit P3: trashed paths must leave the in-memory index at once —
+        // the periodic rebuild is too far out and the live cache alone does
+        // not cover phase-1 index hits.
+        let dir = unique_dir("forget");
+        let victim = dir.join("victim-note.md");
+        let keeper = dir.join("keeper-note.md");
+        std::fs::write(&victim, "v").unwrap();
+        std::fs::write(&keeper, "k").unwrap();
+        let provider = test_provider(&dir);
+        provider.seed_index(&[(victim.clone(), false), (keeper.clone(), false)]);
+        let titles = |p: &FileProvider| {
+            p.search_with("note", true, DeepMode::Skip)
+                .iter()
+                .map(|r| r.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(titles(&provider).contains(&"victim-note.md".to_string()));
+        provider.forget_path(&victim);
+        let after = titles(&provider);
+        assert!(
+            !after.contains(&"victim-note.md".to_string()),
+            "trashed path still searchable: {after:?}"
+        );
+        assert!(after.contains(&"keeper-note.md".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scoped_memo_clears_on_demand() {
+        // Audit P3: the one-slot scoped verdict is computed against index
+        // state and must not survive a rebuild.
+        let dir = unique_dir("memo");
+        let provider = test_provider(&dir);
+        let _ = provider.is_scoped_query("report in slowfolder");
+        assert!(
+            provider.scoped_memo.lock().unwrap().is_some(),
+            "query should prime the memo slot"
+        );
+        provider.clear_scoped_memo();
+        assert!(provider.scoped_memo.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

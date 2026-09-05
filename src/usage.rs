@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -36,6 +36,12 @@ pub struct UsageStore {
     path: PathBuf,
     dirty: AtomicBool,
     last_save: Mutex<Instant>,
+    /// Highest wall-clock seen (audit P3): `now_secs()` drops to 0 on
+    /// pre-epoch clock rollback, which would freeze every entry at full
+    /// recency/decay until recovery. Pinning `now` to the max seen keeps
+    /// decay progressing through the rollback; records stamped during it
+    /// stay sane instead of `last = 0`.
+    max_now: AtomicU64,
 }
 
 /// Upper bound for a per-id count. A tampered `usage.json` can carry
@@ -81,6 +87,7 @@ impl UsageStore {
             inner: RwLock::new(data),
             path,
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)
@@ -108,6 +115,7 @@ impl UsageStore {
             inner: RwLock::new(UsageFile::default()),
             path: dir.join("usage.json"),
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)
@@ -126,7 +134,7 @@ impl UsageStore {
         if id.is_empty() {
             return;
         }
-        let now = now_secs();
+        let now = self.now_clamped();
         {
             let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
             let e = g.entries.entry(id.to_string()).or_default();
@@ -145,7 +153,7 @@ impl UsageStore {
         let Some(e) = g.entries.get(id) else {
             return 0;
         };
-        frecency(e.count, e.last, now_secs())
+        frecency(e.count, e.last, self.now_clamped())
     }
 
     /// Batched `boost` under a single read guard (audit P3 Pass 14): the
@@ -153,7 +161,7 @@ impl UsageStore {
     /// read beats ~45 of each. Output aligns with `ids`.
     pub fn boost_many(&self, ids: &[&str]) -> Vec<i64> {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
-        let now = now_secs();
+        let now = self.now_clamped();
         ids.iter()
             .map(|id| {
                 g.entries
@@ -164,18 +172,28 @@ impl UsageStore {
             .collect()
     }
 
-    /// Top ids by frecency, highest first.
+    /// Top ids by frecency, highest first. Ties break on (score, count, id)
+    /// so the admitted set is identical across restarts (audit P3): the old
+    /// score-only sort over `HashMap` order admitted a random subset of
+    /// tied entries per process.
     pub fn top(&self, n: usize) -> Vec<(String, i64)> {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
-        let now = now_secs();
-        let mut items: Vec<(String, i64)> = g
+        let now = self.now_clamped();
+        let mut items: Vec<(String, i64, u64)> = g
             .entries
             .iter()
-            .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
+            .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now), e.count))
             .collect();
-        items.sort_by_key(|b| std::cmp::Reverse(b.1));
+        items.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         items.truncate(n);
         items
+            .into_iter()
+            .map(|(id, score, _)| (id, score))
+            .collect()
     }
 
     /// Absolute filesystem paths from top frecency `path:…` usage ids (no prefix).
@@ -185,8 +203,8 @@ impl UsageStore {
             return Vec::new();
         }
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
-        let now = now_secs();
-        let mut items: Vec<(String, i64)> = g
+        let now = self.now_clamped();
+        let mut items: Vec<(String, i64, u64)> = g
             .entries
             .iter()
             .filter_map(|(id, e)| {
@@ -194,12 +212,18 @@ impl UsageStore {
                 if path.is_empty() {
                     return None;
                 }
-                Some((path.to_string(), frecency(e.count, e.last, now)))
+                Some((path.to_string(), frecency(e.count, e.last, now), e.count))
             })
             .collect();
-        items.sort_by_key(|b| std::cmp::Reverse(b.1));
+        // Same total order as `top` (audit P3): the hot-set 64-of-128 cut
+        // must admit a deterministic subset on frecency ties.
+        items.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         items.truncate(n);
-        items.into_iter().map(|(p, _)| p).collect()
+        items.into_iter().map(|(p, _, _)| p).collect()
     }
 
     /// Flush pending writes (process exit / tests).
@@ -366,6 +390,14 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+impl UsageStore {
+    /// Wall-clock pinned to the highest value this store has seen.
+    fn now_clamped(&self) -> u64 {
+        let now = now_secs();
+        self.max_now.fetch_max(now, Ordering::Relaxed).max(now)
+    }
+}
+
 fn usage_path() -> PathBuf {
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
@@ -398,6 +430,7 @@ mod usage_tests {
             inner: RwLock::new(UsageFile::default()),
             path: path.clone(),
             dirty: AtomicBool::new(false),
+            max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
                 Instant::now()
                     .checked_sub(SAVE_DEBOUNCE)
@@ -405,6 +438,41 @@ mod usage_tests {
             ),
         };
         (store, dir)
+    }
+
+    #[test]
+    fn top_breaks_ties_deterministically() {
+        // Audit P3: score-only sorting over `HashMap` order admitted a random
+        // subset of tied entries per process. Ties now break on
+        // (score, count, id) — a total order, identical every restart.
+        let (store, _dir) = temp_store();
+        {
+            let mut g = store.inner.write().unwrap();
+            // Equal (count, last) → equal frecency: id decides.
+            for id in ["path:/b", "path:/a", "path:/c"] {
+                g.entries.insert(
+                    id.to_string(),
+                    UsageEntry {
+                        count: 3,
+                        last: 1_700_000_000,
+                    },
+                );
+            }
+            // Same score band but higher count must still outrank on ties...
+            // (count participates between score and id).
+            g.entries.insert(
+                "path:/z".to_string(),
+                UsageEntry {
+                    count: 3,
+                    last: 1_700_000_000,
+                },
+            );
+        }
+        let top = store.top(4);
+        let ids: Vec<&str> = top.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["path:/a", "path:/b", "path:/c", "path:/z"]);
+        let paths = store.top_path_ids(4);
+        assert_eq!(paths, ["/a", "/b", "/c", "/z"]);
     }
 
     #[test]

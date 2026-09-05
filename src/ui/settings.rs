@@ -598,9 +598,12 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
         let engine = engine.clone();
         let cb = home_row.1.clone();
         cb.connect_toggled(move |btn| {
+            // Source toggles must reindex immediately (audit P2): otherwise
+            // results stay stale until the next periodic rebuild.
             engine.config().update(|c| {
                 c.index.include_home = btn.is_active();
             });
+            engine.force_reindex();
         });
     }
     sources.append(&home_row.0);
@@ -623,6 +626,7 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
                 engine.config().update(|c| {
                     c.index.include_mounts.insert(key.clone(), btn.is_active());
                 });
+                engine.force_reindex();
             });
         }
         let _ = i;
@@ -923,11 +927,16 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
             if !std::path::Path::new(&p).is_absolute() {
                 return;
             }
+            let mut changed = false;
             engine.config().update(|c| {
                 if !c.index.extra_roots.iter().any(|r| r == &p) {
                     c.index.extra_roots.push(p.clone());
+                    changed = true;
                 }
             });
+            if changed {
+                engine.force_reindex();
+            }
             entry.set_text("");
             refill_extra_list(&list, &engine);
         });
@@ -1019,11 +1028,16 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
             if p.is_empty() {
                 return;
             }
+            let mut changed = false;
             engine.config().update(|c| {
                 if !c.index.exclude.contains(&p) {
                     c.index.exclude.push(p);
+                    changed = true;
                 }
             });
+            if changed {
+                engine.force_reindex();
+            }
             entry.set_text("");
             refill_exclude_list(&list, &engine);
         });
@@ -1655,14 +1669,26 @@ fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
         rm.connect_clicked(move |_| {
             match kind {
                 ListKind::Extra => {
+                    let mut changed = false;
                     engine.config().update(|c| {
+                        let before = c.index.extra_roots.len();
                         c.index.extra_roots.retain(|x| x != &text);
+                        changed = c.index.extra_roots.len() != before;
                     });
+                    if changed {
+                        engine.force_reindex();
+                    }
                 }
                 ListKind::Exclude => {
+                    let mut changed = false;
                     engine.config().update(|c| {
+                        let before = c.index.exclude.len();
                         c.index.exclude.retain(|x| x != &text);
+                        changed = c.index.exclude.len() != before;
                     });
+                    if changed {
+                        engine.force_reindex();
+                    }
                 }
                 ListKind::Deep => {
                     engine.remove_deep_root(&text);

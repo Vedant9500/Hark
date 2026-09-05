@@ -549,6 +549,10 @@ impl Launcher {
                 ui_icon_size.set(ui.icon_size as i32);
                 ui_symbolic.set(ui.symbolic_icons);
                 ui_compact.set(matches!(ui.layout_mode, crate::config::LayoutMode::Compact));
+                // Closing settings must not strand selection on row 0 (audit
+                // P3): remember the selected id and re-assert it when the
+                // refreshed list still contains it.
+                let keep_id = results.borrow().get(selected.get()).map(|r| r.id.clone());
                 refresh_results(
                     &engine,
                     &search.text(),
@@ -577,6 +581,18 @@ impl Launcher {
                     Some(&shell_cs),
                     Some(&size_anim_cs),
                 );
+                if let Some(id) = keep_id {
+                    if let Some(pos) = results.borrow().iter().position(|r| r.id == id) {
+                        selected.set(pos);
+                        if let Some(row) = row_pool.borrow().row_at(pos).cloned() {
+                            suppress_select.set(true);
+                            list.select_row(Some(&row));
+                            suppress_select.set(false);
+                            update_footer(&results, pos, &footer_action);
+                            refresh_preview_at(&results, pos, &preview);
+                        }
+                    }
+                }
             })
         };
 
@@ -711,6 +727,7 @@ impl Launcher {
             let search = search.clone();
             let session_queries = session_queries.clone();
             let open_settings = open_settings.clone();
+            let ignore_focus_loss = ignore_focus_loss.clone();
             list.connect_row_activated(move |_, row| {
                 let idx = row.index() as usize;
                 selected.set(idx);
@@ -722,6 +739,7 @@ impl Launcher {
                     &search,
                     &session_queries,
                     &open_settings,
+                    &ignore_focus_loss,
                 );
             });
         }
@@ -791,6 +809,7 @@ impl Launcher {
             let search_for_activate = search.clone();
             let session_queries = session_queries.clone();
             let open_settings = open_settings.clone();
+            let ignore_focus_loss = ignore_focus_loss.clone();
             search.connect_activate(move |_| {
                 activate_result(
                     &engine,
@@ -800,6 +819,7 @@ impl Launcher {
                     &search_for_activate,
                     &session_queries,
                     &open_settings,
+                    &ignore_focus_loss,
                 );
             });
         }
@@ -985,8 +1005,17 @@ impl Launcher {
                                 }
                             });
                             if let Some(text) = text {
-                                engine.execute(&Action::Copy(text));
-                                window.set_visible(false);
+                                // Instant close on copy — no toast, no linger.
+                                // But a failed copy must not close: without
+                                // wl-copy/xclip the clipboard is untouched and
+                                // the user would believe it copied (audit P3).
+                                match engine.execute(&Action::Copy(text)) {
+                                    ExecuteOutcome::Failed(msg) => {
+                                        show_action_error(&window, &ignore_focus_loss, &msg);
+                                        search.grab_focus_without_selecting();
+                                    }
+                                    _ => window.set_visible(false),
+                                }
                                 return glib::Propagation::Stop;
                             }
                         }
@@ -998,6 +1027,7 @@ impl Launcher {
                             &search,
                             &session_queries,
                             &open_settings,
+                            &ignore_focus_loss,
                         );
                         glib::Propagation::Stop
                     }
@@ -1516,6 +1546,10 @@ fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
             Some(item.title.clone())
         }
         Action::LaunchApp { .. } | Action::OpenTerminal(_) => Some(item.title.clone()),
+        // Conversion rows complete to nothing (audit P2): every conversion
+        // action is `Copy`, and filling the answer title (`220.462 lb`)
+        // destroys the query — which itself re-parses as a new conversion.
+        Action::Copy(_) if matches!(item.kind, ResultKind::Conversion) => None,
         Action::Copy(_)
         | Action::OpenSettings
         | Action::RevealPath(_)
@@ -1689,6 +1723,19 @@ mod conv_picker_tests {
         conv_swap_to_front(&mut rs, 1);
         assert_eq!(ids(&rs), ["B", "A"]);
     }
+
+    #[test]
+    fn right_click_lands_panel_on_clicked_value() {
+        // Audit P2 (verified no-change): the right-click handler rotates the
+        // wheel THEN the panel reads index 0 — so the clicked value must be
+        // at the front after the rotation, or the panel opens for another item.
+        let mut rs = vec![conv("A", 40), conv("B", 30), conv("C", 20)];
+        conv_swap_to_front(&mut rs, 2); // right-click "C"
+        assert_eq!(
+            rs[0].id, "C",
+            "panel target (index 0) must be the clicked row"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1798,6 +1845,22 @@ mod tab_complete_tests {
             completion_text_for("notes in gla", &hint).as_deref(),
             Some("notes in glassbox")
         );
+    }
+
+    #[test]
+    fn tab_on_conversion_keeps_query() {
+        // Audit P2: conversion rows are `Copy`, and filling the answer title
+        // (`220.462 lb`) destroys the query — which re-parses as a new
+        // conversion. Tab must complete to nothing on conversions.
+        let answer = item(
+            "220.462 lb",
+            ResultKind::Conversion,
+            Action::Copy("220.462 lb".into()),
+        );
+        assert_eq!(completion_text_for("100 kg in lb", &answer), None);
+        // Non-conversion Copy rows (calc answers) still fill the title.
+        let calc = item("4", ResultKind::Calc, Action::Copy("4".into()));
+        assert_eq!(completion_text_for("2 + 2", &calc).as_deref(), Some("4"));
     }
 
     #[test]
@@ -1912,12 +1975,7 @@ fn run_secondary_action<F: Fn() + 'static>(
                     search.grab_focus_without_selecting();
                 }
                 ExecuteOutcome::Launched => {
-                    if matches!(spec.id, "open" | "terminal" | "reveal" | "reveal_install")
-                        && !matches!(
-                            item_kind,
-                            ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
-                        )
-                    {
+                    if should_learn(item_kind, Some(spec.id)) {
                         let final_q = search.text().to_string();
                         let recent: Vec<String> =
                             session_queries.borrow().iter().cloned().collect();
@@ -1931,10 +1989,23 @@ fn run_secondary_action<F: Fn() + 'static>(
                     // even if the on-disk index still lists the path briefly.
                     {
                         let mut rs = results.borrow_mut();
-                        rs.retain(|r| r.id != item_id);
-                        if let Action::TrashPath(path) = &spec.action {
-                            let path_id = format!("path:{}", path.display());
-                            rs.retain(|r| r.id != path_id);
+                        // Keep selection on the same item (audit P3): rows are
+                        // removed by id but `selected` is positional, so when
+                        // the trashed row sat at/before the selection the index
+                        // would otherwise name the shifted-in neighbor.
+                        let path_id = match &spec.action {
+                            Action::TrashPath(p) => Some(format!("path:{}", p.display())),
+                            _ => None,
+                        };
+                        let removed_at = rs
+                            .iter()
+                            .position(|r| {
+                                r.id == item_id || path_id.as_deref() == Some(r.id.as_str())
+                            })
+                            .unwrap_or(usize::MAX);
+                        rs.retain(|r| r.id != item_id && path_id.as_deref() != Some(r.id.as_str()));
+                        if removed_at < selected.get() {
+                            selected.set(selected.get() - 1);
                         }
                     }
                     rebind_results_from_cache(
@@ -1952,7 +2023,8 @@ fn run_secondary_action<F: Fn() + 'static>(
                     );
                     search.grab_focus_without_selecting();
                 }
-                ExecuteOutcome::Failed => {
+                ExecuteOutcome::Failed(msg) => {
+                    show_action_error(&window, &ignore_focus_loss, &msg);
                     search.grab_focus_without_selecting();
                 }
                 ExecuteOutcome::OpenWith(path) => {
@@ -2001,6 +2073,23 @@ fn run_secondary_action<F: Fn() + 'static>(
     } else {
         finish(spec);
     }
+}
+
+/// Show an action failure without hiding the launcher (audit P2): destructive
+/// actions used to fail silently (trash) or hide with no effect (reveal).
+/// The focus-loss guard stays up until the dialog closes so the 80 ms
+/// auto-hide timer cannot pull the launcher out from under the alert.
+fn show_action_error(window: &ApplicationWindow, guard: &Rc<Cell<bool>>, message: &str) {
+    guard.set(true);
+    let guard = guard.clone();
+    gtk::AlertDialog::builder()
+        .modal(true)
+        .message("Action failed")
+        .detail(message)
+        .build()
+        .choose(Some(window), None::<&Cancellable>, move |_| {
+            guard.set(false)
+        });
 }
 
 /// Re-render the list from the in-memory `results` vec (no re-search).
@@ -2057,6 +2146,7 @@ fn rebind_results_from_cache(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn activate_result<F: Fn()>(
     engine: &Engine,
     results: &Rc<RefCell<Vec<SearchResult>>>,
@@ -2065,6 +2155,7 @@ fn activate_result<F: Fn()>(
     search: &Entry,
     session_queries: &Rc<RefCell<VecDeque<String>>>,
     open_settings: &Rc<F>,
+    ignore_focus_loss: &Rc<Cell<bool>>,
 ) {
     let item = results.borrow().get(idx).cloned();
     if let Some(item) = item {
@@ -2079,10 +2170,7 @@ fn activate_result<F: Fn()>(
                 search.grab_focus_without_selecting();
             }
             ExecuteOutcome::Launched => {
-                if !matches!(
-                    item.kind,
-                    ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
-                ) {
+                if should_learn(item.kind, None) {
                     let final_q = search.text().to_string();
                     let recent: Vec<String> = session_queries.borrow().iter().cloned().collect();
                     engine.learn_typos(&final_q, &recent, &item.id, &item.title);
@@ -2092,10 +2180,39 @@ fn activate_result<F: Fn()>(
             }
             // Primary Enter never produces these; secondary actions handle them.
             ExecuteOutcome::Refresh
-            | ExecuteOutcome::Failed
             | ExecuteOutcome::OpenWith(_)
             | ExecuteOutcome::TogglePreview => {}
+            ExecuteOutcome::Failed(msg) => {
+                show_action_error(window, ignore_focus_loss, &msg);
+                search.grab_focus_without_selecting();
+            }
         }
+    }
+}
+
+/// Whether acting on a result teaches typo aliases + usage (audit P3): one
+/// predicate for primary Enter and the action panel. The panel used to gate
+/// on `spec.id` alone, and its `reveal`/`terminal` actions are also offered
+/// on Command rows — recording usage for `cmd:` ids that primary Enter never
+/// records. Now both paths share the kind gate; the panel additionally
+/// requires an opening/launching affordance.
+fn should_learn_activation(kind: ResultKind) -> bool {
+    !matches!(
+        kind,
+        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+    )
+}
+
+fn should_learn(kind: ResultKind, spec_id: Option<&str>) -> bool {
+    if !should_learn_activation(kind) {
+        return false;
+    }
+    match spec_id {
+        // Primary Enter runs the row's primary action — always learnable.
+        None => true,
+        // Panel: opening affordances learn; pure copy actions keep their
+        // existing no-learn behavior.
+        Some(id) => matches!(id, "open" | "terminal" | "reveal" | "reveal_install"),
     }
 }
 
@@ -2789,8 +2906,129 @@ fn schedule_translate_job(
     });
 }
 
-/// Replace pending translate row with network result (success or soft-fail).
+/// Truncate `merged` to the result cap without evicting the selected row
+/// (audit P3): async merges used to `truncate(25)` blindly, and when deep
+/// hits pushed the selection past the cap the fallback `unwrap_or(0)` landed
+/// on the hero card — silently changing the displayed conversion value.
+/// The selected row is pinned at the tail instead; selection never moves.
+fn truncate_keep_selected(merged: &mut Vec<SearchResult>, sel_id: Option<&str>) {
+    const CAP: usize = 25;
+    if merged.len() <= CAP {
+        return;
+    }
+    if let Some(id) = sel_id {
+        if let Some(pos) = merged.iter().position(|r| r.id == id) {
+            if pos >= CAP {
+                let row = merged.remove(pos);
+                merged.truncate(CAP - 1);
+                merged.push(row);
+                return;
+            }
+        }
+    }
+    merged.truncate(CAP);
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod learn_gate_tests {
+    use super::{should_learn, should_learn_activation};
+    use crate::providers::ResultKind;
+
+    #[test]
+    fn primary_and_panel_agree_on_kinds() {
+        // Audit P3: the panel must never learn for kinds primary Enter skips
+        // (Command rows via reveal/terminal recorded `cmd:` usage).
+        for kind in [
+            ResultKind::App,
+            ResultKind::File,
+            ResultKind::Folder,
+            ResultKind::Calc,
+            ResultKind::Conversion,
+            ResultKind::Command,
+        ] {
+            assert_eq!(
+                should_learn(kind, None),
+                should_learn_activation(kind),
+                "primary must equal the kind gate"
+            );
+            // Panel affordances can only narrow, never widen.
+            for spec in ["open", "terminal", "reveal", "reveal_install", "copy"] {
+                assert!(
+                    !should_learn(kind, Some(spec)) || should_learn_activation(kind),
+                    "panel learned for a non-learnable kind: {kind:?}/{spec}"
+                );
+            }
+        }
+        // The reported hole: Command + reveal/terminal stays silent now.
+        assert!(!should_learn(ResultKind::Command, Some("reveal")));
+        assert!(!should_learn(ResultKind::Command, Some("terminal")));
+        // Learnable kinds still learn through opening affordances.
+        assert!(should_learn(ResultKind::File, Some("open")));
+        assert!(should_learn(ResultKind::File, Some("reveal")));
+        assert!(should_learn(ResultKind::App, Some("terminal")));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod merge_pin_tests {
+    use super::truncate_keep_selected;
+    use crate::providers::{Action, ResultKind, SearchResult};
+
+    fn row(id: &str) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            title: id.into(),
+            subtitle: String::new(),
+            kind: ResultKind::File,
+            score: 0,
+            icon: None,
+            action: Action::OpenSettings,
+            conversion: None,
+            matched: None,
+        }
+    }
+
+    fn capped(n: usize) -> Vec<SearchResult> {
+        (0..n).map(|i| row(&format!("r{i}"))).collect()
+    }
+
+    #[test]
+    fn selected_row_survives_cap_eviction() {
+        let mut merged = capped(30);
+        truncate_keep_selected(&mut merged, Some("r29"));
+        assert_eq!(merged.len(), 25);
+        assert!(
+            merged.iter().any(|r| r.id == "r29"),
+            "selected row must be pinned, got last: {}",
+            merged.last().map(|r| r.id.as_str()).unwrap_or("<empty>")
+        );
+        assert_eq!(merged[24].id, "r29");
+    }
+
+    #[test]
+    fn selected_row_inside_cap_keeps_order() {
+        let mut merged = capped(30);
+        truncate_keep_selected(&mut merged, Some("r10"));
+        assert_eq!(merged.len(), 25);
+        assert_eq!(merged[10].id, "r10");
+    }
+
+    #[test]
+    fn under_cap_and_missing_selection_truncate_normally() {
+        let mut merged = capped(20);
+        truncate_keep_selected(&mut merged, Some("r5"));
+        assert_eq!(merged.len(), 20);
+        let mut merged = capped(30);
+        truncate_keep_selected(&mut merged, None);
+        assert_eq!(merged.len(), 25);
+        assert_eq!(merged[24].id, "r24");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
+/// Replace pending translate row with network result (success or soft-fail).
 fn apply_translate_hits(
     hits: &[SearchResult],
     list: &ListBox,
@@ -2811,6 +3049,7 @@ fn apply_translate_hits(
 
     // Take ownership instead of `borrow().clone()` (audit P3): existing rows
     // move into `out`, only id `String`s clone for the dedup set.
+    let sel_id = results.borrow().get(selected.get()).map(|r| r.id.clone());
     let mut existing = std::mem::take(&mut *results.borrow_mut());
     existing.retain(|r| !crate::providers::translate::is_pending_result(r));
     let mut out = hits.to_vec();
@@ -2820,7 +3059,7 @@ fn apply_translate_hits(
             out.push(r);
         }
     }
-    out.truncate(25);
+    truncate_keep_selected(&mut out, sel_id.as_deref());
 
     let no_hits = out.is_empty();
     empty.set_visible(no_hits);
@@ -2834,15 +3073,21 @@ fn apply_translate_hits(
             pool.apply(list, &out, icon_size, symbolic_icons, None);
         }
     }
-    selected.set(0);
+    // Preserve selection by id (was: unconditional reset to 0, same hero
+    // landmine as the deep-merge path — audit P3).
+    let new_sel = sel_id
+        .as_deref()
+        .and_then(|id| out.iter().position(|r| r.id == id))
+        .unwrap_or(0);
+    selected.set(new_sel);
     *results.borrow_mut() = out;
 
-    if let Some(row) = row_pool.borrow().row_at(0).cloned() {
+    if let Some(row) = row_pool.borrow().row_at(new_sel).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
-        update_footer(results, 0, footer_action);
-        refresh_preview_at(results, 0, preview);
+        update_footer(results, new_sel, footer_action);
+        refresh_preview_at(results, new_sel, preview);
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action);
@@ -2896,7 +3141,7 @@ fn apply_deep_hits(
             .then_with(|| kind_rank_ui(a.kind).cmp(&kind_rank_ui(b.kind)))
             .then_with(|| a.title.cmp(&b.title))
     });
-    merged.truncate(25);
+    truncate_keep_selected(&mut merged, prev_id.as_deref());
 
     let no_hits = merged.is_empty();
     let new_sel = prev_id

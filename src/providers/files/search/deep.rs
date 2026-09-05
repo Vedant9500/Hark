@@ -518,13 +518,19 @@ fn merge_live(results: &mut Vec<SearchResult>, live: Vec<SearchResult>) {
     }
     results.extend(live);
     // Rank once with a precomputed lowercase title key instead of lowercasing
-    // per comparison (O(n log n) allocs on the ranking path).
-    let mut keyed: Vec<(i64, String, SearchResult)> = results
+    // per comparison (O(n log n) allocs on the ranking path). The id is the
+    // final tie-break (audit P3): without it, equal-score same-name hits in
+    // different directories order by readdir arrival, reshuffling runs.
+    let mut keyed: Vec<(i64, String, String, SearchResult)> = results
         .drain(..)
-        .map(|r| (r.score, r.title.to_lowercase(), r))
+        .map(|r| (r.score, r.title.to_lowercase(), r.id.clone(), r))
         .collect();
-    keyed.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    results.extend(keyed.into_iter().map(|(_, _, r)| r));
+    keyed.sort_unstable_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    results.extend(keyed.into_iter().map(|(_, _, _, r)| r));
     results.truncate(FILE_RESULT_LIMIT);
 }
 
@@ -764,16 +770,19 @@ pub(super) fn live_deep_under_roots(
             }
 
             existing.insert(id);
-            // Keep top-K by score
+            // Keep top-K by (score, path) — deterministic regardless of
+            // readdir arrival order (audit P3): the old score-only minimum
+            // kept whichever equal-score entry arrived first.
             if hit_paths.len() < FILE_RESULT_LIMIT {
                 hit_paths.push((score, path.to_path_buf(), is_dir));
             } else if let Some(min_i) = hit_paths
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, (s, _, _))| *s)
+                .min_by(|(_, a), (_, b)| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
                 .map(|(i, _)| i)
             {
-                if score > hit_paths[min_i].0 {
+                let (min_score, min_path, _) = &hit_paths[min_i];
+                if score > *min_score || (score == *min_score && path < min_path.as_path()) {
                     hit_paths[min_i] = (score, path.to_path_buf(), is_dir);
                 }
             }
@@ -863,4 +872,42 @@ fn score_live_hit(
         .or_else(|| segments.last().map(|s| s.as_str()))
         .unwrap_or("");
     apply_path_boosts(item, q_hint, score).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod merge_live_tests {
+    use super::merge_live;
+    use crate::providers::{Action, ResultKind, SearchResult};
+    use std::path::PathBuf;
+
+    fn row(id: &str, title: &str, score: i64) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            title: title.into(),
+            subtitle: String::new(),
+            kind: ResultKind::File,
+            score,
+            icon: None,
+            action: Action::OpenPath(PathBuf::from(id)),
+            conversion: None,
+            matched: None,
+        }
+    }
+
+    #[test]
+    fn equal_score_same_name_orders_by_path() {
+        // Audit P3: equal (score, title) hits in different directories used
+        // to order by readdir arrival. The id (`path:…`) is the final
+        // tie-break — identical output regardless of input order.
+        let a = row("path:/b/readme.md", "readme.md", 100);
+        let b = row("path:/a/readme.md", "readme.md", 100);
+        let mut fwd = vec![a.clone()];
+        merge_live(&mut fwd, vec![b.clone()]);
+        let mut rev = vec![b.clone()];
+        merge_live(&mut rev, vec![a.clone()]);
+        let ids_fwd: Vec<&str> = fwd.iter().map(|r| r.id.as_str()).collect();
+        let ids_rev: Vec<&str> = rev.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids_fwd, ids_rev);
+        assert_eq!(ids_fwd, ["path:/a/readme.md", "path:/b/readme.md"]);
+    }
 }

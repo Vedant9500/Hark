@@ -69,6 +69,11 @@ fn quote_join(argv: &[String]) -> String {
 
 pub struct AppProvider {
     apps: RwLock<Vec<DesktopApp>>,
+    /// `NoDisplay=true` entries (audit P3): hidden from search/menus but
+    /// launchable and associatable per spec — stored `app:<id>` actions and
+    /// default-app references must still resolve. Only `resolve_id` and
+    /// `display_name_for_desktop_id` consult this map.
+    hidden: RwLock<Vec<DesktopApp>>,
     matcher: SkimMatcherV2,
 }
 
@@ -76,6 +81,7 @@ impl AppProvider {
     pub fn new_empty() -> Self {
         Self {
             apps: RwLock::new(Vec::new()),
+            hidden: RwLock::new(Vec::new()),
             matcher: SkimMatcherV2::default().ignore_case(),
         }
     }
@@ -130,6 +136,7 @@ impl AppProvider {
     fn reload_from_dirs(&self, dirs: &[PathBuf], excludes: &[String]) {
         let excluded = ExcludeSet::from_list(excludes);
         let mut apps = Vec::new();
+        let mut hidden = Vec::new();
         let mut seen = HashSet::new();
 
         for dir in dirs {
@@ -148,7 +155,7 @@ impl AppProvider {
                     continue;
                 }
                 if let Some(app) = parse_desktop_file(&path) {
-                    if app.no_display || app.exec.is_empty() || app.name.is_empty() {
+                    if app.exec.is_empty() || app.name.is_empty() {
                         continue;
                     }
                     if app
@@ -159,20 +166,32 @@ impl AppProvider {
                         continue;
                     }
                     if seen.insert(app.id.clone()) {
-                        apps.push(app);
+                        if app.no_display {
+                            hidden.push(app);
+                        } else {
+                            apps.push(app);
+                        }
                     }
                 }
             }
         }
 
         apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
+        hidden.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
         *self.apps.write().unwrap_or_else(|p| p.into_inner()) = apps;
+        *self.hidden.write().unwrap_or_else(|p| p.into_inner()) = hidden;
     }
 
     pub fn resolve_id(&self, id: &str) -> Option<SearchResult> {
         let key = id.strip_prefix("app:").unwrap_or(id);
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
-        apps.iter()
+        if let Some(a) = apps.iter().find(|a| a.id == key) {
+            return Some(to_result(a, 1000, None));
+        }
+        // NoDisplay helpers resolve too (spec: hidden, not gone).
+        let hidden = self.hidden.read().unwrap_or_else(|p| p.into_inner());
+        hidden
+            .iter()
             .find(|a| a.id == key)
             .map(|a| to_result(a, 1000, None))
     }
@@ -205,6 +224,13 @@ impl AppProvider {
         let key = normalize_desktop_id(desktop_id);
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         for a in apps.iter() {
+            let id = desktop_file_id(&a.desktop_path, &a.id);
+            if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
+                return Some(a.name.clone());
+            }
+        }
+        let hidden = self.hidden.read().unwrap_or_else(|p| p.into_inner());
+        for a in hidden.iter() {
             let id = desktop_file_id(&a.desktop_path, &a.id);
             if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
                 return Some(a.name.clone());
@@ -390,6 +416,20 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     let mut terminal = false;
     let mut no_display = false;
     let mut hidden = false;
+    // First occurrence wins per key (audit P3): the spec treats later
+    // duplicates as invalid, so a trailing `NoDisplay=false` must not
+    // un-hide a vendor-hidden entry (and vice versa for strings, already
+    // latched above).
+    let mut terminal_seen = false;
+    let mut no_display_seen = false;
+    let mut hidden_seen = false;
+    let mut type_seen = false;
+    // Visibility scoping (audit P3): entries restricted to other desktops
+    // must not be listed here, and `TryExec` entries whose binary is absent
+    // would fail on launch.
+    let mut only_show_in: Option<String> = None;
+    let mut not_show_in: Option<String> = None;
+    let mut try_exec: Option<String> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -413,16 +453,53 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
             "Comment" if comment.is_empty() => comment = value.to_string(),
             "Exec" if exec_raw.is_empty() => exec_raw = value.to_string(),
             "Icon" if icon.is_empty() => icon = value.to_string(),
-            "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
-            "NoDisplay" => no_display = value.eq_ignore_ascii_case("true"),
-            "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
-            "Type" if value != "Application" => return None,
+            "Terminal" if !terminal_seen => {
+                terminal_seen = true;
+                terminal = value.eq_ignore_ascii_case("true");
+            }
+            "NoDisplay" if !no_display_seen => {
+                no_display_seen = true;
+                no_display = value.eq_ignore_ascii_case("true");
+            }
+            "Hidden" if !hidden_seen => {
+                hidden_seen = true;
+                hidden = value.eq_ignore_ascii_case("true");
+            }
+            "Type" if !type_seen => {
+                type_seen = true;
+                if value != "Application" {
+                    return None;
+                }
+            }
+            "OnlyShowIn" if only_show_in.is_none() => {
+                only_show_in = Some(value.to_string());
+            }
+            "NotShowIn" if not_show_in.is_none() => {
+                not_show_in = Some(value.to_string());
+            }
+            "TryExec" if try_exec.is_none() => {
+                try_exec = Some(value.to_string());
+            }
             _ => {}
         }
     }
 
     if hidden || name.is_empty() {
         return None;
+    }
+
+    // Desktop scoping: `OnlyShowIn`/`NotShowIn` list `;`-separated desktops
+    // matched against `XDG_CURRENT_DESKTOP` (itself `:`-separated). No known
+    // desktop → show (conservative). `TryExec` with an unresolvable binary
+    // would fail on launch — skip the entry.
+    if !desktop_allowed(only_show_in.as_deref(), not_show_in.as_deref()) {
+        return None;
+    }
+    if let Some(probe) = try_exec.as_deref() {
+        let probe = probe.trim();
+        if !probe.is_empty() && which(probe).is_none() {
+            return None;
+        }
     }
 
     let id = path
@@ -513,7 +590,64 @@ fn split_exec_args(exec: &str) -> Vec<String> {
     if !cur.is_empty() {
         args.push(cur);
     }
-    args
+    // Desktop Entry spec: `%%` is a literal percent (audit P3). `%%` carries
+    // no whitespace/quote characters, so expanding after tokenizing is
+    // equivalent to expanding first — including inside quotes. Runs before
+    // the callers' field-code filter, so a standalone `%%` arrives there as
+    // `%` (kept) instead of leaking a literal `%%` argument to the app.
+    if exec.contains("%%") {
+        args.into_iter().map(|t| t.replace("%%", "%")).collect()
+    } else {
+        args
+    }
+}
+
+/// Whether a `.desktop` entry survives `OnlyShowIn`/`NotShowIn` scoping.
+/// `XDG_CURRENT_DESKTOP` is `:`-separated (`KDE:GNOME`); the keys are
+/// `;`-separated. Unknown desktop → visible (conservative: hiding everything
+/// when the variable is unset would empty the launcher).
+fn desktop_allowed(only_show_in: Option<&str>, not_show_in: Option<&str>) -> bool {
+    // Visible in tests without mutating the process environment.
+    fn current_desktops() -> Vec<String> {
+        std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .split(':')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+    desktop_allowed_for(only_show_in, not_show_in, &current_desktops())
+}
+
+fn desktop_allowed_for(
+    only_show_in: Option<&str>,
+    not_show_in: Option<&str>,
+    current: &[String],
+) -> bool {
+    // Unknown desktop → visible (conservative): hiding everything when the
+    // variable is unset would empty the launcher on minimal WMs, while
+    // showing risks only a broken launch for genuinely foreign entries.
+    if current.is_empty() {
+        return true;
+    }
+    let listed = |key: &str| -> Vec<String> {
+        key.split(';')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    if let Some(only) = only_show_in {
+        let wants = listed(only);
+        if wants.is_empty() || !wants.iter().any(|d| current.contains(d)) {
+            return false;
+        }
+    }
+    if let Some(except) = not_show_in {
+        if listed(except).iter().any(|d| current.contains(d)) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Standalone desktop-entry field codes (`%f`, `%F`, `%%`-style placeholders).
@@ -814,6 +948,144 @@ mod tests {
         // No excludes → everything loads.
         provider.reload_from_dirs(&[apps_dir, skipped_dir], &[]);
         assert_eq!(provider.apps.read().unwrap().len(), 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn percent_percent_decodes_to_literal_percent() {
+        // Audit P3: `%%` is a literal `%`, not a field code.
+        assert_eq!(
+            split_exec_args("/usr/bin/foo --msg=100%%"),
+            vec!["/usr/bin/foo".to_string(), "--msg=100%".to_string()]
+        );
+        // Standalone `%%` survives the field-code filter as `%`.
+        let argv: Vec<String> = split_exec_args("/usr/bin/foo %% %f")
+            .into_iter()
+            .filter(|p| !is_field_code(p))
+            .collect();
+        assert_eq!(argv, vec!["/usr/bin/foo".to_string(), "%".to_string()]);
+    }
+
+    #[test]
+    fn desktop_scoping_matrix() {
+        // Audit P3: OnlyShowIn/NotShowIn against a fake current desktop
+        // (no process-environment mutation).
+        let kde = vec!["kde".to_string()];
+        let hypr = vec!["hyprland".to_string()];
+        assert!(desktop_allowed_for(None, None, &kde));
+        assert!(desktop_allowed_for(Some("KDE;GNOME;"), None, &kde));
+        assert!(!desktop_allowed_for(Some("KDE;GNOME;"), None, &hypr));
+        assert!(!desktop_allowed_for(Some(""), None, &kde));
+        assert!(!desktop_allowed_for(None, Some("KDE;"), &kde));
+        assert!(desktop_allowed_for(None, Some("KDE;"), &hypr));
+        // OnlyShowIn admits KDE and NotShowIn only excludes GNOME → shown.
+        assert!(desktop_allowed_for(
+            Some("KDE;GNOME;"),
+            Some("GNOME;"),
+            &kde
+        ));
+        // Unknown desktop → visible (conservative).
+        assert!(desktop_allowed_for(Some("KDE;"), None, &[]));
+        assert!(desktop_allowed_for(None, Some("KDE;"), &[]));
+    }
+
+    #[test]
+    fn duplicate_keys_first_wins_and_try_exec_filters() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-app-dup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Later duplicates must not override the first occurrence (audit P3).
+        let dup = dir.join("dup.desktop");
+        let mut f = fs::File::create(&dup).unwrap();
+        write!(
+            f,
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Type=X-Foo\n\
+             Name=Dup\n\
+             Name=Shadowed\n\
+             Terminal=false\n\
+             Terminal=true\n\
+             NoDisplay=true\n\
+             NoDisplay=false\n\
+             Exec=/usr/bin/dup\n"
+        )
+        .unwrap();
+        let app = parse_desktop_file(&dup).expect("dup parses");
+        assert_eq!(app.name, "Dup");
+        assert!(!app.terminal, "trailing Terminal=true must not win");
+        assert!(app.no_display, "trailing NoDisplay=false must not un-hide");
+
+        // TryExec with a missing binary skips the entry (audit P3).
+        let missing = dir.join("missing.desktop");
+        let mut f = fs::File::create(&missing).unwrap();
+        write!(
+            f,
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Missing\n\
+             Exec=/usr/bin/missing\n\
+             TryExec=/nonexistent-hark-binary-9f3\n"
+        )
+        .unwrap();
+        assert!(
+            parse_desktop_file(&missing).is_none(),
+            "unresolvable TryExec must skip the entry"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_display_resolves_but_does_not_search() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-app-hidden-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let write_entry = |name: &str, extra: &str| {
+            let mut f = fs::File::create(dir.join(format!("{name}.desktop"))).unwrap();
+            write!(
+                f,
+                "[Desktop Entry]\nType=Application\nName={name}\nExec=/usr/bin/{name}\n{extra}"
+            )
+            .unwrap();
+        };
+        write_entry("VisibleApp", "");
+        write_entry("HelperDaemon", "NoDisplay=true\n");
+
+        let provider = AppProvider::new_empty();
+        provider.reload_from_dirs(std::slice::from_ref(&dir), &[]);
+        // Hidden from search/menus...
+        assert!(
+            provider.search("helperdaemon").is_empty(),
+            "NoDisplay entries must not be searchable"
+        );
+        assert_eq!(provider.search("visibleapp").len(), 1);
+        // ...but stored ids and default-app references still resolve.
+        let resolved = provider.resolve_id("app:HelperDaemon");
+        assert!(
+            resolved.is_some_and(|r| r.title == "HelperDaemon"),
+            "NoDisplay id must resolve"
+        );
+        assert_eq!(
+            provider.display_name_for_desktop_id("HelperDaemon"),
+            Some("HelperDaemon".to_string())
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -123,6 +123,23 @@ pub(super) fn score_free_text_full(
         // Strong hot hits — still run the fuzzy pass so fuzzy-only candidates
         // aren't dropped and highlight spans stay consistent with the
         // non-short-circuited path.
+        //
+        // Exact-name sweep (audit P2): a file exactly matching the query that
+        // was created after a prefix-matching file went hot would otherwise
+        // never be scanned (50,000 band skipped). A linear equality pass is
+        // O(n) cheap string compares — no fuzzy scoring — so the Batch-B
+        // perf win survives while exact matches can't be dropped.
+        if best_hot < 50_000 {
+            for (idx, item) in index.iter().enumerate() {
+                if item.name_lower == q_lower && seen.insert(idx) {
+                    // Same score the full scan would assign (exact band +
+                    // path boosts), so ordering matches the slow path.
+                    if let Some(score) = apply_path_boosts(item, q_lower, 50_000) {
+                        push_heap(&mut heap, score, item.depth, idx);
+                    }
+                }
+            }
+        }
         finish_free_text_fuzzy(
             &mut heap,
             index,

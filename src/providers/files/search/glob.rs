@@ -12,7 +12,7 @@ use crate::providers::{Action, ResultKind, SearchResult};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) fn is_extension_shorthand(q: &str) -> bool {
     let Some(rest) = q.strip_prefix('.') else {
@@ -240,6 +240,91 @@ fn glob_match_chars(pat: &[char], name: &[char]) -> bool {
     pi == pat.len()
 }
 
+/// Split an expanded absolute glob into its literal base and the remaining
+/// segments starting at the first wildcard component. Returns `None` when
+/// the wildcard is confined to the last component (direct listing applies).
+fn mid_glob_segments(expanded: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let mut base = PathBuf::new();
+    let mut rest: Option<Vec<String>> = None;
+    for comp in expanded.components() {
+        match (&mut rest, comp) {
+            (None, Component::Normal(s)) => {
+                let s = s.to_string_lossy().into_owned();
+                if s.contains('*') || s.contains('?') {
+                    rest = Some(vec![s]);
+                } else {
+                    base.push(comp.as_os_str());
+                }
+            }
+            (None, _) => base.push(comp.as_os_str()),
+            (Some(segs), Component::Normal(s)) => {
+                segs.push(s.to_string_lossy().into_owned());
+            }
+            (Some(segs), _) => segs.push(comp.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    match rest {
+        // Single trailing segment = last-component glob, not mid-path.
+        Some(segs) if segs.len() > 1 => Some((base, segs)),
+        _ => None,
+    }
+}
+
+/// Match multi-segment remainder (`*/docs`) under `base`, one level per
+/// component (audit P3). Bounded: at most 5 remaining levels and
+/// `FILE_RESULT_LIMIT` leaves, excludes honored during descent so pruned
+/// subtrees are never listed. Traversal is sorted — readdir order varies
+/// across runs.
+fn match_mid_glob(base: &Path, segments: &[String], excludes: &ExcludeSet) -> Vec<PathBuf> {
+    fn descend(dir: &Path, segs: &[String], excludes: &ExcludeSet, out: &mut Vec<PathBuf>) {
+        if out.len() >= FILE_RESULT_LIMIT || segs.is_empty() {
+            return;
+        }
+        let (head, tail) = (&segs[0], &segs[1..]);
+        if !head.contains('*') && !head.contains('?') {
+            let next = dir.join(head);
+            if tail.is_empty() {
+                if next.exists() && !should_skip_entry(&next, excludes) {
+                    out.push(next);
+                }
+            } else if next.is_dir() && !should_skip_entry(&next, excludes) {
+                descend(&next, tail, excludes, out);
+            }
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if out.len() >= FILE_RESULT_LIMIT {
+                break;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !glob_match(&head.to_lowercase(), &name.to_lowercase()) {
+                continue;
+            }
+            if tail.is_empty() {
+                if !should_skip_entry(&path, excludes) {
+                    out.push(path);
+                }
+            } else if path.is_dir() && !should_skip_entry(&path, excludes) {
+                descend(&path, tail, excludes, out);
+            }
+        }
+    }
+
+    if segments.len() > 5 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    descend(base, segments, excludes, &mut out);
+    out
+}
+
 pub(super) fn search_absolute_glob(
     query: &str,
     index: &[IndexedPath],
@@ -258,43 +343,61 @@ pub(super) fn search_absolute_glob(
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Live directory listing when parent exists and pattern is only in the last component.
-    if !pat_lower.is_empty() && (pat_lower.contains('*') || pat_lower.contains('?')) {
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let name_l = name.to_lowercase();
-                if !glob_match(&pat_lower, &name_l) {
-                    continue;
-                }
-                let path = entry.path();
-                // Live listings honor the same excludes as index hits.
-                if should_skip_entry(&path, excludes) {
-                    continue;
-                }
-                let key = path.display().to_string();
-                if !seen.insert(key.clone()) {
-                    continue;
-                }
-                let is_dir = path.is_dir();
-                results.push(SearchResult {
-                    id: format!("path:{key}"),
-                    title: name,
-                    subtitle: pretty_path(&path, path_style, mounts),
-                    kind: if is_dir {
-                        ResultKind::Folder
-                    } else {
-                        ResultKind::File
-                    },
-                    score: 45_000,
-                    icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
-                    action: Action::OpenPath(path),
-                    conversion: None,
-                    matched: None,
-                });
-                if results.len() >= FILE_RESULT_LIMIT {
-                    break;
-                }
+    // Live directory listing. Mid-path wildcards (`/home/u/*/docs`) descend
+    // one level per component instead of silently matching only the literal
+    // child (audit P3); last-component globs keep the direct listing. Note
+    // the mid-glob check comes first: for `/base/*/docs` the last-component
+    // pattern is the literal `docs`, which the meta-gate below would skip.
+    let mid = mid_glob_segments(&expanded);
+    if mid.is_some()
+        || (!pat_lower.is_empty() && (pat_lower.contains('*') || pat_lower.contains('?')))
+    {
+        let live_paths: Vec<PathBuf> = match mid.as_ref() {
+            Some((base, segs)) => match_mid_glob(base, segs, excludes),
+            None => match fs::read_dir(&dir) {
+                Ok(entries) => entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|n| glob_match(&pat_lower, &n.to_lowercase()))
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            },
+        };
+        for path in live_paths {
+            // Live listings honor the same excludes as index hits.
+            if should_skip_entry(&path, excludes) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let key = path.display().to_string();
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let is_dir = path.is_dir();
+            results.push(SearchResult {
+                id: format!("path:{key}"),
+                title: name,
+                subtitle: pretty_path(&path, path_style, mounts),
+                kind: if is_dir {
+                    ResultKind::Folder
+                } else {
+                    ResultKind::File
+                },
+                score: 45_000,
+                icon: Some(crate::providers::files::icon_for_path(&path, is_dir).into()),
+                action: Action::OpenPath(path),
+                conversion: None,
+                matched: None,
+            });
+            if results.len() >= FILE_RESULT_LIMIT {
+                break;
             }
         }
     }
@@ -391,7 +494,9 @@ pub(super) fn is_drive_path_query(q: &str) -> bool {
         let bytes = q.as_bytes();
         let c0 = bytes[0].to_ascii_uppercase();
         if c0.is_ascii_alphabetic() && bytes[1] == b':' {
-            return true;
+            // `e:mail` is a word, not a drive — only divert when the colon
+            // ends the query or opens a path (`E:`, `E:/`, `E:\`).
+            return matches!(bytes.get(2), None | Some(b'/') | Some(b'\\'));
         }
     }
     let lower = q.to_ascii_lowercase();
@@ -658,6 +763,95 @@ mod unicode_glob_tests {
         assert!(!glob_match("??", "é"));
         assert!(!glob_match("a?", "a")); // ? still requires exactly one char
         assert!(!glob_match("a", "aé"));
+    }
+
+    #[test]
+    fn drive_prefix_requires_terminator() {
+        // Audit P3: `e:mail` is a word, not a drive — only `E:` / `E:/` /
+        // `E:\` divert to path completion.
+        use super::is_drive_path_query;
+        assert!(!is_drive_path_query("e:mail"));
+        assert!(!is_drive_path_query("c:foo/bar"));
+        assert!(is_drive_path_query("E:"));
+        assert!(is_drive_path_query("e:/"));
+        assert!(is_drive_path_query("D:\\Users"));
+        assert!(is_drive_path_query("  C:/  "));
+    }
+
+    #[test]
+    fn mid_glob_descends_per_segment() {
+        // Audit P3: `/base/*/docs` must match `docs` under every child, not
+        // just the literal `/base/docs` child.
+        use super::{match_mid_glob, mid_glob_segments, ExcludeSet};
+        use std::fs;
+        let base = std::env::temp_dir().join(format!(
+            "hark-midglob-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("proj/docs")).unwrap();
+        fs::create_dir_all(base.join("other/docs")).unwrap();
+        fs::create_dir_all(base.join("docs")).unwrap();
+        fs::write(base.join("proj/docs/note.md"), "x").unwrap();
+        let query = base.join("*").join("docs");
+        let (split_base, segs) = mid_glob_segments(&query).expect("mid-path wildcard detected");
+        assert_eq!(split_base, base);
+        assert_eq!(segs, vec!["*".to_string(), "docs".to_string()]);
+        let mut hits = match_mid_glob(&split_base, &segs, &ExcludeSet::from_list(&[]));
+        hits.sort();
+        let names: Vec<String> = hits
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // `*` consumes exactly one level: the literal `/base/docs` child
+        // is NOT a `*/docs` match (the old code returned only that child).
+        assert_eq!(names, ["other/docs", "proj/docs"]);
+        // Last-component globs are not mid-path (direct listing applies).
+        assert!(mid_glob_segments(&base.join("*.md")).is_none());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn absolute_mid_glob_searches_descended_hits() {
+        // End-to-end pin for the gating fix: the last-component pattern here
+        // is the literal `docs` (no metacharacters), so a meta-gate on it
+        // alone would skip the live search entirely.
+        use super::search_absolute_glob;
+        use super::{ExcludeSet, PathStyle};
+        use std::fs;
+        let base = std::env::temp_dir().join(format!(
+            "hark-midglob-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("proj/docs")).unwrap();
+        fs::create_dir_all(base.join("other/docs")).unwrap();
+        let query = base.join("*").join("docs").to_string_lossy().into_owned();
+        let hits = search_absolute_glob(
+            &query,
+            &[],
+            &PathStyle::Label,
+            &[],
+            &ExcludeSet::from_list(&[]),
+        );
+        let mut titles: Vec<String> = hits.iter().map(|r| r.title.clone()).collect();
+        titles.sort();
+        assert_eq!(titles, ["docs", "docs"]);
+        assert!(hits.iter().all(|r| r.score == 45_000));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
