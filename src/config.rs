@@ -47,7 +47,11 @@ fn default_depth() -> usize {
 
 /// Roots that must never be deep-pinned — depth-6 walks explode the index.
 /// Shared by config load (strip bad pins) and engine promote (refuse).
-pub fn is_forbidden_deep_root(path: &Path) -> bool {
+/// `mounts` is passed in (audit P3): every call used to re-run
+/// `discover_mounts()` — a `/proc` parse plus a canonicalize per mount —
+/// so load paid it once per `deep_roots` entry and promote paid it per
+/// ancestor level walked.
+pub fn is_forbidden_deep_root(path: &Path, mounts: &[MountInfo]) -> bool {
     if path.as_os_str().is_empty() {
         return true;
     }
@@ -73,7 +77,7 @@ pub fn is_forbidden_deep_root(path: &Path) -> bool {
     }
     // Mount roots themselves are never deep-pinned — pin a subfolder instead.
     // Derived from this machine's real mount table, not a hardcoded prefix list.
-    if discover_mounts()
+    if mounts
         .iter()
         .any(|m| p == m.target || m.target.canonicalize().map(|t| p == t).unwrap_or(false))
     {
@@ -86,9 +90,9 @@ pub fn is_forbidden_deep_root(path: &Path) -> bool {
     )
 }
 
-fn is_overbroad_deep_root(s: &str) -> bool {
+fn is_overbroad_deep_root(s: &str, mounts: &[MountInfo]) -> bool {
     let p = PathBuf::from(expand_user_path(s));
-    is_forbidden_deep_root(&p)
+    is_forbidden_deep_root(&p, mounts)
 }
 
 fn expand_user_path(s: &str) -> String {
@@ -778,7 +782,9 @@ impl ConfigStore {
         }
         // Drop accidental mega-pins (home / / /home …) — depth-6 walks explode the index.
         let before_deep = cfg.index.deep_roots.len();
-        cfg.index.deep_roots.retain(|s| !is_overbroad_deep_root(s));
+        cfg.index
+            .deep_roots
+            .retain(|s| !is_overbroad_deep_root(s, &mounts));
         if cfg.index.deep_roots.len() != before_deep {
             changed = true;
         }

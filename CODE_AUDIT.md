@@ -1036,7 +1036,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** the thread-local single-entry memo is never cleared, so the last dragged image's texture (GPU memory) outlives window destruction. One ≤256 px texture — negligible.
 - **Remediation:** clear the memo on window hide, or accept as-is.
 
-#### P3 — thumbnail size-slot store/read mismatch (`src/ui/thumbnails.rs:19-24`, `118-121`)
+#### P3 — thumbnail size-slot store/read mismatch (`src/ui/thumbnails.rs:19-24`, `118-121`) — **no change needed 2026-09-05** (remediation states none required; staleness correctly rejected by mtime)
 
 - **Root cause:** `store_freedesktop_thumbnail` writes only `large`/`normal`, while the reader probes `large`, `normal`, `x-large`. Staleness is correctly rejected by mtime checks, so no stale entry is ever served — the cost is only needless regeneration/cosmetic sizing.
 - **Remediation:** none required; optionally skip the `x-large` probe or write `x-large` for large sources.
@@ -1084,7 +1084,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** connections are handled inline on one thread; each can cost up to 2 s of blocking read (connect, send nothing) plus 1 s of blocking `ok\n` write (send `toggle`, never read). No per-connection dispatch. 200 silent clients ≈ 6.7 min during which every real `request_toggle` burns its full 5×(20 ms+100 ms) retry budget and returns `false`, so `main.rs:48-50` falls through and spawns a full GTK Application instead of toggling. CWE-400.
 - **Remediation:** spawn a bounded detached thread per connection, or non-blocking accept loop; at minimum skip the ack write (client already treats no-reply as success, comment at `ipc.rs:41-47`).
 
-#### P2 — `accept` error tight-loops at 100% CPU under fd exhaustion (`src/ipc.rs:99-100`)
+#### P2 — `accept` error tight-loops at 100% CPU under fd exhaustion (`src/ipc.rs:99-100`) — **fixed 2026-09-05** (20 ms backoff + 5 s rate-limited log on accept errors)
 
 - **Root cause:** `let Ok(mut stream) = conn else { continue };` retries instantly on any accept error; under `EMFILE`/`ENFILE` accept fails instantly and forever → busy loop burning a core with no recovery and no log. CWE-772.
 - **Remediation:** match on the accept error; sleep 10–50 ms on `EMFILE`/`ENFILE`/`ENOMEM`, log others, break on `EINVAL`.
@@ -1124,7 +1124,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** `async_pending.set(0)` resets only inside `refresh_results`; if entry text changes without a refresh (programmatic `SetQuery` paths), the pending future passes the gen check but fails the text-equality bail at `2620` and returns without its decrement — the counter was never reset, so it drifts up and the spinner stays lit.
 - **Remediation:** decrement before the text-equality bail-out, or recompute pending from live job tokens.
 
-#### P3 — 5-minute live-cache TTL suppresses discovery of newly created files (`src/providers/files/live_cache.rs:17-18`, `files/mod.rs:246-259`)
+#### P3 — 5-minute live-cache TTL suppresses discovery of newly created files (`src/providers/files/live_cache.rs:17-18`, `files/mod.rs:246-259`) — **acknowledged tradeoff 2026-09-05** (no change; shortening the negative TTL trades walks for freshness)
 
 - **Root cause:** after a deep walk caches results (negative-cached 90 s when empty), external file creation is invisible until TTL expiry; `clear_live_cache()` is only invoked on trash (`engine.rs:417`). A design tradeoff, recorded as a finding because the negative-TTL window silently returns no results for a file that now exists.
 - **Remediation:** shorten `NEGATIVE_TTL`, or watch deep roots for invalidation.
@@ -1159,7 +1159,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** the remove button's `connect_clicked` closure strongly captures `row`, and `row.append(&rm)` puts the button inside the row — a cycle that keeps the subtree (labels, handlers, `Arc<Engine>` clones) alive for the process lifetime after detach/refill. Every alias/extra-folder/exclusion/deep-root removal and every list refill leaks one subtree in the long-lived daemon. CWE-401. The weak-capture pattern already exists in the codebase (`open_with.rs:88-91`).
 - **Remediation:** capture `row.downgrade()` and `upgrade()` inside the handler.
 
-#### P3 — text entries persist config to disk on every keystroke (`src/ui/settings.rs:1836-1845`, `2149-2155`, `2173-2182`, `2201-2210`)
+#### P3 — text entries persist config to disk on every keystroke (`src/ui/settings.rs:1836-1845`, `2149-2155`, `2173-2182`, `2201-2210`) — **fixed (pre-existing)** (`ConfigStore::update` defers via `pending_save`; verified 2026-09-05)
 
 - **Root cause:** all use `connect_changed`; `ConfigStore::update` ends with `save()` — a full JSON serialize + tmp write + rename per character. A 30-char endpoint = 30 disk writes, and each intermediate value is momentarily the live config consumed by the running translation path (sanitization at `config.rs:467-487` prevents bad values, but partial URLs go live).
 - **Remediation:** debounce ~500 ms or persist on focus-loss/`activate`.
@@ -1285,7 +1285,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** if the tmp write succeeds but the rename fails, the tmp file (potentially tens of MB) is never deleted; `clear_cache` removes it only on explicit force-rebuild. Accumulates across failures.
 - **Remediation:** `let _ = fs::remove_file(&tmp);` on rename failure.
 
-#### P3 — unreadable meta file disables the RAM fast path forever (`src/providers/files/index.rs:757-777`)
+#### P3 — unreadable meta file disables the RAM fast path forever (`src/providers/files/index.rs:757-777`) — **fixed 2026-09-05** (meta parse factored pure + tested; unreadable meta falls back to the cache file's own mtime)
 
 - **Root cause:** `cache_ttl_stale` returns true on any meta read failure; if the cache file landed but the meta write did not (read-only/full cache dir), every 45-minute `ensure_fresh` performs a full rebuild walk instead of the no-I/O fast path.
 - **Remediation:** fall back to the cache file's own mtime for the TTL decision when the meta is unreadable.
@@ -1295,7 +1295,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** on `strip_prefix` failure (path with `..` components), depth becomes the absolute-path component count, feeding `is_high_value_path`'s `depth <= 2` check — such entries lose mount-top ranking. The `as u16` cast itself is safe (walk depth clamped ≤6).
 - **Remediation:** return `None` (drop the entry) on `strip_prefix` failure instead of fabricating a depth.
 
-#### P3 — theme watch "debounce" schedules one timer per monitor event (`src/theme/mod.rs:197-203`)
+#### P3 — theme watch "debounce" schedules one timer per monitor event (`src/theme/mod.rs:197-203`) — **fixed (pre-existing)** (`scheme_debounce` take/remove/re-arm coalesces bursts; verified 2026-09-05)
 
 - **Root cause:** unlike `reload()` (`136-147`), which removes a pending source id before re-arming, the FileMonitor callback does not track prior timers — N events in a burst produce N full `apply()` cycles (disk read + JSON parse + CSS re-inject). Idempotent but wasted work; the "Debounce" comment is not implemented.
 - **Remediation:** store the pending `SourceId` like `reload_debounce`, remove-and-re-arm each event.
@@ -1320,7 +1320,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** `cols[0].parse().ok()?` uses the function-level `Option`, so one non-pid line aborts the whole scan — "(no daemon process found)" while a daemon is running.
 - **Remediation:** `let Ok(pid) = cols[0].parse() else { continue; };`
 
-#### P3 — bench timing confounded by concurrent index warm-up threads (`src/bench.rs:100-134`)
+#### P3 — bench timing confounded by concurrent index warm-up threads (`src/bench.rs:100-134`) — **fixed (pre-existing)** (waits for index-ready + apps-loaded before the timed section; verified 2026-09-05)
 
 - **Root cause:** `spawn_warm()` starts the file-index walker concurrently with the timed `bench_query` loop; CPU contention from the walker inflates `median_us`/`p95_us` non-deterministically on low-core machines.
 - **Remediation:** wait until `!index_progress().running` before the timed section, or note the confounder in the output header.
@@ -1539,7 +1539,7 @@ All 34 tracker items marked "fixed" were re-checked against the current source; 
 - **Root cause:** classic exists-check-then-act; a file deleted in between yields the generic gio-exit message instead of "no longer exists". Not exploitable (argv-only, `--` separator, no shell). CWE-367 (cosmetic here).
 - **Remediation:** drop the pre-check; map gio's exit status/stderr to the friendly message.
 
-#### P3 — icon resolve cache never invalidated on icon-theme change (`src/ui/rows.rs:76-78`, `664-676`)
+#### P3 — icon resolve cache never invalidated on icon-theme change (`src/ui/rows.rs:76-78`, `664-676`) — **fixed 2026-09-05** (`ensure_icon_theme_watcher`: connect-once `IconTheme::changed` → clear both caches, wired in `ThemeManager::new`)
 
 - **Root cause:** the cache is cleared only by the symbolic-icons toggle; nothing connects `IconTheme::changed`. After installing a theme where a previously-missing icon name now resolves, rows keep the generic fallback for up to 512 entries indefinitely.
 - **Remediation:** `IconTheme::for_display(...).connect_changed(...)` → `clear_icon_resolve_cache()`.
@@ -1961,16 +1961,16 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P3 | 25-row Vec fully cloned per deep merge ✅ fixed 2026-09-05 | `ui/mod.rs:2833-2839` | 21 |
 | P3 | Wheel-navigate rebinds all 25 rows (amplifies stat-per-row) ✅ fixed 2026-09-05 (short-circuit; rotate kept by design) | `ui/rows.rs:211-220` | 17 |
 | P3 | Per-result usage lock acquisition per keystroke; top(20) clones ✅ fixed 2026-09-05 (`boost_many`; `top(20)` kept, single-guard infrequent path) | `engine.rs:281-284` | 14 |
-| P3 | `discover_mounts()` re-executed per deep_roots entry at load | `config.rs:738-742` | 13 |
-| P3 | Settings text entries persist config per keystroke (30 writes per URL) | `settings.rs:1836-2210` | 14 |
-| P3 | Theme monitor schedules one 80 ms apply() per event (no debounce) | `theme/mod.rs:197-203` | 15 |
-| P3 | `accept` error tight-loops at 100% CPU under fd exhaustion | `ipc.rs:99-100` | 14 |
-| P3 | Bench timing confounded by concurrent index warm-up | `bench.rs:100-134` | 15 |
-| P3 | Thumbnail size-slot store/read mismatch (needless regeneration) | `ui/thumbnails.rs:19-121` | 13 |
-| P3 | Icon resolve cache never invalidated on icon-theme change | `ui/rows.rs:76-78` | 17 |
-| P3 | 5-min live-cache TTL hides newly created files (negative cache 90 s) | `live_cache.rs:17-18` | 14 |
-| P3 | Unreadable meta file forces full rebuild every cycle | `files/index.rs:757-777` | 15 |
-| P3 | Memory duplication: `path_lower`+`name_lower` full copies per index entry | `files/index.rs:364-382` | 15 |
+| P3 | `discover_mounts()` re-executed per deep_roots entry at load ✅ fixed 2026-09-05 | `config.rs:738-742` | 13 |
+| P3 | Settings text entries persist config per keystroke (30 writes per URL) ✅ fixed (pre-existing deferred save; verified 2026-09-05) | `settings.rs:1836-2210` | 14 |
+| P3 | Theme monitor schedules one 80 ms apply() per event (no debounce) ✅ fixed (pre-existing `scheme_debounce` coalescing; verified 2026-09-05) | `theme/mod.rs:197-203` | 15 |
+| P3 | `accept` error tight-loops at 100% CPU under fd exhaustion ✅ fixed 2026-09-05 | `ipc.rs:99-100` | 14 |
+| P3 | Bench timing confounded by concurrent index warm-up ✅ fixed (pre-existing wait-for-ready gates; verified 2026-09-05) | `bench.rs:100-134` | 15 |
+| P3 | Thumbnail size-slot store/read mismatch (needless regeneration) ✅ no change needed 2026-09-05 (remediation: none required — staleness correctly rejected) | `ui/thumbnails.rs:19-121` | 13 |
+| P3 | Icon resolve cache never invalidated on icon-theme change ✅ fixed 2026-09-05 | `ui/rows.rs:76-78` | 17 |
+| P3 | 5-min live-cache TTL hides newly created files (negative cache 90 s) ✅ acknowledged tradeoff 2026-09-05 (no change — shortening raises walk cost; audit remediation is either/or) | `live_cache.rs:17-18` | 14 |
+| P3 | Unreadable meta file forces full rebuild every cycle ✅ fixed 2026-09-05 | `files/index.rs:757-777` | 15 |
+| P3 | Memory duplication: `path_lower`+`name_lower` full copies per index entry ✅ no change 2026-09-05 (sharing is fold-unsafe: locale/context-sensitive casing means path suffix ≠ name fold) | `files/index.rs:364-382` | 15 |
 
 ### 🐛 Logic / Correctness
 

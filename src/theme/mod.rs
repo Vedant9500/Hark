@@ -109,6 +109,9 @@ impl ThemeManager {
         });
         mgr.apply();
         mgr.watch();
+        // Icon theme installs/changes must drop the memoized row-icon
+        // resolutions (audit P3) — otherwise new themes never take effect.
+        crate::ui::rows::ensure_icon_theme_watcher();
         mgr
     }
 

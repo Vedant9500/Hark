@@ -92,8 +92,25 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
     // rename in `bind_socket` — nothing to fix up here.
 
     thread::spawn(move || {
+        // Rate-limit accept-error logging (fd exhaustion would spam).
+        let mut last_err_log = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         for conn in listener.incoming() {
-            let Ok(stream) = conn else { continue };
+            let stream = match conn {
+                Ok(s) => s,
+                Err(e) => {
+                    // Accept fails instantly and forever under fd exhaustion
+                    // (EMFILE/ENFILE) — instant retry would busy-loop a core
+                    // at 100% with no recovery (audit P3). Back off instead.
+                    if last_err_log.elapsed() >= Duration::from_secs(5) {
+                        eprintln!("hark: ipc accept error: {e}");
+                        last_err_log = std::time::Instant::now();
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
             // Handle each client on its own short-lived thread: the accept
             // loop must never block on a slow/silent client, or one stalled
             // connection wedges every later hotkey toggle. The read timeout

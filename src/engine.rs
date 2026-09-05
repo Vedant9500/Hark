@@ -693,7 +693,7 @@ impl Engine {
         };
         // Canonicalize when possible so `/home/foo/../foo` matches home checks.
         let abs = abs.canonicalize().unwrap_or(abs);
-        if crate::config::is_forbidden_deep_root(&abs) {
+        if crate::config::is_forbidden_deep_root(&abs, &crate::config::discover_mounts()) {
             return;
         }
         let s = abs.to_string_lossy().to_string();
@@ -835,10 +835,13 @@ fn auto_promote_deep_root(
         "Makefile",
         "meson.build",
     ];
+    // Walk up a few levels looking for a project marker. Mounts resolved
+    // once (audit P3) — the per-level check below must not re-discover.
+    let mounts = crate::config::discover_mounts();
     let mut cur = start;
     for _ in 0..6 {
         // Stop before promoting home / filesystem root even if they have markers.
-        if crate::config::is_forbidden_deep_root(&cur) {
+        if crate::config::is_forbidden_deep_root(&cur, &mounts) {
             break;
         }
         for m in MARKERS {
@@ -870,7 +873,7 @@ fn promote_deep_root_arcs(
             .unwrap_or_else(|_| path.to_path_buf())
     };
     let abs = abs.canonicalize().unwrap_or(abs);
-    if crate::config::is_forbidden_deep_root(&abs) {
+    if crate::config::is_forbidden_deep_root(&abs, &crate::config::discover_mounts()) {
         return;
     }
     let s = abs.to_string_lossy().to_string();
@@ -905,9 +908,10 @@ mod deep_root_tests {
 
     #[test]
     fn forbids_slash_and_home() {
-        assert!(is_forbidden_deep_root(Path::new("/")));
+        let mounts = crate::config::discover_mounts();
+        assert!(is_forbidden_deep_root(Path::new("/"), &mounts));
         if let Some(home) = dirs::home_dir() {
-            assert!(is_forbidden_deep_root(&home));
+            assert!(is_forbidden_deep_root(&home, &mounts));
         }
     }
 
@@ -915,7 +919,10 @@ mod deep_root_tests {
     fn allows_project_subdir() {
         if let Some(home) = dirs::home_dir() {
             let project = home.join("hark");
-            assert!(!is_forbidden_deep_root(&project));
+            assert!(!is_forbidden_deep_root(
+                &project,
+                &crate::config::discover_mounts()
+            ));
         }
     }
 

@@ -103,6 +103,28 @@ pub(crate) fn clear_icon_resolve_cache() {
     ICON_FILE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
+/// Watch the active display's icon theme (audit P3 Pass 17): without this,
+/// an installed theme that newly resolves a previously-missing icon name
+/// never takes effect — rows keep the generic fallback for up to 512
+/// entries indefinitely. Connect-once; headless (tests) has no display.
+pub(crate) fn ensure_icon_theme_watcher() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static CONNECTED: AtomicBool = AtomicBool::new(false);
+    if CONNECTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let theme = gtk::IconTheme::for_display(&display);
+    // Connection lives on the shared per-display IconTheme singleton;
+    // no handle kept (explicit disconnect never needed — cache clear is
+    // idempotent and the theme object outlives the process UI).
+    theme.connect_changed(|_| {
+        clear_icon_resolve_cache();
+    });
+}
+
 pub(crate) fn set_highlight_accent(hex: String) {
     HIGHLIGHT_ACCENT.with(|a| *a.borrow_mut() = hex);
 }

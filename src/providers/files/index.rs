@@ -781,9 +781,17 @@ fn now_secs() -> u64 {
 }
 
 fn cache_ttl_stale() -> bool {
-    let Ok(s) = fs::read_to_string(meta_path()) else {
-        return true;
-    };
+    match fs::read_to_string(meta_path()) {
+        Ok(s) => meta_contents_stale(&s),
+        // Meta unreadable (read-only/full cache dir): fall back to the cache
+        // file's own mtime so one failed meta write doesn't force a full
+        // rebuild walk every cycle (audit P3).
+        Err(_) => cache_file_stale_fallback(),
+    }
+}
+
+/// Pure TTL decision over meta contents (`version ts fingerprint`).
+fn meta_contents_stale(s: &str) -> bool {
     let parts: Vec<&str> = s.split_whitespace().collect();
     // meta: version ts fingerprint
     if parts.len() < 2 {
@@ -796,6 +804,16 @@ fn cache_ttl_stale() -> bool {
         return true;
     };
     ver != CACHE_VERSION || now_secs().saturating_sub(ts) > INDEX_TTL_SECS
+}
+
+/// TTL decision from the cache file's own mtime; missing/odd mtime → stale.
+fn cache_file_stale_fallback() -> bool {
+    fs::metadata(cache_path())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs() > INDEX_TTL_SECS)
+        .unwrap_or(true)
 }
 
 fn load_cache() -> Option<(Vec<IndexedPath>, String, bool)> {
@@ -1034,5 +1052,26 @@ mod tests {
             .clone();
         assert!(Arc::ptr_eq(&a, &b));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn meta_contents_ttl_decision() {
+        // Audit P3: fresh meta → not stale; old version / old ts / garbage
+        // → stale (previous inline behavior, now unit-pinned).
+        let now = now_secs();
+        assert!(!meta_contents_stale(&format!(
+            "{CACHE_VERSION} {now} abc123"
+        )));
+        assert!(meta_contents_stale(&format!(
+            "{} {} abc123",
+            CACHE_VERSION,
+            now.saturating_sub(INDEX_TTL_SECS + 1)
+        )));
+        assert!(meta_contents_stale(&format!(
+            "{} {now} abc123",
+            CACHE_VERSION + 1
+        )));
+        assert!(meta_contents_stale("garbage"));
+        assert!(meta_contents_stale("8"));
     }
 }
