@@ -770,8 +770,7 @@ impl Launcher {
                         return;
                     }
                     update_footer(&results, 0, &footer_action);
-                    let item = results.borrow().first().cloned();
-                    preview.update(item.as_ref());
+                    refresh_preview_at(&results, 0, &preview);
                     return;
                 }
 
@@ -780,8 +779,7 @@ impl Launcher {
                     return;
                 }
                 update_footer(&results, idx, &footer_action);
-                let item = results.borrow().get(idx).cloned();
-                preview.update(item.as_ref());
+                refresh_preview_at(&results, idx, &preview);
             });
         }
 
@@ -977,12 +975,13 @@ impl Launcher {
                             // ⌘⇧↵ (Ctrl+Shift+Enter) copies question + answer.
                             // Instant close on copy — no toast, no linger.
                             let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-                            let item = results.borrow().get(selected.get()).cloned();
-                            let text = item.and_then(|it| {
+                            // Scoped borrow: derive the owned copy-text without
+                            // cloning the whole row (same class as audit P3).
+                            let text = results.borrow().get(selected.get()).and_then(|it| {
                                 if shift {
-                                    formula_text(&it)
+                                    formula_text(it)
                                 } else {
-                                    unformatted_value(&it)
+                                    unformatted_value(it)
                                 }
                             });
                             if let Some(text) = text {
@@ -1225,8 +1224,8 @@ impl Launcher {
                     {
                         // Ctrl+P → toggle media preview panel
                         preview.toggle_user_hidden();
-                        let item = results.borrow().get(selected.get()).cloned();
-                        preview.update(item.as_ref());
+                        let sel = selected.get();
+                        refresh_preview_at(&results, sel, &preview);
                         glib::Propagation::Stop
                     }
                     _ => glib::Propagation::Proceed,
@@ -1967,8 +1966,8 @@ fn run_secondary_action<F: Fn() + 'static>(
                 ExecuteOutcome::TogglePreview => {
                     preview.toggle_user_hidden();
                     // Re-apply current selection so the panel shows again when un-hidden.
-                    let item = results.borrow().get(selected.get()).cloned();
-                    preview.update(item.as_ref());
+                    let sel = selected.get();
+                    refresh_preview_at(&results, sel, &preview);
                     search.grab_focus_without_selecting();
                 }
             }
@@ -2022,31 +2021,35 @@ fn rebind_results_from_cache(
     if drag_session.is_active() {
         return;
     }
-    let found = results.borrow().clone();
-    let no_hits = found.is_empty();
-    let idx = selected.get().min(found.len().saturating_sub(1));
-    empty.set_visible(no_hits);
-    empty.set_vexpand(no_hits);
-    list.set_visible(!no_hits);
-
+    // Render directly from the borrowed vec (audit P3): the old
+    // `results.borrow().clone()` copied all 25 rows per rebind.
     {
-        let mut pool = row_pool.borrow_mut();
-        if found.is_empty() {
-            pool.clear(list);
-        } else {
-            pool.apply(list, &found, icon_size, symbolic_icons, None);
-        }
-    }
+        let found = results.borrow();
+        let no_hits = found.is_empty();
+        let idx = selected.get().min(found.len().saturating_sub(1));
+        empty.set_visible(no_hits);
+        empty.set_vexpand(no_hits);
+        list.set_visible(!no_hits);
 
-    selected.set(if found.is_empty() { 0 } else { idx });
+        {
+            let mut pool = row_pool.borrow_mut();
+            if found.is_empty() {
+                pool.clear(list);
+            } else {
+                pool.apply(list, &found, icon_size, symbolic_icons, None);
+            }
+        }
+
+        selected.set(if found.is_empty() { 0 } else { idx });
+    }
 
     if let Some(row) = row_pool.borrow().row_at(selected.get()).cloned() {
         suppress_select.set(true);
         list.select_row(Some(&row));
         suppress_select.set(false);
         update_footer(results, selected.get(), footer_action);
-        let item = results.borrow().get(selected.get()).cloned();
-        preview.update(item.as_ref());
+        let sel = selected.get();
+        refresh_preview_at(results, sel, preview);
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action);
@@ -2290,6 +2293,21 @@ fn conv_swap_to_front(rs: &mut [SearchResult], row: usize) {
     }
 }
 
+/// Push row `idx` into the preview without cloning the `SearchResult`.
+///
+/// The old pattern (`results.borrow().first().cloned()` → `update(opt.as_ref())`)
+/// cloned title/subtitle/id/action/`PathBuf` per keystroke just to pass `&`.
+/// `PreviewPanel::update` clones internally what it retains, so a scoped
+/// borrow alive only for the call is sufficient (audit P3 Pass 21).
+fn refresh_preview_at(
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    idx: usize,
+    preview: &Rc<PreviewPanel>,
+) {
+    let borrowed = results.borrow();
+    preview.update(borrowed.get(idx));
+}
+
 // Mode icons resolve candidate chains against the active theme at runtime:
 // no single name ships everywhere (`convert-symbolic` is breeze-only;
 // Adwaita/Papirus have neither it nor a currency glyph).
@@ -2488,8 +2506,7 @@ fn refresh_results(
                         list2.select_row(Some(&row));
                         suppress2.set(false);
                         update_footer(&results2, 0, &footer2);
-                        let item = results2.borrow().first().cloned();
-                        preview2.update(item.as_ref());
+                        refresh_preview_at(&results2, 0, &preview2);
                     }
                 }
                 glib::ControlFlow::Break
@@ -2536,8 +2553,7 @@ fn refresh_results(
             list.select_row(Some(&row));
             suppress_select.set(false);
             update_footer(results, 0, footer_action);
-            let item = results.borrow().first().cloned();
-            preview.update(item.as_ref());
+            refresh_preview_at(results, 0, preview);
         } else {
             list.select_row(Option::<&ListBoxRow>::None);
             update_footer(results, 0, footer_action);
@@ -2793,11 +2809,13 @@ fn apply_translate_hits(
         return;
     }
 
-    let mut merged = results.borrow().clone();
-    merged.retain(|r| !crate::providers::translate::is_pending_result(r));
+    // Take ownership instead of `borrow().clone()` (audit P3): existing rows
+    // move into `out`, only id `String`s clone for the dedup set.
+    let mut existing = std::mem::take(&mut *results.borrow_mut());
+    existing.retain(|r| !crate::providers::translate::is_pending_result(r));
     let mut out = hits.to_vec();
     let mut seen: std::collections::HashSet<String> = out.iter().map(|r| r.id.clone()).collect();
-    for r in merged {
+    for r in existing {
         if seen.insert(r.id.clone()) {
             out.push(r);
         }
@@ -2824,8 +2842,7 @@ fn apply_translate_hits(
         list.select_row(Some(&row));
         suppress_select.set(false);
         update_footer(results, 0, footer_action);
-        let item = results.borrow().first().cloned();
-        preview.update(item.as_ref());
+        refresh_preview_at(results, 0, preview);
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action);
@@ -2856,7 +2873,10 @@ fn apply_deep_hits(
 
     let prev_id = results.borrow().get(selected.get()).map(|r| r.id.clone());
 
-    let mut merged = results.borrow().clone();
+    // Take ownership instead of `borrow().clone()` (audit P3): existing rows
+    // move, only id `String`s clone for the dedup set. Restored untouched
+    // when nothing new arrives.
+    let mut merged = std::mem::take(&mut *results.borrow_mut());
     let mut seen: std::collections::HashSet<String> = merged.iter().map(|r| r.id.clone()).collect();
     let mut added = 0usize;
     for r in deep_hits {
@@ -2866,6 +2886,7 @@ fn apply_deep_hits(
         }
     }
     if added == 0 {
+        *results.borrow_mut() = merged;
         return;
     }
 
@@ -2901,8 +2922,7 @@ fn apply_deep_hits(
         list.select_row(Some(&row));
         suppress_select.set(false);
         update_footer(results, new_sel, footer_action);
-        let item = results.borrow().get(new_sel).cloned();
-        preview.update(item.as_ref());
+        refresh_preview_at(results, new_sel, preview);
     } else {
         list.select_row(Option::<&ListBoxRow>::None);
         update_footer(results, 0, footer_action);

@@ -64,7 +64,10 @@ pub(crate) struct IndexState {
     /// Cap was hit during the pinned deep-roots phase → surfaced as a warning.
     pub capped_by_deep: AtomicBool,
     pub config: Arc<ConfigStore>,
-    pub mounts: RwLock<Vec<MountInfo>>,
+    /// Mount snapshot shared per search via cheap `Arc` clone (audit P3
+    /// Pass 21): mounts change only on mount events, so the per-keystroke
+    /// deep `Vec` clone (2 heap allocs per `MountInfo`) is pure churn.
+    pub mounts: RwLock<Arc<[MountInfo]>>,
     fingerprint: RwLock<String>,
     /// Ensures only one filesystem walk/cache write runs at a time.
     build_lock: Mutex<()>,
@@ -92,7 +95,7 @@ impl IndexState {
             capped: AtomicBool::new(false),
             capped_by_deep: AtomicBool::new(false),
             config,
-            mounts: RwLock::new(discover_mounts()),
+            mounts: RwLock::new(discover_mounts().into()),
             fingerprint: RwLock::new(String::new()),
             build_lock: Mutex::new(()),
         }
@@ -121,7 +124,7 @@ impl IndexState {
                     return; // no I/O beyond meta TTL file already checked
                 }
                 // Config roots/depth/excludes changed, or mount set in RAM is stale.
-                *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
+                *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts().into();
                 let fp = self.compute_fingerprint();
                 if !mem_fp.is_empty() && mem_fp == fp {
                     return;
@@ -131,7 +134,7 @@ impl IndexState {
             }
         }
 
-        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
+        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts().into();
         let fp = self.compute_fingerprint();
 
         if let Some((items, cached_fp, cached_by_deep)) = load_cache() {
@@ -155,7 +158,7 @@ impl IndexState {
 
     pub fn force_rebuild(&self) {
         clear_cache();
-        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts();
+        *self.mounts.write().unwrap_or_else(|p| p.into_inner()) = discover_mounts().into();
         let fp = self.compute_fingerprint();
         self.run_build(fp, true);
     }
@@ -203,7 +206,13 @@ impl IndexState {
 
     fn compute_fingerprint(&self) -> String {
         let cfg = self.config.snapshot();
-        let mounts = self.mounts.read().unwrap_or_else(|p| p.into_inner());
+        // Snapshot the Arc, then drop the lock before the loop: the guard
+        // must not be held across hashing (and previously across WalkDir).
+        let mounts: Arc<[MountInfo]> = self
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let mut roots: Vec<String> = Vec::new();
         if cfg.index.include_home {
             if let Some(home) = dirs::home_dir() {
@@ -243,6 +252,7 @@ impl IndexState {
 
     fn build_index(&self) -> Vec<IndexedPath> {
         let cfg = self.config.snapshot();
+        // Cheap `Arc` snapshot (audit P3): no per-build deep `Vec` clone.
         let mounts = self
             .mounts
             .read()
@@ -257,7 +267,7 @@ impl IndexState {
                 roots.push(home);
             }
         }
-        for m in &mounts {
+        for m in mounts.iter() {
             let key = m.target.to_string_lossy().to_string();
             let enabled = cfg.index.include_mounts.get(&key).copied().unwrap_or(true);
             if enabled && m.target.is_dir() {
@@ -998,6 +1008,31 @@ mod tests {
         assert!(index_entry(&link, &dir, false).is_none());
 
         std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mounts_snapshot_shares_arc_allocation() {
+        // Audit P3 Pass 21: per-search snapshots must be `Arc` bumps, not
+        // deep `Vec` copies — two consecutive snapshots share one allocation.
+        let dir = std::env::temp_dir().join(format!("hark_cfg_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(ConfigStore::with_path(
+            crate::config::HarkConfig::default(),
+            dir.join("config.json"),
+        ));
+        let state = IndexState::new(store);
+        let a = state
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let b = state
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert!(Arc::ptr_eq(&a, &b));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

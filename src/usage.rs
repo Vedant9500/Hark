@@ -150,6 +150,22 @@ impl UsageStore {
         frecency(e.count, e.last, now_secs())
     }
 
+    /// Batched `boost` under a single read guard (audit P3 Pass 14): the
+    /// engine scores ~45 results per keystroke, and one guard + one clock
+    /// read beats ~45 of each. Output aligns with `ids`.
+    pub fn boost_many(&self, ids: &[&str]) -> Vec<i64> {
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
+        let now = now_secs();
+        ids.iter()
+            .map(|id| {
+                g.entries
+                    .get(*id)
+                    .map(|e| frecency(e.count, e.last, now))
+                    .unwrap_or(0)
+            })
+            .collect()
+    }
+
     /// Top ids by frecency, highest first.
     pub fn top(&self, n: usize) -> Vec<(String, i64)> {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
@@ -421,6 +437,23 @@ mod usage_tests {
         let g = loaded.inner.read().unwrap();
         let e = g.entries.get("app:evil").expect("entry kept");
         assert_eq!(e.count, MAX_COUNT, "poisoned count clamped on load");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boost_many_matches_single_boosts() {
+        // Audit P3 (Pass 14): batched scoring must equal per-id `boost`.
+        let (store, dir) = temp_store();
+        store.record("app:a");
+        store.record("app:a");
+        store.record("app:b");
+        let ids = ["app:a", "app:b", "app:ghost"];
+        let batched = store.boost_many(&ids);
+        let singles: Vec<i64> = ids.iter().map(|id| store.boost(id)).collect();
+        assert_eq!(batched, singles);
+        assert!(batched[0] > 0 && batched[1] > 0);
+        assert_eq!(batched[2], 0);
+        assert!(store.boost_many(&[]).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

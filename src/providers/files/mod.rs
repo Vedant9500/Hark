@@ -92,7 +92,7 @@ impl FileProvider {
         index.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
         *self.state.index.write().unwrap_or_else(|p| p.into_inner()) = index;
         // No mounted filesystems; no hot set — deterministic for ranking tests.
-        *self.state.mounts.write().unwrap_or_else(|p| p.into_inner()) = Vec::new();
+        *self.state.mounts.write().unwrap_or_else(|p| p.into_inner()) = Vec::new().into();
     }
 
     pub fn index_progress(&self) -> IndexProgress {
@@ -154,7 +154,13 @@ impl FileProvider {
             .unwrap_or("?")
             .to_string();
         let path_style = self.state.config.with(|c| c.index.path_style);
-        let mounts = self.state.mounts.read().unwrap_or_else(|p| p.into_inner());
+        // Cheap `Arc` snapshot; guard dropped before `pretty_path` work.
+        let mounts: std::sync::Arc<[crate::config::MountInfo]> = self
+            .state
+            .mounts
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         Some(SearchResult {
             id: format!("path:{}", path.display()),
             title: name,
@@ -179,14 +185,18 @@ impl FileProvider {
     /// When `deep == Skip`, any live-cache hits for this query are merged in so
     /// retypes stay instant without re-walking.
     pub fn search_with(&self, query: &str, allow_fuzzy: bool, deep: DeepMode) -> Vec<SearchResult> {
+        // Normalize once: `get` + `put` below shared one `to_lowercase`
+        // instead of three (audit P3). Key semantics stay in `LiveCache`.
+        let cache_key = LiveCache::key_for(query);
         // Full cache hit for a deep mode: skip the walk entirely.
         if deep != DeepMode::Skip {
-            if let Some(cached) = self.live_cache.get(query) {
+            if let Some(cached) = self.live_cache.get_by_key(&cache_key) {
                 return cached.to_vec();
             }
         }
 
         // Cheap Arc config + mounts snapshot; index lock only for scan/plan.
+        // `mounts.clone()` is an `Arc` bump, not a deep `Vec` copy (audit P3).
         let cfg = self.state.config.snapshot();
         let mounts = self
             .state
@@ -240,9 +250,9 @@ impl FileProvider {
         if deep != DeepMode::Skip {
             // Move into Arc cache once; return a Vec clone of the shared slice
             // (avoids holding two full owned Vecs like `put(results.clone())`).
-            return self.live_cache.put(query, results);
+            return self.live_cache.put_with_key(&cache_key, results);
         }
-        if let Some(cached) = self.live_cache.get(query) {
+        if let Some(cached) = self.live_cache.get_by_key(&cache_key) {
             // UI path: merge previous live hits into index-only results.
             merge_cached(&mut results, cached.as_ref());
         }

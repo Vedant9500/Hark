@@ -1129,7 +1129,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** after a deep walk caches results (negative-cached 90 s when empty), external file creation is invisible until TTL expiry; `clear_live_cache()` is only invoked on trash (`engine.rs:417`). A design tradeoff, recorded as a finding because the negative-TTL window silently returns no results for a file that now exists.
 - **Remediation:** shorten `NEGATIVE_TTL`, or watch deep roots for invalidation.
 
-#### P3 — per-result usage lock acquisition per keystroke on the main loop (`src/engine.rs:281-284`)
+#### P3 — per-result usage lock acquisition per keystroke on the main loop (`src/engine.rs:281-284`) — **fixed 2026-09-05** (`UsageStore::boost_many`: one guard + one clock read; parity test; `top(20)` kept — single-guard empty-query path)
 
 - **Root cause:** `usage.boost(&r.id)` takes a fresh `RwLock` read guard once per result (up to ~45 × per keystroke on the GTK main loop); `top(20)` on every empty-state render also clones 20 `String`s. Uncontended cost is small but repeated hot-path work.
 - **Remediation:** batch API (`boost_snapshot`) or hold one read guard across the boost loop.
@@ -1391,7 +1391,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** `cache_get` deserializes a `CacheEntry` and serves `translated` verbatim without comparing the entry's `q`/`source`/`target` to the requested job; the cache key is a trivially computable FNV-64. The `cache_dir()` fallback chain can land in `/tmp/hark/translate` (world-writable, no O_NOFOLLOW, no ownership check — contrast the hardened `fx.rs:329-357`). A local attacker pre-creates a cache file whose key matches a text they expect the user to translate, and the launcher displays and copies the attacker's string; also wrong-text hash collisions. CWE-349/CWE-345.
 - **Remediation:** verify `e.q`/`e.source`/`e.target` after deserialize; replicate the fx.rs 0700-ownership + O_NOFOLLOW guards; reject the `/tmp` fallback.
 
-#### P2 — code preview of a ≤2 MiB single-line file freezes the main loop (`src/ui/preview.rs:775-779`)
+#### P2 — code preview of a ≤2 MiB single-line file freezes the main loop (`src/ui/preview.rs:775-779`) — **fixed 2026-09-05** (worker-side `prepare_code_preview`: 2000-char line cap matching upstream GtkSourceView cutoff, 500-line display cap, highlight off for minified/huge files; 4 regression tests)
 
 - **Root cause:** the only gate is byte size (`MAX_CODE_BYTES = 2 MiB`); `set_text` + `set_language` (full-buffer re-highlight) + char-wrap of a ~2M-char minified line run on the GTK main thread — seconds to minutes of unresponsiveness, repeatable by keyboard navigation onto any minified asset. CWE-400.
 - **Remediation:** cap line count (plain label past ~20k lines) and longest single line (skip highlight or truncate past ~5,000 chars), measured while streaming in the worker.
@@ -1544,7 +1544,7 @@ All 34 tracker items marked "fixed" were re-checked against the current source; 
 - **Root cause:** the cache is cleared only by the symbolic-icons toggle; nothing connects `IconTheme::changed`. After installing a theme where a previously-missing icon name now resolves, rows keep the generic fallback for up to 512 entries indefinitely.
 - **Remediation:** `IconTheme::for_display(...).connect_changed(...)` → `clear_icon_resolve_cache()`.
 
-#### P3 — `icon_file_path` stats the filesystem per row per keystroke on the main thread (`src/ui/rows.rs:606-610`, called at `570`)
+#### P3 — `icon_file_path` stats the filesystem per row per keystroke on the main thread (`src/ui/rows.rs:606-610`, called at `570`) — **fixed 2026-09-05** (FIFO-memoized `Option<PathBuf>`, cleared with the theme cache; positive/negative cache tests)
 
 - **Root cause:** the file-path branch short-circuits before the resolve cache; `Icon=/path/app.png`-style entries incur a synchronous `stat()` for every bound row on every keystroke — on a cold/hung NFS home this freezes input handling.
 - **Remediation:** cache the `(requested_path) → Option<PathBuf>` result or resolve asynchronously.
@@ -1554,12 +1554,12 @@ All 34 tracker items marked "fixed" were re-checked against the current source; 
 - **Root cause:** `cur` is read from `visible_child_name()`, which GTK updates immediately while the 160–220 ms transition still runs; a second wheel press within the window writes the new value into the half-hidden panel and flips back to it — visible stutter. (Distinct from the Pass 13 stacked-timer finding; this is the Stack state machine itself.)
 - **Remediation:** track the side in a `Cell<bool>` on `PooledRow`, or coalesce if a transition is still running.
 
-#### P3 — `highlight_markup` is O(n²) in title length (`src/ui/rows.rs:118-119`)
+#### P3 — `highlight_markup` is O(n²) in title length (`src/ui/rows.rs:118-119`) — **fixed 2026-09-05** (`enumerate` index is the char index; long-CJK tail test)
 
 - **Root cause:** `title[..byte].chars().count()` re-scans from byte 0 per character; a 200-char CJK title costs ~40k iterations per row per keystroke × up to 25 rows.
 - **Remediation:** `for (pos, (byte, ch)) in title.char_indices().enumerate()` — the enumerate index is already the char index.
 
-#### P3 — wheel-navigate rebinds all 25 rows instead of the swapped two (`src/ui/rows.rs:211-220`, `ui/mod.rs:752-758`)
+#### P3 — wheel-navigate rebinds all 25 rows instead of the swapped two (`src/ui/rows.rs:211-220`, `ui/mod.rs:752-758`) — **fixed 2026-09-05** (content `BoundSig` short-circuit in `bind`; rotate kept — binding 2 slots would break the documented cyclic order; stat/markup amplifiers already cached)
 
 - **Root cause:** `conv_swap_to_front` only permutes order, but `apply` has no diffing — every arrow press on a conversion set redoes icon resolution (amplifying the stat-per-row finding), markup rebuild, and label writes for the whole list inside a `row_selected` callback.
 - **Remediation:** bind only slots 0 and the swapped item's old position, or short-circuit `bind` by item id.
@@ -1851,22 +1851,22 @@ Areas targeted per the Pass 20 close-out. All line numbers verified against curr
 - **Root cause:** one whole-tree `from_str::<HarkConfig>`; a single wrong-typed field (`max_depth: "3"`) resets **all** sections — index roots, mounts, open_with, UI — to defaults (mitigated by, but distinct from, the Pass 13 backup/unknown-key findings: field-level serde defaults never engage because the struct aborts). CWE-754/CWE-20.
 - **Remediation:** per-section deserialization or field-level `Result` wrappers so a bad field degrades only that field.
 
-#### P3 — redundant query lowercasing: up to 5× per keystroke (`engine.rs:206`, `apps.rs:230`, `search/mod.rs:122`, `typos.rs:338`, `live_cache.rs:102` via `files/mod.rs:274`)
+#### P3 — redundant query lowercasing: up to 5× per keystroke (`engine.rs:206`, `apps.rs:230`, `search/mod.rs:122`, `typos.rs:338`, `live_cache.rs:102` via `files/mod.rs:274`) — **fixed 2026-09-05 (intra-call only)** (`search_with` normalizes once via `get_by_key`/`put_with_key`; cross-layer threading deferred — `key_for` strips force-prefixes while engine `ql` does not, so one shared string would corrupt cache keys)
 
 - **Root cause:** each layer independently normalizes because `Engine::search` passes raw `&str` down; five `to_lowercase()` allocations per keystroke for the same short string. P3 perf.
 - **Remediation:** compute `ql` once and thread `&str`/`Cow` into the providers, typos lookup, and cache key.
 
-#### P3 — mounts `Vec` deep-cloned on every search (`src/providers/files/mod.rs:190-195`)
+#### P3 — mounts `Vec` deep-cloned on every search (`src/providers/files/mod.rs:190-195`) — **fixed 2026-09-05** (`RwLock<Arc<[MountInfo]>>` snapshots; downstream `&[MountInfo]` unchanged; `Arc::ptr_eq` test)
 
 - **Root cause:** `self.state.mounts.read()...clone()` copies every `MountInfo` (2 heap allocations each) per keystroke though mounts change only on mount events. The clearest reusable-allocation miss in the hot path. P3 perf.
 - **Remediation:** store `Arc<[MountInfo]>` and clone the Arc.
 
-#### P3 — full first-result struct cloned per keystroke for the preview (`src/ui/mod.rs:2510-2518`)
+#### P3 — full first-result struct cloned per keystroke for the preview (`src/ui/mod.rs:2510-2518`) — **fixed 2026-09-05** (`refresh_preview_at` scoped borrow at all 10 sibling sites; `update` retains what it needs)
 
 - **Root cause:** `results.borrow().first().cloned()` clones an entire `SearchResult` (title/subtitle/id/action/`PathBuf`) per refresh just to pass `&SearchResult` into `preview.update`, which does not retain it. P3 perf.
 - **Remediation:** scoped borrow passing `item.first()` directly.
 
-#### P3 — 25-row results Vec fully cloned per deep merge (`src/ui/mod.rs:2833-2839`)
+#### P3 — 25-row results Vec fully cloned per deep merge (`src/ui/mod.rs:2833-2839`) — **fixed 2026-09-05** (`mem::take` in translate/deep merges with restore-on-noop; borrow-direct cache rebind; only id `String`s clone)
 
 - **Root cause:** `let mut merged = results.borrow().clone();` per async deep batch (not per keystroke). P3 perf.
 - **Remediation:** clone ids only into the dedup set; `push` into the original via `mem::take`.
@@ -1951,16 +1951,16 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
-| P2 | Code preview of ≤2 MiB single-line file freezes main loop (minified assets) | `ui/preview.rs:775-779` | 16 |
-| P2 | Nonexistent absolute scope walks `/` for full deep budget per keystroke | `files/search/deep.rs:285-290` | 16 |
-| P3 | `icon_file_path` stats FS per row per keystroke (NFS freeze) | `ui/rows.rs:606-610` | 17 |
-| P3 | `highlight_markup` O(n²) in title length | `ui/rows.rs:118-119` | 17 |
-| P3 | Mounts Vec deep-cloned every search | `files/mod.rs:190-195` | 21 |
-| P3 | Query lowercased up to 5× per keystroke | `engine.rs:206` + 4 sites | 21 |
-| P3 | First-result struct cloned per keystroke for preview | `ui/mod.rs:2510-2518` | 21 |
-| P3 | 25-row Vec fully cloned per deep merge | `ui/mod.rs:2833-2839` | 21 |
-| P3 | Wheel-navigate rebinds all 25 rows (amplifies stat-per-row) | `ui/rows.rs:211-220` | 17 |
-| P3 | Per-result usage lock acquisition per keystroke; top(20) clones | `engine.rs:281-284` | 14 |
+| P2 | Code preview of ≤2 MiB single-line file freezes main loop (minified assets) ✅ fixed 2026-09-05 | `ui/preview.rs:775-779` | 16 |
+| P2 | Nonexistent absolute scope walks `/` for full deep budget per keystroke ✅ fixed 2026-08-28 (pre-existing; re-verified 2026-09-05) | `files/search/deep.rs:285-290` | 16 |
+| P3 | `icon_file_path` stats FS per row per keystroke (NFS freeze) ✅ fixed 2026-09-05 | `ui/rows.rs:606-610` | 17 |
+| P3 | `highlight_markup` O(n²) in title length ✅ fixed 2026-09-05 | `ui/rows.rs:118-119` | 17 |
+| P3 | Mounts Vec deep-cloned every search ✅ fixed 2026-09-05 | `files/mod.rs:190-195` | 21 |
+| P3 | Query lowercased up to 5× per keystroke ✅ fixed 2026-09-05 (intra-call; cross-layer deferred, see Pass 21 note) | `engine.rs:206` + 4 sites | 21 |
+| P3 | First-result struct cloned per keystroke for preview ✅ fixed 2026-09-05 | `ui/mod.rs:2510-2518` | 21 |
+| P3 | 25-row Vec fully cloned per deep merge ✅ fixed 2026-09-05 | `ui/mod.rs:2833-2839` | 21 |
+| P3 | Wheel-navigate rebinds all 25 rows (amplifies stat-per-row) ✅ fixed 2026-09-05 (short-circuit; rotate kept by design) | `ui/rows.rs:211-220` | 17 |
+| P3 | Per-result usage lock acquisition per keystroke; top(20) clones ✅ fixed 2026-09-05 (`boost_many`; `top(20)` kept, single-guard infrequent path) | `engine.rs:281-284` | 14 |
 | P3 | `discover_mounts()` re-executed per deep_roots entry at load | `config.rs:738-742` | 13 |
 | P3 | Settings text entries persist config per keystroke (30 writes per URL) | `settings.rs:1836-2210` | 14 |
 | P3 | Theme monitor schedules one 80 ms apply() per event (no debounce) | `theme/mod.rs:197-203` | 15 |

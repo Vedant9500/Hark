@@ -24,6 +24,16 @@ use std::time::{Duration, SystemTime};
 const MAX_IMAGE_BYTES: u64 = 40 * 1024 * 1024;
 /// Max source-file size we'll show in the code preview (bytes).
 const MAX_CODE_BYTES: u64 = 2 * 1024 * 1024;
+/// Upstream GtkSourceView disables highlighting past 2000 chars in one line
+/// (`LINE_MAX_SUPPORTED_CHARS`, 2019-04-19) after a 2 s stall. Pre-empt it:
+/// measure in the worker, skip highlight + truncate display so the main
+/// thread never layouts a ~2M-char minified line (audit P2 Pass 16, CWE-400).
+const MAX_CODE_LINE_CHARS: usize = 2000;
+/// Past this many lines, highlighting is disabled (audit suggested 20k;
+/// 5k keeps `set_text` + re-highlight bounded for a 380px panel).
+const MAX_CODE_LINES: usize = 5000;
+/// Display cap: first N lines shown, each truncated to `MAX_CODE_LINE_CHARS`.
+const DISPLAY_MAX_LINES: usize = 500;
 /// Preview panel width.
 pub const PREVIEW_WIDTH: i32 = 280;
 /// Image frame inside the panel (4:3).
@@ -75,6 +85,64 @@ struct DecodeRequest {
     path: PathBuf,
     gen: u64,
     fp: FileFp,
+}
+
+/// Worker-measured code preview: display text is already truncated so the
+/// main thread never calls `set_text` with a ~2M-char minified line.
+struct CodePreview {
+    display: String,
+    total_lines: usize,
+    /// Capped at `MAX_CODE_LINE_CHARS + 1` (`MAX+1` means "over threshold").
+    max_line_chars: usize,
+    truncated: bool,
+    highlight_off: bool,
+}
+
+/// Measure + truncate off-main-thread. Per-line char counting is capped at
+/// `MAX+1` iterations so a 2 MiB single line costs ~2k char steps, not ~2M.
+/// Short lines (`byte len <= MAX`) skip counting (char len can't exceed it).
+fn prepare_code_preview(text: &str) -> CodePreview {
+    let mut total_lines = 0usize;
+    let mut max_line_chars = 0usize;
+    let mut display = String::with_capacity(text.len().min(64 * 1024));
+    let mut display_lines = 0usize;
+    for line in text.lines() {
+        total_lines += 1;
+        let over_bytes = line.len() > MAX_CODE_LINE_CHARS;
+        let char_len = if over_bytes {
+            line.chars().take(MAX_CODE_LINE_CHARS + 1).count()
+        } else {
+            // Byte len bounds char len here; exact count is cheap (<=2000).
+            line.chars().count()
+        };
+        if char_len > max_line_chars {
+            max_line_chars = char_len;
+            if max_line_chars > MAX_CODE_LINE_CHARS {
+                max_line_chars = MAX_CODE_LINE_CHARS + 1;
+            }
+        }
+        if display_lines < DISPLAY_MAX_LINES {
+            if display_lines > 0 {
+                display.push('\n');
+            }
+            if char_len > MAX_CODE_LINE_CHARS {
+                display.extend(line.chars().take(MAX_CODE_LINE_CHARS));
+            } else {
+                display.push_str(line);
+            }
+            display_lines += 1;
+        }
+    }
+    // Empty file: `lines()` yields nothing; keep display empty, not truncated.
+    let highlight_off = max_line_chars > MAX_CODE_LINE_CHARS || total_lines > MAX_CODE_LINES;
+    let truncated = total_lines > DISPLAY_MAX_LINES || max_line_chars > MAX_CODE_LINE_CHARS;
+    CodePreview {
+        display,
+        total_lines,
+        max_line_chars,
+        truncated,
+        highlight_off,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -784,23 +852,28 @@ impl PreviewPanel {
             if gen_cell.get() != gen || last_path.borrow().as_ref() != Some(&path_check) {
                 return glib::ControlFlow::Break;
             }
-            let (tx, rx) = async_channel::bounded::<Option<String>>(1);
+            let (tx, rx) = async_channel::bounded::<Option<CodePreview>>(1);
             let path_worker = path_check.clone();
             std::thread::spawn(move || {
                 // Re-enforce the size gate here: the file may have grown (or
                 // been replaced) since the stat in update() — `take()` bounds
                 // the read (TOCTOU, audit P3). Lossy decode serves UTF-16 /
                 // Latin-1 sources instead of "Could not load file" (audit P3).
-                let text = std::fs::File::open(&path_worker).ok().and_then(|f| {
-                    use std::io::Read as _;
-                    let mut buf = Vec::new();
-                    f.take(MAX_CODE_BYTES + 1).read_to_end(&mut buf).ok()?;
-                    if buf.len() as u64 > MAX_CODE_BYTES {
-                        return None;
-                    }
-                    Some(String::from_utf8_lossy(&buf).into_owned())
-                });
-                let _ = tx.send_blocking(text);
+                // Long-line/line-count measuring also happens here so the main
+                // thread never layouts a minified asset (audit P2 Pass 16).
+                let preview = std::fs::File::open(&path_worker)
+                    .ok()
+                    .and_then(|f| {
+                        use std::io::Read as _;
+                        let mut buf = Vec::new();
+                        f.take(MAX_CODE_BYTES + 1).read_to_end(&mut buf).ok()?;
+                        if buf.len() as u64 > MAX_CODE_BYTES {
+                            return None;
+                        }
+                        Some(String::from_utf8_lossy(&buf).into_owned())
+                    })
+                    .map(|text| prepare_code_preview(&text));
+                let _ = tx.send_blocking(preview);
             });
             let gen_cell2 = gen_cell.clone();
             let last_path2 = last_path.clone();
@@ -810,28 +883,51 @@ impl PreviewPanel {
             let stack = stack.clone();
             let meta2 = meta.clone();
             glib::spawn_future_local(async move {
-                let text = rx.recv().await.ok().flatten();
+                let preview = rx.recv().await.ok().flatten();
                 if gen_cell2.get() != gen || last_path2.borrow().as_ref() != Some(&path_check2) {
                     return;
                 }
-                let Some(text) = text else {
+                let Some(preview) = preview else {
                     dims.set_text("Could not load file");
                     stack.set_visible_child_name("code");
                     return;
                 };
-                let lines = text.lines().count();
-                view.buffer().set_text(&text);
+                view.buffer().set_text(&preview.display);
                 if let Ok(buf) = view.buffer().downcast::<sourceview5::Buffer>() {
-                    // Clear stale language when guessing fails for this file,
-                    // so a previous preview's syntax highlighting doesn't leak.
-                    let lang = guess_language(&path_check2);
-                    buf.set_language(lang.as_ref());
+                    if preview.highlight_off {
+                        // Minified/huge file: skip highlight entirely (upstream
+                        // GtkSourceView would stall ~2 s then disable it
+                        // anyway). Clearing language avoids leaking the
+                        // previous file's highlighting.
+                        buf.set_highlight_syntax(false);
+                        buf.set_language(None);
+                    } else {
+                        // Re-enable after a previous long file turned it off,
+                        // then clear stale language when guessing fails.
+                        buf.set_highlight_syntax(true);
+                        let lang = guess_language(&path_check2);
+                        buf.set_language(lang.as_ref());
+                    }
                 }
-                let lines_label = if lines > 0 {
-                    format!(
-                        "{lines} line{} · {meta2}",
-                        if lines == 1 { "" } else { "s" }
-                    )
+                let lines_label = if preview.total_lines > 0 {
+                    let mut label = format!(
+                        "{} line{} · {meta2}",
+                        preview.total_lines,
+                        if preview.total_lines == 1 { "" } else { "s" }
+                    );
+                    if preview.truncated {
+                        if preview.max_line_chars > MAX_CODE_LINE_CHARS {
+                            label.push_str(&format!(
+                                " · long line truncated ({}+ chars)",
+                                MAX_CODE_LINE_CHARS
+                            ));
+                        } else {
+                            label.push_str(&format!(
+                                " · truncated (first {DISPLAY_MAX_LINES} lines)"
+                            ));
+                        }
+                    }
+                    label
                 } else {
                     meta2
                 };
@@ -1798,5 +1894,53 @@ fn format_modified(time: SystemTime) -> String {
             }
             Err(_) => "Modified".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod code_preview_tests {
+    use super::{prepare_code_preview, DISPLAY_MAX_LINES, MAX_CODE_LINE_CHARS};
+
+    #[test]
+    fn short_file_passes_through_with_highlight() {
+        let p = prepare_code_preview("fn main() {}\nlet x = 1;\n");
+        assert_eq!(p.total_lines, 2);
+        assert!(!p.truncated);
+        assert!(!p.highlight_off);
+        assert_eq!(p.display, "fn main() {}\nlet x = 1;");
+    }
+
+    #[test]
+    fn single_minified_line_disables_highlight_and_truncates() {
+        // Audit P2 Pass 16: ~2M-char minified line froze the main loop.
+        let long = "a".repeat(100_000);
+        let p = prepare_code_preview(&long);
+        assert_eq!(p.total_lines, 1);
+        assert!(p.highlight_off);
+        assert!(p.truncated);
+        assert_eq!(p.display.chars().count(), MAX_CODE_LINE_CHARS);
+        assert_eq!(p.max_line_chars, MAX_CODE_LINE_CHARS + 1);
+    }
+
+    #[test]
+    fn many_lines_truncate_display_but_keep_highlight_when_lines_short() {
+        let text = (0..DISPLAY_MAX_LINES + 100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = prepare_code_preview(&text);
+        assert_eq!(p.total_lines, DISPLAY_MAX_LINES + 100);
+        assert!(p.truncated);
+        assert!(!p.highlight_off);
+        assert_eq!(p.display.lines().count(), DISPLAY_MAX_LINES);
+    }
+
+    #[test]
+    fn empty_file_is_not_truncated() {
+        let p = prepare_code_preview("");
+        assert_eq!(p.total_lines, 0);
+        assert!(!p.truncated);
+        assert!(!p.highlight_off);
+        assert!(p.display.is_empty());
     }
 }

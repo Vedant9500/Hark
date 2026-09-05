@@ -1,4 +1,5 @@
 use super::{title_match_indices, Action, ResultKind, SearchResult};
+use crate::config::ExcludeSet;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::cmp::Reverse;
@@ -117,15 +118,25 @@ impl AppProvider {
         *self.apps.write().unwrap_or_else(|p| p.into_inner()) = list;
     }
 
-    pub fn reload(&self) {
+    /// Rescan `.desktop` files, skipping user-excluded locations.
+    /// `excludes` is the `index.exclude` list: a `.desktop` file under an
+    /// excluded dir is skipped, and so is any app whose executable lives
+    /// under one (covers apps installed in excluded dirs whose `.desktop`
+    /// file lives in a system applications dir).
+    pub fn reload(&self, excludes: &[String]) {
+        self.reload_from_dirs(&desktop_dirs(), excludes);
+    }
+
+    fn reload_from_dirs(&self, dirs: &[PathBuf], excludes: &[String]) {
+        let excluded = ExcludeSet::from_list(excludes);
         let mut apps = Vec::new();
         let mut seen = HashSet::new();
 
-        for dir in desktop_dirs() {
-            if !dir.exists() {
+        for dir in dirs {
+            if !dir.exists() || excluded.matches(dir) {
                 continue;
             }
-            let Ok(entries) = fs::read_dir(&dir) else {
+            let Ok(entries) = fs::read_dir(dir) else {
                 continue;
             };
             for entry in entries.flatten() {
@@ -133,8 +144,18 @@ impl AppProvider {
                 if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
                     continue;
                 }
+                if excluded.matches(&path) {
+                    continue;
+                }
                 if let Some(app) = parse_desktop_file(&path) {
                     if app.no_display || app.exec.is_empty() || app.name.is_empty() {
+                        continue;
+                    }
+                    if app
+                        .argv
+                        .first()
+                        .is_some_and(|bin| bin.contains('/') && excluded.matches(Path::new(bin)))
+                    {
                         continue;
                     }
                     if seen.insert(app.id.clone()) {
@@ -751,6 +772,48 @@ mod tests {
         );
         // What launch_app consumes must equal what was parsed at scan time.
         assert_eq!(split_exec_args(&app.exec), app.argv);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reload_skips_excluded_apps() {
+        // Excluded install dirs hide their apps even though the scan only
+        // reads fixed desktop dirs: by .desktop path and by exec target.
+        let dir = std::env::temp_dir().join(format!("hark-app-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let apps_dir = dir.join("applications");
+        let skipped_dir = apps_dir.join("skipped");
+        fs::create_dir_all(&skipped_dir).unwrap();
+        let write_entry = |path: &std::path::Path, name: &str, exec: &str| {
+            let mut f = fs::File::create(path).unwrap();
+            write!(
+                f,
+                "[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\n"
+            )
+            .unwrap();
+        };
+        write_entry(&apps_dir.join("good.desktop"), "Good", "/usr/bin/good");
+        write_entry(&skipped_dir.join("evil.desktop"), "Evil", "/usr/bin/evil");
+        write_entry(&apps_dir.join("game.desktop"), "Game", "/opt/games/game");
+
+        let provider = AppProvider::new_empty();
+        provider.reload_from_dirs(
+            &[apps_dir.clone(), skipped_dir.clone()],
+            &["skipped".to_string(), "/opt/games".to_string()],
+        );
+        let names: Vec<String> = provider
+            .apps
+            .read()
+            .unwrap()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Good".to_string()]);
+
+        // No excludes → everything loads.
+        provider.reload_from_dirs(&[apps_dir, skipped_dir], &[]);
+        assert_eq!(provider.apps.read().unwrap().len(), 3);
 
         let _ = fs::remove_dir_all(&dir);
     }

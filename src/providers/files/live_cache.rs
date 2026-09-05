@@ -110,38 +110,52 @@ impl LiveCache {
     /// True when a non-expired entry exists (no hit vector clone).
     pub fn contains(&self, query: &str) -> bool {
         let key = Self::key_for(query);
+        self.contains_by_key(&key)
+    }
+
+    /// `contains` against a precomputed `key_for` result: saves one
+    /// `to_lowercase` when the caller already normalized the query (audit P3).
+    pub fn contains_by_key(&self, key: &str) -> bool {
         if key.is_empty() {
             return false;
         }
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
-        let expired = match inner.map.get(&key) {
+        let expired = match inner.map.get(key) {
             Some(e) => e.expires <= now,
             None => return false,
         };
         if expired {
-            inner.remove(&key);
+            inner.remove(key);
             return false;
         }
-        inner.touch(&key);
+        inner.touch(key);
         true
     }
 
     /// Shared hits for the query (Arc clone only).
+    /// Convenience wrapper (tests / single-call sites); hot paths precompute
+    /// the key once and use `get_by_key`.
+    #[allow(dead_code)]
     pub fn get(&self, query: &str) -> Option<Arc<[SearchResult]>> {
         let key = Self::key_for(query);
+        self.get_by_key(&key)
+    }
+
+    /// `get` against a precomputed key (see `contains_by_key`).
+    pub fn get_by_key(&self, key: &str) -> Option<Arc<[SearchResult]>> {
         if key.is_empty() {
             return None;
         }
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
-        let expired = inner.map.get(&key).map(|e| e.expires <= now)?;
+        let expired = inner.map.get(key).map(|e| e.expires <= now)?;
         if expired {
-            inner.remove(&key);
+            inner.remove(key);
             return None;
         }
-        inner.touch(&key);
-        inner.map.get(&key).map(|e| e.hits.clone())
+        inner.touch(key);
+        inner.map.get(key).map(|e| e.hits.clone())
     }
 
     /// Cache `hits` and return them for the caller.
@@ -149,8 +163,15 @@ impl LiveCache {
     /// Moves into an `Arc` once, stores that Arc, then clones elements out for the
     /// return `Vec` — avoids the old `results.clone()` + `put(clone)` pattern that
     /// briefly held two full owned vectors before the Arc conversion.
+    /// Convenience wrapper (tests); hot paths use `put_with_key`.
+    #[allow(dead_code)]
     pub fn put(&self, query: &str, hits: Vec<SearchResult>) -> Vec<SearchResult> {
         let key = Self::key_for(query);
+        self.put_with_key(&key, hits)
+    }
+
+    /// `put` against a precomputed key (see `contains_by_key`).
+    pub fn put_with_key(&self, key: &str, hits: Vec<SearchResult>) -> Vec<SearchResult> {
         if key.is_empty() {
             return hits;
         }
@@ -166,7 +187,7 @@ impl LiveCache {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let stamp = inner.next_seq();
         inner.insert(
-            key,
+            key.to_owned(),
             Entry {
                 hits,
                 expires: now + ttl,
@@ -217,6 +238,22 @@ mod tests {
             conversion: None,
             matched: None,
         }
+    }
+
+    #[test]
+    fn by_key_variants_share_normalization() {
+        // Audit P3: `search_with` normalizes once and reuses the key across
+        // `get` + `put`; by_key accessors must hit the same entries as the
+        // query-based ones (same `key_for` semantics, incl. prefix strip).
+        let c = LiveCache::new();
+        let key = LiveCache::key_for("File Foo.Bar");
+        let _ = c.put_with_key(&key, vec![hit("a")]);
+        assert_eq!(c.get_by_key(&key).unwrap().len(), 1);
+        assert!(c.contains_by_key(&key));
+        assert_eq!(c.get("file foo.bar").unwrap().len(), 1);
+        assert!(c.contains("FILE foo.bar"));
+        assert!(c.get_by_key("").is_none());
+        assert!(!c.contains_by_key(""));
     }
 
     #[test]

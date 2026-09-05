@@ -66,8 +66,33 @@ impl IconResolveCache {
     }
 }
 
+struct IconFileCache {
+    map: HashMap<String, Option<PathBuf>>,
+    order: VecDeque<String>,
+}
+
+impl IconFileCache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::with_capacity(64),
+            order: VecDeque::with_capacity(64),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+}
+
 thread_local! {
     static ICON_RESOLVE_CACHE: RefCell<IconResolveCache> = RefCell::new(IconResolveCache::new());
+    /// `Icon=/path/app.png` → `stat()` result. The file branch runs per row
+    /// per keystroke on the main thread; without this a cold/hung NFS home
+    /// freezes input (audit P3). FIFO-capped like the theme cache; cleared
+    /// together with it so a theme/install change re-stats once.
+    static ICON_FILE_CACHE: RefCell<IconFileCache> =
+        RefCell::new(IconFileCache::new());
     /// Accent hex used for match-highlight spans. Kept in sync with the
     /// active scheme by `ThemeManager::apply` so rows never need theme access.
     static HIGHLIGHT_ACCENT: RefCell<String> = RefCell::new("#7aa2f7".to_string());
@@ -75,6 +100,7 @@ thread_local! {
 
 pub(crate) fn clear_icon_resolve_cache() {
     ICON_RESOLVE_CACHE.with(|c| c.borrow_mut().clear());
+    ICON_FILE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 pub(crate) fn set_highlight_accent(hex: String) {
@@ -115,8 +141,9 @@ pub(crate) fn highlight_markup(title: &str, matched: &[usize]) -> String {
     let mut run: Option<(usize, usize)> = None; // byte range of the current matched run
     let mut next = 0usize; // position in idxs
 
-    for (byte, ch) in title.char_indices() {
-        let pos = title[..byte].chars().count();
+    // Linear in title length: `enumerate` index IS the char index, avoiding
+    // the O(n²) `title[..byte].chars().count()` rescan per char (audit P3).
+    for (pos, (byte, ch)) in title.char_indices().enumerate() {
         if next < idxs.len() && idxs[next] == pos {
             next += 1;
             run = Some(match run.take() {
@@ -166,6 +193,71 @@ struct PooledRow {
     swap_timer: std::rc::Rc<RefCell<Option<glib::SourceId>>>,
     badge_kind: ResultKind,
     showing_conv: bool,
+    /// Display content of the last `bind` (audit P3 Pass 17): rebinds with
+    /// identical content (cache re-render, repeated applies) skip all GTK
+    /// writes. Wheel swaps rotate items so every slot differs — those still
+    /// rebind fully, as the cyclic order design requires.
+    bound_sig: Option<BoundSig>,
+}
+
+/// Every `bind` input that affects displayed output. Compared by value
+/// without allocating; stored (cloned) only when actually rebinding.
+#[derive(PartialEq, Eq)]
+struct BoundSig {
+    id: String,
+    title: String,
+    subtitle: String,
+    icon: Option<String>,
+    matched: Option<Vec<usize>>,
+    kind: ResultKind,
+    as_card: bool,
+    icon_size: i32,
+    symbolic: bool,
+    conv: Option<(String, String, String, String)>,
+    drag: Option<PathBuf>,
+}
+
+impl BoundSig {
+    fn matches(&self, item: &SearchResult, as_card: bool, icon_size: i32, symbolic: bool) -> bool {
+        self.as_card == as_card
+            && self.icon_size == icon_size
+            && self.symbolic == symbolic
+            && self.kind == item.kind
+            && self.id == item.id
+            && self.title == item.title
+            && self.subtitle == item.subtitle
+            && self.icon == item.icon
+            && self.matched == item.matched
+            && self.drag.as_deref() == item.action.drag_path()
+            && self.conv.as_ref().map(|c| (&c.0, &c.1, &c.2, &c.3))
+                == item
+                    .conversion
+                    .as_ref()
+                    .map(|c| (&c.left_title, &c.left_badge, &c.right_title, &c.right_badge))
+    }
+
+    fn capture(item: &SearchResult, as_card: bool, icon_size: i32, symbolic: bool) -> Self {
+        Self {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            subtitle: item.subtitle.clone(),
+            icon: item.icon.clone(),
+            matched: item.matched.clone(),
+            kind: item.kind,
+            as_card,
+            icon_size,
+            symbolic,
+            conv: item.conversion.as_ref().map(|c| {
+                (
+                    c.left_title.clone(),
+                    c.left_badge.clone(),
+                    c.right_title.clone(),
+                    c.right_badge.clone(),
+                )
+            }),
+            drag: item.action.drag_path().map(|p| p.to_path_buf()),
+        }
+    }
 }
 
 /// Direction-aware hero animation. `None` = instant (typing), `SlideUp`
@@ -370,6 +462,7 @@ impl PooledRow {
             swap_timer: std::rc::Rc::new(RefCell::new(None)),
             badge_kind: ResultKind::File,
             showing_conv: false,
+            bound_sig: None,
         }
     }
 
@@ -400,6 +493,17 @@ impl PooledRow {
         icon_size: i32,
         symbolic_icons: bool,
     ) {
+        // Same content as last bind and no animation requested: skip every
+        // GTK write (markup rebuild, icon resolve, label writes). Allocation-
+        // free check; the stored sig clones only on real rebinds below.
+        if hero_anim.is_none()
+            && self
+                .bound_sig
+                .as_ref()
+                .is_some_and(|s| s.matches(item, as_card, icon_size, symbolic_icons))
+        {
+            return;
+        }
         if as_card {
             if let Some(conv) = &item.conversion {
                 self.set_mode_conv();
@@ -408,6 +512,7 @@ impl PooledRow {
                 self.conv_left_badge.set_text(&conv.left_badge);
                 self.set_conv_right(conv, hero_anim);
                 self.drag.set_path(None);
+                self.bound_sig = Some(BoundSig::capture(item, as_card, icon_size, symbolic_icons));
                 return;
             }
         }
@@ -442,6 +547,7 @@ impl PooledRow {
         } else {
             self.drag.set_path(None);
         }
+        self.bound_sig = Some(BoundSig::capture(item, as_card, icon_size, symbolic_icons));
     }
 
     /// Point the card's right panel at `conv`. Animated swaps prime the
@@ -601,7 +707,34 @@ fn looks_like_icon_path(s: &str) -> bool {
 }
 
 /// Resolve `Icon=` to an on-disk image path, if it points at a real file.
+///
+/// Cached: the caller runs per row per keystroke on the main thread, so the
+/// `is_file()` stat is memoized (FIFO 512). Non-path names return `None`
+/// without touching the FS.
 fn icon_file_path(s: &str) -> Option<PathBuf> {
+    // Fast path: cached hit (positive or negative).
+    if let Some(hit) = ICON_FILE_CACHE.with(|c| c.borrow().map.get(s).cloned()) {
+        return hit;
+    }
+    let resolved = icon_file_path_uncached(s);
+    // Present keys always hit the fast path above, so this is always an
+    // insert (no refresh branch needed).
+    ICON_FILE_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        while cache.map.len() >= ICON_CACHE_CAP {
+            if let Some(old) = cache.order.pop_front() {
+                cache.map.remove(&old);
+            } else {
+                break;
+            }
+        }
+        cache.order.push_back(s.to_string());
+        cache.map.insert(s.to_string(), resolved.clone());
+    });
+    resolved
+}
+
+fn icon_file_path_uncached(s: &str) -> Option<PathBuf> {
     let raw = s.strip_prefix("file://").unwrap_or(s);
     let path = if let Some(rest) = raw.strip_prefix("~/") {
         dirs::home_dir()?.join(rest)
@@ -811,5 +944,136 @@ mod highlight_tests {
     fn empty_candidates_fall_back_without_panic() {
         // Audit P3: empty slice must not index-panic (latent main-loop crash).
         assert_eq!(super::resolve_icon_name(&[]), "text-x-generic");
+    }
+
+    #[test]
+    fn long_cjk_title_maps_tail_indices_linearly() {
+        // Audit P3: enumerate index must equal char index even past multibyte
+        // prefix (guards the O(n²)→O(n) rewrite against off-by-one).
+        set_highlight_accent(accent().into());
+        let title = "日本語".repeat(100) + "target";
+        let base: usize = 300; // 3*100 CJK chars before "target"
+        let matched: Vec<usize> = (base..base + 6).collect();
+        let m = highlight_markup(&title, &matched);
+        assert!(m.contains(&sp("target")), "tail run highlighted, got {m}");
+        // Prefix untouched (no span bleed into CJK run).
+        let prefix = glib::markup_escape_text(&"日本語".repeat(100));
+        assert!(m.starts_with(prefix.as_str()));
+    }
+
+    #[test]
+    fn icon_file_path_caches_negative_result() {
+        // Audit P3: a cached miss must not re-stat — recreate the file
+        // after the miss and the cached None must still win until clear.
+        use super::{clear_icon_resolve_cache, icon_file_path};
+        use std::io::Write as _;
+        clear_icon_resolve_cache();
+        let dir = std::env::temp_dir().join("hark-icon-neg-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("neg-icon.png");
+        let _ = std::fs::remove_file(&file);
+        let key = file.to_string_lossy().into_owned();
+        assert_eq!(icon_file_path(&key), None);
+        let _ = std::fs::File::create(&file).and_then(|mut f| f.write_all(b"png"));
+        // Still None: served from the negative cache, no re-stat.
+        assert_eq!(icon_file_path(&key), None);
+        clear_icon_resolve_cache();
+        // After clear, re-stats and sees the recreated file.
+        assert!(icon_file_path(&key).is_some());
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn icon_file_path_caches_positive_result() {
+        // Positive hit stays cached even if the file vanishes (documented
+        // staleness tradeoff; evicted FIFO / cleared on theme change).
+        use super::{clear_icon_resolve_cache, icon_file_path};
+        use std::io::Write as _;
+        clear_icon_resolve_cache();
+        let dir = std::env::temp_dir().join("hark-icon-cache-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("test-icon.png");
+        let _ = std::fs::File::create(&file).and_then(|mut f| f.write_all(b"png"));
+        let key = file.to_string_lossy().into_owned();
+        assert!(icon_file_path(&key).is_some());
+        let _ = std::fs::remove_file(&file);
+        // Still Some: served from cache, no re-stat.
+        assert!(icon_file_path(&key).is_some());
+        clear_icon_resolve_cache();
+        // After clear, re-stats and now reports missing.
+        assert_eq!(icon_file_path(&key), None);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn non_path_icon_names_skip_fs_without_caching_fs_state() {
+        use super::{clear_icon_resolve_cache, icon_file_path};
+        clear_icon_resolve_cache();
+        assert_eq!(icon_file_path("firefox"), None);
+        assert_eq!(icon_file_path(""), None);
+    }
+
+    #[test]
+    fn bound_sig_matches_identical_content() {
+        // Audit P3 (Pass 17): skip-key must accept byte-identical rebinds.
+        use super::BoundSig;
+        use crate::providers::{Action, ResultKind, SearchResult};
+        let item = SearchResult {
+            id: "app:firefox.desktop".into(),
+            title: "Firefox".into(),
+            subtitle: "Web Browser".into(),
+            kind: ResultKind::App,
+            score: 30_000,
+            icon: Some("firefox".into()),
+            action: Action::OpenPath("/usr/bin/firefox".into()),
+            conversion: None,
+            matched: Some(vec![0, 1, 2]),
+        };
+        let sig = BoundSig::capture(&item, false, 26, false);
+        assert!(sig.matches(&item, false, 26, false));
+        // Score is not displayed — excluded from the key by design.
+        let mut rescored = item.clone();
+        rescored.score += 500;
+        assert!(sig.matches(&rescored, false, 26, false));
+    }
+
+    #[test]
+    fn bound_sig_rejects_any_display_change() {
+        use super::BoundSig;
+        use crate::providers::{Action, ResultKind, SearchResult};
+        let base = SearchResult {
+            id: "app:firefox.desktop".into(),
+            title: "Firefox".into(),
+            subtitle: "Web Browser".into(),
+            kind: ResultKind::App,
+            score: 30_000,
+            icon: Some("firefox".into()),
+            action: Action::OpenPath("/usr/bin/firefox".into()),
+            conversion: None,
+            matched: Some(vec![0, 1, 2]),
+        };
+        let sig = BoundSig::capture(&base, false, 26, false);
+        let mut v = base.clone();
+        v.title = "Firefox ESR".into();
+        assert!(!sig.matches(&v, false, 26, false));
+        v = base.clone();
+        v.matched = Some(vec![0, 1, 2, 3]);
+        assert!(!sig.matches(&v, false, 26, false));
+        v = base.clone();
+        v.subtitle = "Browser".into();
+        assert!(!sig.matches(&v, false, 26, false));
+        v = base.clone();
+        v.icon = None;
+        assert!(!sig.matches(&v, false, 26, false));
+        v = base.clone();
+        v.kind = ResultKind::File;
+        assert!(!sig.matches(&v, false, 26, false));
+        v = base.clone();
+        v.action = Action::OpenPath("/opt/firefox/firefox".into());
+        assert!(!sig.matches(&v, false, 26, false));
+        assert!(!sig.matches(&base, true, 26, false));
+        assert!(!sig.matches(&base, false, 32, false));
+        assert!(!sig.matches(&base, false, 26, true));
     }
 }

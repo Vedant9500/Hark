@@ -69,8 +69,9 @@ impl Engine {
     pub fn spawn_warm(&self) {
         let apps_bg = self.apps.clone();
         let files_bg = self.files.clone();
+        let excludes = self.config.snapshot().index.exclude.clone();
         thread::spawn(move || {
-            apps_bg.reload();
+            apps_bg.reload(&excludes);
             files_bg.rebuild_index();
         });
     }
@@ -86,12 +87,14 @@ impl Engine {
     pub fn spawn_periodic_refresh(&mut self) {
         let files_periodic = self.files.clone();
         let apps_periodic = self.apps.clone();
+        let config_periodic = self.config.clone();
         let (stop, rx) = std::sync::mpsc::channel::<()>();
         let thread = thread::spawn(move || loop {
             match rx.recv_timeout(Duration::from_secs(45 * 60)) {
                 Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    apps_periodic.reload();
+                    let excludes = config_periodic.snapshot().index.exclude.clone();
+                    apps_periodic.reload(&excludes);
                     files_periodic.rebuild_index();
                 }
             }
@@ -133,17 +136,19 @@ impl Engine {
 
     /// Rescan `.desktop` files. Cheap (~ms) and safe on the UI thread.
     pub fn reload_apps(&self) {
-        self.apps.reload();
+        let excludes = self.config.snapshot().index.exclude.clone();
+        self.apps.reload(&excludes);
     }
 
     /// Always off the UI thread.
     pub fn force_reindex(&self) {
         let files = self.files.clone();
         let apps = self.apps.clone();
+        let excludes = self.config.snapshot().index.exclude.clone();
         thread::spawn(move || {
             // New installs often land while the daemon is already running;
             // reindex should pick up apps too, not only files.
-            apps.reload();
+            apps.reload(&excludes);
             files.force_rebuild();
         });
     }
@@ -275,16 +280,35 @@ impl Engine {
             results.retain(|r| !matches!(r.kind, ResultKind::App) || r.score >= 15_000);
         }
 
-        for r in &mut results {
-            if !matches!(
-                r.kind,
-                ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
-            ) {
-                // Saturating: a tampered usage.json count can boost to
-                // i64::MAX; a plain += overflows and (panic=abort) kills
-                // the daemon on the next keystroke.
-                r.score = r.score.saturating_add(self.usage.boost(&r.id));
-            }
+        // One guard for the whole boost loop (audit P3): per-result `boost()`
+        // took ~45 read guards per keystroke.
+        let boosts = {
+            let ids: Vec<&str> = results
+                .iter()
+                .filter(|r| {
+                    !matches!(
+                        r.kind,
+                        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                    )
+                })
+                .map(|r| r.id.as_str())
+                .collect();
+            self.usage.boost_many(&ids)
+        };
+        for (r, b) in results
+            .iter_mut()
+            .filter(|r| {
+                !matches!(
+                    r.kind,
+                    ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                )
+            })
+            .zip(boosts)
+        {
+            // Saturating: a tampered usage.json count can boost to
+            // i64::MAX; a plain += overflows and (panic=abort) kills
+            // the daemon on the next keystroke.
+            r.score = r.score.saturating_add(b);
         }
 
         // Personal typo aliases (v1/v2): boost or inject the learned target.
@@ -344,11 +368,16 @@ impl Engine {
             }
         }
 
-        // Fill with apps
+        // Fill with apps (batched boost: one guard for up to 40 lookups).
         if results.len() < 15 {
-            for mut app in self.apps.all_results(40) {
+            let apps = self.apps.all_results(40);
+            let boosts = {
+                let ids: Vec<&str> = apps.iter().map(|a| a.id.as_str()).collect();
+                self.usage.boost_many(&ids)
+            };
+            for (mut app, b) in apps.into_iter().zip(boosts) {
                 if seen.insert(app.id.clone()) {
-                    app.score = 1_000 + self.usage.boost(&app.id);
+                    app.score = 1_000 + b;
                     results.push(app);
                 }
                 if results.len() >= 15 {
@@ -862,7 +891,8 @@ fn promote_deep_root_arcs(
     });
     if changed {
         // Match Engine::force_reindex — off UI by construction here.
-        apps.reload();
+        let excludes = config.snapshot().index.exclude.clone();
+        apps.reload(&excludes);
         files.force_rebuild();
     }
 }
