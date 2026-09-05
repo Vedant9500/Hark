@@ -313,6 +313,17 @@ fn set_drag_icon(source: &DragSource, path: &Path) {
     source.set_icon(Some(&paintable), 24, 24);
 }
 
+thread_local! {
+    static DRAG_THUMB_MEMO: RefCell<Option<(PathBuf, Option<gdk::Texture>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Drop the memoized drag texture (one ≤256 px texture). Called when the
+/// preview clears / launcher hides so GPU memory doesn't outlive the window.
+pub(crate) fn clear_drag_thumbnail_memo() {
+    DRAG_THUMB_MEMO.with(|slot| *slot.borrow_mut() = None);
+}
+
 /// Load a small drag icon from the FreeDesktop thumbnail cache when present.
 ///
 /// Sync and main-thread, but thumbs are tiny PNGs already decoded by the
@@ -326,12 +337,7 @@ fn drag_thumbnail_icon(path: &Path) -> Option<gdk::Texture> {
         return None;
     }
 
-    thread_local! {
-        static MEMO: RefCell<Option<(PathBuf, Option<gdk::Texture>)>> =
-            const { RefCell::new(None) };
-    }
-
-    MEMO.with(|slot| {
+    DRAG_THUMB_MEMO.with(|slot| {
         if let Some((prev, tex)) = slot.borrow().as_ref() {
             if prev.as_path() == path {
                 return tex.clone();

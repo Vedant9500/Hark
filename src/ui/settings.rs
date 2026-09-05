@@ -313,22 +313,68 @@ impl SettingsPanel {
                     return glib::Propagation::Proceed;
                 }
                 let cur = nav.selected_row().map(|r| r.index()).unwrap_or(0).max(0);
+                // Direction-aware scan: row_at_index counts hidden
+                // (filtered-out) rows, so step to the next *visible* row.
+                // Returns None when no visible row exists in that direction.
+                let step_visible = |start: i32, dir: i32| -> Option<i32> {
+                    let mut i = start;
+                    while (0..n).contains(&i) {
+                        if let Some(row) = nav.row_at_index(i) {
+                            if row.is_visible() {
+                                return Some(i);
+                            }
+                        }
+                        i += dir;
+                    }
+                    None
+                };
                 let next = match keyval {
-                    Key::Down | Key::j | Key::J => Some((cur + 1) % n),
-                    Key::Up | Key::k | Key::K => Some(if cur == 0 { n - 1 } else { cur - 1 }),
-                    Key::Home => Some(0),
-                    Key::End => Some(n - 1),
-                    Key::Page_Down => Some((cur + 1).min(n - 1)),
-                    Key::Page_Up => Some((cur - 1).max(0)),
+                    Key::Down | Key::j | Key::J | Key::Page_Down => {
+                        step_visible((cur + 1).min(n - 1), 1)
+                            // Wrap so ↓ on the last visible row cycles to the top.
+                            .or_else(|| step_visible(0, 1))
+                    }
+                    Key::Up | Key::k | Key::K | Key::Page_Up => step_visible((cur - 1).max(0), -1)
+                        // Wrap so ↑ on the first visible row cycles to the bottom.
+                        .or_else(|| step_visible(n - 1, -1)),
+                    Key::Home => step_visible(0, 1),
+                    Key::End => step_visible(n - 1, -1),
                     _ => None,
                 };
-                if let Some(idx) = next {
-                    if let Some(row) = nav.row_at_index(idx) {
-                        if row.is_visible() {
-                            nav.select_row(Some(&row));
-                            row.grab_focus();
+                // No match at all → let the key propagate. Matched but every
+                // row hidden / no visible target → don't swallow either.
+                let Some(idx) = next else {
+                    return if matches!(
+                        keyval,
+                        Key::Down
+                            | Key::Up
+                            | Key::j
+                            | Key::J
+                            | Key::k
+                            | Key::K
+                            | Key::Home
+                            | Key::End
+                            | Key::Page_Down
+                            | Key::Page_Up
+                    ) {
+                        // Navigation key with nowhere to go — still stop so
+                        // focus doesn't jump out of the list, but only when
+                        // at least one row is visible (all-filtered lets it
+                        // propagate to the search entry).
+                        let any_visible =
+                            (0..n).any(|i| nav.row_at_index(i).is_some_and(|r| r.is_visible()));
+                        if any_visible {
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
                         }
-                    }
+                    } else {
+                        glib::Propagation::Proceed
+                    };
+                };
+                if let Some(row) = nav.row_at_index(idx) {
+                    nav.select_row(Some(&row));
+                    row.grab_focus();
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -801,9 +847,15 @@ fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkB
     {
         let engine = engine.clone();
         let key = alias.alias.clone();
-        let row = row.clone();
+        // Weak capture: the button lives inside `row`, so a strong `row`
+        // here cycles row → button → handler → row and leaks the subtree
+        // after detach (audit P3, same class as open_with popover cycles).
+        let row_w = row.downgrade();
         rm.connect_clicked(move |_| {
             engine.remove_typo_alias(&key);
+            let Some(row) = row_w.upgrade() else {
+                return;
+            };
             if let Some(parent) = row.parent() {
                 if let Ok(box_) = parent.downcast::<GtkBox>() {
                     if let Some(prev) = row.prev_sibling() {
@@ -1592,7 +1644,9 @@ fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
     {
         let engine = engine.clone();
         let text = text.to_string();
-        let row = row.clone();
+        // Weak capture: the button lives inside `row`, so a strong `row`
+        // here cycles row → button → handler → row and leaks the subtree.
+        let row_w = row.downgrade();
         rm.connect_clicked(move |_| {
             match kind {
                 ListKind::Extra => {
@@ -1609,6 +1663,9 @@ fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
                     engine.remove_deep_root(&text);
                 }
             }
+            let Some(row) = row_w.upgrade() else {
+                return;
+            };
             if let Some(parent) = row.parent() {
                 if let Ok(box_) = parent.downcast::<GtkBox>() {
                     // Remove preceding separator if present

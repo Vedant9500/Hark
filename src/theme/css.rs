@@ -1,29 +1,42 @@
 use super::{sanitize_hex, Theme};
 
-pub fn is_light_theme(hex: &str) -> bool {
-    // scheme.json values are external input — sanitize before byte slicing.
+/// Expand a sanitized hex colour to its 6-digit RGB form.
+///
+/// `sanitize_hex` accepts `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; the alpha
+/// nibble/byte (when present) is dropped because callers take alpha as a
+/// separate parameter. Anything unexpected falls back to the dark-shell
+/// default components.
+fn rgb_bytes(hex: &str) -> (u8, u8, u8) {
     let h = sanitize_hex(hex);
     let h = h.trim_start_matches('#');
-    if h.len() < 6 {
-        return false;
-    }
-    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(26) as f32;
-    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(27) as f32;
-    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(38) as f32;
-    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let expanded = match h.len() {
+        3 | 4 => {
+            // Shorthand: duplicate each nibble (`#fff` → `ffffff`).
+            let c: Vec<char> = h.chars().take(3).collect();
+            if c.len() < 3 {
+                return (26, 27, 38);
+            }
+            format!("{}{}{}{}{}{}", c[0], c[0], c[1], c[1], c[2], c[2])
+        }
+        6 | 8 => h[..6].to_string(),
+        _ => return (26, 27, 38),
+    };
+    let r = u8::from_str_radix(&expanded[0..2], 16).unwrap_or(26);
+    let g = u8::from_str_radix(&expanded[2..4], 16).unwrap_or(27);
+    let b = u8::from_str_radix(&expanded[4..6], 16).unwrap_or(38);
+    (r, g, b)
+}
+
+pub fn is_light_theme(hex: &str) -> bool {
+    // scheme.json values are external input — sanitize before byte slicing.
+    let (r, g, b) = rgb_bytes(hex);
+    let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
     lum > 128.0
 }
 
 fn rgba(hex: &str, alpha: f32) -> String {
     // scheme.json values are external input — sanitize before byte slicing.
-    let h = sanitize_hex(hex);
-    let h = h.trim_start_matches('#');
-    if h.len() < 6 {
-        return format!("rgba(26, 27, 38, {alpha})");
-    }
-    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(26);
-    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(27);
-    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(38);
+    let (r, g, b) = rgb_bytes(hex);
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
@@ -1117,6 +1130,18 @@ mod tests {
         assert!(!is_light_theme("#1a1b26"));
         assert!(is_light_theme("#ffffff"));
         assert!(is_light_theme("#f0f0f0"));
+    }
+
+    #[test]
+    fn test_shorthand_and_rgba_hex_expand() {
+        // `#fff` is white, not the dark fallback (audit P3).
+        assert!(is_light_theme("#fff"));
+        assert_eq!(rgba("#fff", 0.5), "rgba(255, 255, 255, 0.5)");
+        assert_eq!(rgba("#ffff", 0.5), "rgba(255, 255, 255, 0.5)");
+        assert_eq!(rgba("#000", 1.0), "rgba(0, 0, 0, 1)");
+        // 8-digit RGBA drops the alpha byte (alpha is a separate param).
+        assert_eq!(rgba("#24283bff", 0.5), "rgba(36, 40, 59, 0.5)");
+        assert!(!is_light_theme("#24283bff"));
     }
 
     #[test]

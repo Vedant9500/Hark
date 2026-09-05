@@ -99,6 +99,8 @@ pub struct Launcher {
     empty_delay: Rc<RefCell<Option<glib::SourceId>>>,
     /// Pending fade-out timer for the app-side close pop.
     hide_delay: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Pending deferred `preview.clear()` armed by `hide()` (cancelled by `show()`).
+    preview_clear: Rc<RefCell<Option<glib::SourceId>>>,
     /// Compact↔expanded resize tween (app-side; compositor anims are off).
     size_anim: size_anim::SizeTweener,
     #[allow(dead_code)]
@@ -359,6 +361,7 @@ impl Launcher {
         // Pending fade-out timer for the app-side close pop (compositor
         // layer animation is off — no_anim — because it ghosts on resize).
         let hide_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let preview_clear: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
         {
             let engine = engine.clone();
@@ -1283,6 +1286,7 @@ impl Launcher {
             prev_query,
             empty_delay,
             hide_delay,
+            preview_clear,
             size_anim,
             theme: theme.clone(),
         }
@@ -1299,6 +1303,11 @@ impl Launcher {
     pub fn show(&self) {
         // Cancel a fade-out in progress (rapid hotkey double-tap reopens).
         if let Some(id) = self.hide_delay.borrow_mut().take() {
+            id.remove();
+        }
+        // Cancel a pending deferred preview.clear() so it cannot blank a
+        // freshly populated preview after re-show (audit P2).
+        if let Some(id) = self.preview_clear.borrow_mut().take() {
             id.remove();
         }
         self.shell.remove_css_class("hark-anim-out");
@@ -1385,10 +1394,26 @@ impl Launcher {
         self.search.set_secondary_icon_name(None);
         self.session_queries.borrow_mut().clear();
         self.prev_query.borrow_mut().clear();
+        // Track the deferred clear so show() can cancel it — otherwise an
+        // orphaned timer blanks a freshly populated preview after re-show.
+        if let Some(id) = self.preview_clear.borrow_mut().take() {
+            id.remove();
+        }
         let preview = self.preview.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(HIDE_FADE_MS), move || {
-            preview.clear();
-        });
+        let slot = self.preview_clear.clone();
+        let window = self.window.clone();
+        *self.preview_clear.borrow_mut() = Some(glib::timeout_add_local_once(
+            std::time::Duration::from_millis(HIDE_FADE_MS),
+            move || {
+                *slot.borrow_mut() = None;
+                // Second guard behind the show() cancellation above: if
+                // the window was re-shown, new content may already be
+                // populated — never blank it.
+                if !window.is_visible() {
+                    preview.clear();
+                }
+            },
+        ));
     }
 }
 

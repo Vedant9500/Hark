@@ -161,6 +161,9 @@ struct PooledRow {
     conv_rb_a: Label,
     conv_rt_b: Label,
     conv_rb_b: Label,
+    /// Pending swap-class cleanup timer (cancelled on re-arm so an older
+    /// timer cannot truncate a newer animation).
+    swap_timer: std::rc::Rc<RefCell<Option<glib::SourceId>>>,
     badge_kind: ResultKind,
     showing_conv: bool,
 }
@@ -364,6 +367,7 @@ impl PooledRow {
             conv_rb_a,
             conv_rt_b,
             conv_rb_b,
+            swap_timer: std::rc::Rc::new(RefCell::new(None)),
             badge_kind: ResultKind::File,
             showing_conv: false,
         }
@@ -482,10 +486,20 @@ impl PooledRow {
         if hero_anim.is_some() {
             self.conv_root.remove_css_class("hark-conv-swap");
             self.conv_root.add_css_class("hark-conv-swap");
+            // Cancel the previous cleanup so rapid swaps don't let an older
+            // timer strip the class mid-flight of the newer keyframe.
+            if let Some(id) = self.swap_timer.borrow_mut().take() {
+                id.remove();
+            }
             let root = self.conv_root.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(220), move || {
-                root.remove_css_class("hark-conv-swap");
-            });
+            let slot = self.swap_timer.clone();
+            *self.swap_timer.borrow_mut() = Some(glib::timeout_add_local_once(
+                std::time::Duration::from_millis(220),
+                move || {
+                    root.remove_css_class("hark-conv-swap");
+                    *slot.borrow_mut() = None;
+                },
+            ));
         }
     }
 }
@@ -722,7 +736,7 @@ fn kind_label(kind: ResultKind) -> &'static str {
 /// First candidate the active display's icon theme can resolve, else the last
 /// (widest-coverage) name. Headless (tests) falls back the same way.
 pub(crate) fn resolve_icon_name(candidates: &[&'static str]) -> &'static str {
-    let fallback = candidates[candidates.len() - 1];
+    let fallback = candidates.last().copied().unwrap_or("text-x-generic");
     let Some(display) = gtk::gdk::Display::default() else {
         return fallback;
     };
@@ -791,5 +805,11 @@ mod highlight_tests {
     fn empty_match_renders_escaped_plain_text() {
         set_highlight_accent(accent().into());
         assert_eq!(highlight_markup("5 < 6", &[]), "5 &lt; 6");
+    }
+
+    #[test]
+    fn empty_candidates_fall_back_without_panic() {
+        // Audit P3: empty slice must not index-panic (latent main-loop crash).
+        assert_eq!(super::resolve_icon_name(&[]), "text-x-generic");
     }
 }

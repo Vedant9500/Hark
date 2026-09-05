@@ -17,6 +17,20 @@ use std::rc::Rc;
 /// Max apps shown (recommended first, then the rest).
 const MAX_APPS: usize = 40;
 
+/// Strip control chars (incl. `\n` legal in Linux filenames) so a crafted
+/// name cannot vertically expand the popover. Width is already bounded by
+/// ellipsize + max_width_chars.
+fn display_file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .chars()
+        .take(128)
+        .collect::<String>()
+}
 /// Show a floating Open With list for `path`, parented to `anchor`.
 ///
 /// Keeps the launcher open until the user picks an app or dismisses the popover.
@@ -36,11 +50,7 @@ pub fn show_open_with_picker(
     // ow-sync: the content-type probe (sync query_info) and app enumeration
     // (cold app-DB scan) jank the popover open — run both off-thread, open
     // the popover immediately with a loading row, and fill when ready.
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file")
-        .to_string();
+    let file_name = display_file_name(&path);
 
     let popover = Popover::new();
     popover.set_parent(anchor);
@@ -441,9 +451,27 @@ fn apps_for_content_type(ctype: &str) -> Vec<gio::AppInfo> {
     for app in gio::AppInfo::recommended_for_type(ctype) {
         push(app, &mut seen, &mut out);
     }
+    // Remainder sorted by name so the list is stable across machines and the
+    // 40-app cap selects alphabetically instead of GIO scan order.
+    // Recommended-first ordering (the main intent) is preserved.
+    let mut rest = Vec::new();
     for app in gio::AppInfo::all_for_type(ctype) {
-        push(app, &mut seen, &mut out);
+        let key = app
+            .id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| app.name().to_string());
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        rest.push(app);
     }
+    rest.sort_by(|a, b| {
+        a.name()
+            .to_lowercase()
+            .cmp(&b.name().to_lowercase())
+            .then_with(|| a.name().cmp(&b.name()))
+    });
+    out.extend(rest);
 
     // Some MIME types only have a default, not in all_for_type listings.
     if let Some(app) = gio::AppInfo::default_for_type(ctype, false) {
@@ -452,4 +480,23 @@ fn apps_for_content_type(ctype: &str) -> Vec<gio::AppInfo> {
 
     out.truncate(MAX_APPS);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_file_name;
+    use std::path::Path;
+
+    #[test]
+    fn control_chars_stripped_from_display_name() {
+        // `\n` is legal in Linux filenames — must not expand the popover.
+        assert_eq!(
+            display_file_name(Path::new("/tmp/a\nb\x07c.txt")),
+            "abc.txt"
+        );
+        assert_eq!(
+            display_file_name(Path::new("/tmp/normal.txt")),
+            "normal.txt"
+        );
+    }
 }

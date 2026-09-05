@@ -1,4 +1,4 @@
-use super::dnd::{DragSession, PathDragBinding};
+use super::dnd::{clear_drag_thumbnail_memo, DragSession, PathDragBinding};
 use super::thumbnails::{freedesktop_thumbnail, store_freedesktop_thumbnail};
 use crate::providers::{Action, ResultKind, SearchResult};
 use gtk::gdk::{self, Texture};
@@ -403,6 +403,12 @@ impl PreviewPanel {
         *self.inflight.borrow_mut() = None;
         self.drag.set_path(None);
         self.picture.set_paintable(Option::<&gdk::Paintable>::None);
+        // Drop the sourceview text so up to 2 MiB of previously previewed
+        // source doesn't stay resident after hide (audit P3).
+        self.code_view.buffer().set_text("");
+        // Release the memoized drag texture with the preview so it doesn't
+        // pin GPU memory for the process lifetime (audit P3).
+        clear_drag_thumbnail_memo();
         self.stack.set_visible_child_name("icon");
         self.set_panel_visible(false);
     }
