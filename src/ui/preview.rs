@@ -1699,13 +1699,20 @@ fn decode_image_scaled(path: &Path) -> Option<DecodedPixels> {
     // keep the pixbuf as decoded. (This tree never writes the shared
     // FreeDesktop thumbnail cache, so there is no cache-poisoning leg —
     // only the preview decode needed the fix.)
-    let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
+    let oriented = pixbuf.apply_embedded_orientation();
+    // 90°/270° orientations transpose the frame: report the displayed
+    // dimensions, not the file-header ones.
+    let swapped = oriented
+        .as_ref()
+        .is_some_and(|rot| rot.width() == pixbuf.height() && rot.height() == pixbuf.width());
+    let pixbuf = oriented.unwrap_or(pixbuf);
     let mut px = pixbuf_to_pixels(&pixbuf)?;
-    px.dims_label = if native_w > 0 && native_h > 0 {
-        format!("{native_w} × {native_h}")
-    } else {
-        format!("{} × {}", px.width, px.height)
+    let (label_w, label_h) = match (native_w, native_h) {
+        (w, h) if w > 0 && h > 0 && swapped => (h, w),
+        (w, h) if w > 0 && h > 0 => (w, h),
+        _ => (px.width, px.height),
     };
+    px.dims_label = format!("{label_w} × {label_h}");
     Some(px)
 }
 
@@ -2052,6 +2059,10 @@ mod exif_orientation_tests {
             (h, w),
             "orientation 6 must swap dimensions"
         );
+        // The label reports displayed (rotated) dimensions, not header ones.
+        let plain_px = decode_image_scaled(&plain).expect("plain decodes again");
+        assert_eq!(plain_px.dims_label, "4 × 2");
+        assert_eq!(px.dims_label, "2 × 4");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

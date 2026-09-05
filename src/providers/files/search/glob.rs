@@ -348,29 +348,19 @@ pub(super) fn search_absolute_glob(
     // child (audit P3); last-component globs keep the direct listing. Note
     // the mid-glob check comes first: for `/base/*/docs` the last-component
     // pattern is the literal `docs`, which the meta-gate below would skip.
+    // Both branches stay lazy and stop at the cap: a huge directory must not
+    // be fully collected into a `Vec` per keystroke.
     let mid = mid_glob_segments(&expanded);
     if mid.is_some()
         || (!pat_lower.is_empty() && (pat_lower.contains('*') || pat_lower.contains('?')))
     {
-        let live_paths: Vec<PathBuf> = match mid.as_ref() {
-            Some((base, segs)) => match_mid_glob(base, segs, excludes),
-            None => match fs::read_dir(&dir) {
-                Ok(entries) => entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.file_name()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|n| glob_match(&pat_lower, &n.to_lowercase()))
-                    })
-                    .collect(),
-                Err(_) => Vec::new(),
-            },
-        };
-        for path in live_paths {
+        // Shared push step; true once the cap is reached.
+        let push_live = |path: PathBuf,
+                         results: &mut Vec<SearchResult>,
+                         seen: &mut std::collections::HashSet<String>| {
             // Live listings honor the same excludes as index hits.
             if should_skip_entry(&path, excludes) {
-                continue;
+                return false;
             }
             let name = path
                 .file_name()
@@ -378,7 +368,7 @@ pub(super) fn search_absolute_glob(
                 .unwrap_or_default();
             let key = path.display().to_string();
             if !seen.insert(key.clone()) {
-                continue;
+                return false;
             }
             let is_dir = path.is_dir();
             results.push(SearchResult {
@@ -396,8 +386,33 @@ pub(super) fn search_absolute_glob(
                 conversion: None,
                 matched: None,
             });
-            if results.len() >= FILE_RESULT_LIMIT {
-                break;
+            results.len() >= FILE_RESULT_LIMIT
+        };
+        match mid.as_ref() {
+            // `match_mid_glob` already caps at FILE_RESULT_LIMIT internally.
+            Some((base, segs)) => {
+                for path in match_mid_glob(base, segs, excludes) {
+                    if push_live(path, &mut results, &mut seen) {
+                        break;
+                    }
+                }
+            }
+            None => {
+                if let Ok(entries) = fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let matches = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|n| glob_match(&pat_lower, &n.to_lowercase()));
+                        if !matches {
+                            continue;
+                        }
+                        if push_live(path, &mut results, &mut seen) {
+                            break;
+                        }
+                    }
+                }
             }
         }
     }

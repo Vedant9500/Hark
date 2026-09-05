@@ -680,6 +680,46 @@ mod missing_scope_tests {
     }
 
     #[test]
+    fn hot_short_circuit_keeps_exact_match_for_long_queries() {
+        // The sweep gate is exact-absence, not a score threshold: a 200-char
+        // prefix band (30,000 + len*100) reaches the exact band itself, so a
+        // threshold gate would skip the sweep and drop the exact file.
+        let stem = "n".repeat(200);
+        let index = vec![
+            make_indexed(
+                std::path::PathBuf::from(format!("/home/u/{stem}-backup")),
+                format!("{stem}-backup"),
+                false,
+                3,
+                false,
+            ),
+            make_indexed(
+                std::path::PathBuf::from(format!("/home/u/{stem}")),
+                stem.clone(),
+                false,
+                3,
+                false,
+            ),
+        ];
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let q_lower = stem.to_ascii_lowercase();
+        let hits = super::rank::score_free_text_full(
+            &index,
+            &stem,
+            &q_lower,
+            &matcher,
+            true,
+            &crate::config::PathStyle::Label,
+            &[],
+            &[0],
+        );
+        assert!(
+            hits.iter().any(|r| r.title == stem),
+            "exact file dropped for long query"
+        );
+    }
+
+    #[test]
     fn missing_absolute_scope_does_not_walk_filesystem_root() {
         // Audit P2 (Pass 16) / Phase-4 chain 5 leg: `report.md in /nonxistent`
         // used to fall back to the parent of the missing path — `/` for a

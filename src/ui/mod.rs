@@ -581,10 +581,15 @@ impl Launcher {
                     Some(&shell_cs),
                     Some(&size_anim_cs),
                 );
+                // Owned lookups first: `Ref` guards in an `if let` scrutinee
+                // live into the body, and `update_footer` re-borrows results
+                // (same for the row pool under an unsuppressed select).
                 if let Some(id) = keep_id {
-                    if let Some(pos) = results.borrow().iter().position(|r| r.id == id) {
+                    let pos = results.borrow().iter().position(|r| r.id == id);
+                    if let Some(pos) = pos {
                         selected.set(pos);
-                        if let Some(row) = row_pool.borrow().row_at(pos).cloned() {
+                        let row = row_pool.borrow().row_at(pos).cloned();
+                        if let Some(row) = row {
                             suppress_select.set(true);
                             list.select_row(Some(&row));
                             suppress_select.set(false);

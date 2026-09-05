@@ -102,6 +102,7 @@ pub(super) fn score_free_text_full(
         BinaryHeap::with_capacity(FILE_RESULT_LIMIT + 1);
     let mut seen = std::collections::HashSet::with_capacity(hot_indices.len().max(8));
     let mut best_hot: i64 = 0;
+    let mut hot_has_exact = false;
     let mut fuzzy_spans: HashMap<usize, Vec<usize>> = HashMap::new();
 
     for &idx in hot_indices {
@@ -113,6 +114,11 @@ pub(super) fn score_free_text_full(
         };
         if score > best_hot {
             best_hot = score;
+        }
+        // Exact-name hits never need the sweep below, no matter which band
+        // the short-circuit threshold lands in.
+        if item.name_lower == q_lower {
+            hot_has_exact = true;
         }
         if seen.insert(idx) {
             push_heap(&mut heap, score, item.depth, idx);
@@ -128,8 +134,10 @@ pub(super) fn score_free_text_full(
         // was created after a prefix-matching file went hot would otherwise
         // never be scanned (50,000 band skipped). A linear equality pass is
         // O(n) cheap string compares — no fuzzy scoring — so the Batch-B
-        // perf win survives while exact matches can't be dropped.
-        if best_hot < 50_000 {
+        // perf win survives while exact matches can't be dropped. Gated on
+        // absence (not on the score threshold: long-query prefix bands can
+        // themselves reach the exact band).
+        if !hot_has_exact {
             for (idx, item) in index.iter().enumerate() {
                 if item.name_lower == q_lower && seen.insert(idx) {
                     // Same score the full scan would assign (exact band +
