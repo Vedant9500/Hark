@@ -25,7 +25,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel pkgconf \
-            gtk4 glib2 pango gdk-pixbuf2 graphene wayland gtk4-layer-shell
+            gtk4 glib2 pango gdk-pixbuf2 graphene wayland gtk4-layer-shell \
+            gtksourceview5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

@@ -30,7 +30,8 @@ jobs:
             build-essential pkg-config \
             libgtk-4-dev libglib2.0-dev \
             libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libgraphene-1.0-dev libwayland-dev
+            libgraphene-1.0-dev libwayland-dev \
+            libgtksourceview-5-dev
 
       # layer-shell may not be in default Ubuntu repos for every version —
       # build without it if missing; package script handles detection.

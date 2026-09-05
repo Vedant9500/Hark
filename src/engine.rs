@@ -566,14 +566,28 @@ impl Engine {
             return;
         };
         if let Some(r) = results.iter_mut().find(|r| r.id == id) {
-            r.score = r.score.saturating_add(boost);
+            // Cap the combined personal boost below the exact-match band: a
+            // 30k prefix + 18k alias + ~2.4k usage would otherwise outrank a
+            // 50k exact hit the user can never reclaim (audit P3). Exact
+            // matches (already ≥50k) are never demoted by this clamp.
+            let base = r.score;
+            r.score = base.saturating_add(boost);
+            if base < 50_000 {
+                r.score = r.score.min(49_999);
+            }
+            self.typos.note_resolve(query, true);
             return;
         }
         // Not in the current hit list — inject so the personal match still appears.
         if let Some(mut r) = self.resolve_id(&id) {
             r.score = crate::typos::inject_floor().saturating_add(boost);
             r.score = r.score.saturating_add(self.usage.boost(&r.id));
+            self.typos.note_resolve(query, true);
             results.push(r);
+        } else {
+            // Dead target (renamed/unmounted): counted toward auto-removal
+            // so it stops costing a resolve per keystroke (audit P3).
+            self.typos.note_resolve(query, false);
         }
     }
 

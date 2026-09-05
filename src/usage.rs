@@ -135,7 +135,7 @@ impl UsageStore {
             e.count = e.count.saturating_add(1);
             e.last = now;
             if g.entries.len() > MAX_ENTRIES {
-                prune_entries(&mut g.entries, MAX_ENTRIES, now);
+                prune_entries_pinning(&mut g.entries, MAX_ENTRIES, now, id);
             }
         }
         self.dirty.store(true, Ordering::Relaxed);
@@ -247,10 +247,36 @@ fn prune_entries(entries: &mut HashMap<String, UsageEntry>, keep: usize, now: u6
         .iter()
         .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
         .collect();
-    ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let retain: std::collections::HashSet<String> =
         ranked.into_iter().take(keep).map(|(id, _)| id).collect();
     entries.retain(|id, _| retain.contains(id));
+}
+
+/// Prune variant for `record`: the just-recorded id is pinned so a first-use
+/// entry can never be evicted by its own record call (audit P3). Keeps
+/// `keep - 1` best of the rest plus the pinned id.
+fn prune_entries_pinning(
+    entries: &mut HashMap<String, UsageEntry>,
+    keep: usize,
+    now: u64,
+    pin: &str,
+) {
+    if entries.len() <= keep {
+        return;
+    }
+    let mut ranked: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(id, _)| id.as_str() != pin)
+        .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let retain: std::collections::HashSet<String> = ranked
+        .into_iter()
+        .take(keep.saturating_sub(1))
+        .map(|(id, _)| id)
+        .collect();
+    entries.retain(|id, _| id == pin || retain.contains(id));
 }
 
 fn frecency(count: u64, last: u64, now: u64) -> i64 {
@@ -359,6 +385,21 @@ mod usage_tests {
         store.flush();
         let n = store.inner.read().unwrap().entries.len();
         assert!(n <= MAX_ENTRIES, "entries={n} > {MAX_ENTRIES}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_pins_new_entry() {
+        // Audit P3 (Pass 13): a first-use entry must survive its own
+        // record call's prune instead of being evicted immediately.
+        let (store, dir) = temp_store();
+        for i in 0..MAX_ENTRIES {
+            store.record(&format!("app:{i}"));
+        }
+        store.record("app:newcomer");
+        let g = store.inner.read().unwrap();
+        assert!(g.entries.contains_key("app:newcomer"));
+        assert!(g.entries.len() <= MAX_ENTRIES);
         let _ = fs::remove_dir_all(&dir);
     }
 

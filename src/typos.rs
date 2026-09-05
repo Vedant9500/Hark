@@ -42,7 +42,17 @@ struct AliasEntry {
     /// retargets a manual pin, regardless of conflicting launches.
     #[serde(default)]
     manual: bool,
+    /// Consecutive searches where the alias target failed to resolve.
+    /// Renamed/unmounted targets stop costing a resolve per keystroke once
+    /// this hits `MAX_DEAD_STREAK` (non-manual aliases are dropped).
+    #[serde(default)]
+    fail_streak: u32,
 }
+
+/// Drop a non-manual alias after this many consecutive resolve failures.
+const MAX_DEAD_STREAK: u32 = 5;
+/// Minimum decayed frecency for a strong boost (see `lookup`).
+const STRONG_FRECENCY: i64 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct TypoFile {
@@ -103,15 +113,16 @@ impl TypoStore {
     }
 
     /// O(1) lookup. Returns `(result_id, score_boost)` when an alias exists.
+    /// The strong boost is gated on decayed frecency, not raw count: a
+    /// two-year-stale alias must not outrank live prefix hits forever
+    /// (audit P2). Manual pins are exempt (explicit user intent).
     pub fn lookup(&self, query: &str) -> Option<(String, i64)> {
         let key = normalize_alias(query)?;
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let e = g.aliases.get(&key)?;
-        let boost = if e.count >= STRONG_COUNT {
-            BOOST_STRONG
-        } else {
-            BOOST_WEAK
-        };
+        let strong = e.count >= STRONG_COUNT
+            && (e.manual || alias_frecency(e.count, e.last, now_secs()) >= STRONG_FRECENCY);
+        let boost = if strong { BOOST_STRONG } else { BOOST_WEAK };
         Some((e.id.clone(), boost))
     }
 
@@ -141,21 +152,44 @@ impl TypoStore {
                 candidates.push(k);
             }
         }
-        // v2 — earlier spellings in this open session
-        for q in recent_queries {
-            if let Some(k) = normalize_alias(q) {
-                if seen.insert(k.clone()) {
-                    candidates.push(k);
+        // v2 — earlier spellings in this open session, but only genuine
+        // reformulations of the final query (within 2 edits). Abandoned
+        // dead-ends the user backspaced away from (`wat`→`wats`→`watss`→
+        // `whatsapp` minting `watss`) must not become injected aliases
+        // (audit P3). If the final query itself isn't alias-shaped, there
+        // is no reformulation anchor — skip v2 entirely.
+        let final_norm = normalize_alias(final_query);
+        if let Some(ref f) = final_norm {
+            for q in recent_queries {
+                let Some(k) = normalize_alias(q) else {
+                    continue;
+                };
+                if seen.contains(&k) || levenshtein(&k, f) > 2 {
+                    continue;
                 }
+                seen.insert(k.clone());
+                candidates.push(k);
             }
         }
+
+        // Launches the alias itself produced must not entrench it: activating
+        // the injected top row re-runs learning with the same query, which
+        // used to increment count monotonically with no escape (audit P2).
+        // Refresh recency (keeps decay honest) but don't count it.
+        let alias_driven = final_norm.as_ref().is_some_and(|f| {
+            seen.contains(f)
+                && self
+                    .lookup(final_query)
+                    .is_some_and(|(id, _)| id == result_id)
+        });
 
         let mut learned_any = false;
         for key in candidates {
             if !should_learn_alias(&key, &title) {
                 continue;
             }
-            self.record_alias(&key, result_id);
+            let driven = alias_driven && final_norm.as_ref().is_some_and(|f| *f == key);
+            self.record_alias(&key, result_id, driven);
             learned_any = true;
         }
         if learned_any {
@@ -163,22 +197,32 @@ impl TypoStore {
         }
     }
 
-    fn record_alias(&self, key: &str, result_id: &str) {
+    /// `alias_driven` marks launches the alias itself produced (activating
+    /// the injected top row re-runs learning with the same query). Those
+    /// still refresh recency but stop incrementing once confirmed — otherwise
+    /// count grows monotonically with no escape (audit P2). Unconfirmed
+    /// aliases always count (a weak alias needs its confirming observation).
+    fn record_alias(&self, key: &str, result_id: &str, alias_driven: bool) {
         let now = now_secs();
         let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         match g.aliases.get_mut(key) {
             Some(e) if e.id == result_id => {
-                e.count = e.count.saturating_add(1);
+                if !(alias_driven && e.count >= STRONG_COUNT) {
+                    e.count = e.count.saturating_add(1);
+                }
                 e.last = now;
+                e.fail_streak = 0;
             }
             Some(e) => {
-                // Conflicting target: only switch after the new id "wins" once
-                // more often — simple: replace if counts were low, else keep.
-                // Manual pins (Settings) are never auto-retargeted.
-                if !e.manual && e.count <= 2 {
+                // Conflicting target: only switch while unconfirmed (below
+                // STRONG_COUNT) — a twice-confirmed alias is never retargeted
+                // by a single conflicting launch (audit P3). Manual pins
+                // (Settings) are never auto-retargeted.
+                if !e.manual && e.count < STRONG_COUNT {
                     e.id = result_id.to_string();
                     e.count = 1;
                     e.last = now;
+                    e.fail_streak = 0;
                 }
                 // else ignore conflicting observation
             }
@@ -190,6 +234,7 @@ impl TypoStore {
                         count: 1,
                         last: now,
                         manual: false,
+                        fail_streak: 0,
                     },
                 );
             }
@@ -317,6 +362,7 @@ impl TypoStore {
                     count: STRONG_COUNT.max(2),
                     last: now,
                     manual: true,
+                    fail_streak: 0,
                 },
             );
             if g.aliases.len() > MAX_ALIASES {
@@ -326,6 +372,39 @@ impl TypoStore {
         self.dirty.store(true, Ordering::Relaxed);
         self.maybe_save(true);
         Ok(())
+    }
+
+    /// Track whether an alias target resolved (called by the engine on
+    /// searches that hit the alias). A renamed/unmounted target otherwise
+    /// costs a filesystem resolve per keystroke forever (audit P3):
+    /// non-manual aliases are dropped after `MAX_DEAD_STREAK` consecutive
+    /// failures. Manual pins are never auto-removed.
+    pub fn note_resolve(&self, query: &str, ok: bool) {
+        let Some(key) = normalize_alias(query) else {
+            return;
+        };
+        let mut touched = false;
+        {
+            let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
+            if let Some(e) = g.aliases.get_mut(&key) {
+                if ok {
+                    if e.fail_streak > 0 {
+                        e.fail_streak = 0;
+                        touched = true;
+                    }
+                } else if !e.manual {
+                    e.fail_streak = e.fail_streak.saturating_add(1);
+                    touched = true;
+                    if e.fail_streak >= MAX_DEAD_STREAK {
+                        g.aliases.remove(&key);
+                    }
+                }
+            }
+        }
+        if touched {
+            self.dirty.store(true, Ordering::Relaxed);
+            self.maybe_save(false);
+        }
     }
 
     #[allow(dead_code)]
@@ -423,8 +502,10 @@ fn near_title_prefix(alias: &str, title: &str) -> bool {
         }
     }
     // Near-full-title typos (`firefow` ≈ `firefox`, `wahtsapp` ≈ `whatsapp`).
+    // Both branches share the query-length budget: a 4-char alias gets 1
+    // edit against 5–7-char titles, not a doubled budget (audit P3).
     let tl = tchars.len();
-    if ql + 3 >= tl && levenshtein(alias, title) <= max_edit_distance(ql.max(tl)) {
+    if ql + 3 >= tl && levenshtein(alias, title) <= max_edit_distance(ql) {
         return true;
     }
     false
@@ -475,7 +556,7 @@ fn prune_aliases(map: &mut HashMap<String, AliasEntry>, keep: usize, now: u64) {
         .filter(|(_, e)| !e.manual)
         .map(|(k, e)| (k.clone(), alias_frecency(e.count, e.last, now)))
         .collect();
-    items.sort_by_key(|a| a.1); // coldest first
+    items.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))); // coldest first, id tie-break (deterministic)
     let drop_n = map.len().saturating_sub(keep);
     for (k, _) in items.into_iter().take(drop_n) {
         map.remove(&k);
@@ -598,17 +679,138 @@ mod tests {
     #[test]
     fn learn_v2_from_session_history() {
         let store = temp_store();
-        // Final query is the correct spelling; earlier session had the typo.
+        // Final query is a near-miss; an earlier session token within 2
+        // edits of it is learned as a genuine reformulation.
         store.learn_from_launch(
-            "whatsapp",
-            &["wats".into(), "whats".into()],
+            "whats",
+            &["wats".into(), "what".into()],
             "app:whatsapp.desktop",
             "WhatsApp",
         );
         assert!(store.lookup("wats").is_some());
         // Normal prefixes must not be stored
+        assert!(store.lookup("what").is_none());
         assert!(store.lookup("whats").is_none());
-        assert!(store.lookup("whatsapp").is_none());
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn session_dead_ends_not_learned() {
+        // Audit P3 (Pass 18): `wat`→`wats`→`watss`→`whatsapp` must not mint
+        // abandoned intermediates as injected aliases.
+        let store = temp_store();
+        store.learn_from_launch(
+            "whatsapp",
+            &["wat".into(), "wats".into(), "watss".into()],
+            "app:whatsapp.desktop",
+            "WhatsApp",
+        );
+        assert!(store.lookup("wats").is_none());
+        assert!(store.lookup("watss").is_none());
+        // The exact-title final query itself is not an alias either.
+        assert_eq!(store.len(), 0);
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn stale_alias_decays_to_weak_but_resolves() {
+        // Audit P2 (Pass 18): boost must follow decayed frecency, not raw count.
+        let store = temp_store();
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        assert_eq!(store.lookup("wats").map(|(_, b)| b), Some(BOOST_STRONG));
+        // Age it 60 days: 2000·e^(−60/21) ≈ 114 < STRONG_FRECENCY → weak.
+        {
+            let mut g = store.inner.write().unwrap();
+            let e = g.aliases.get_mut("wats").unwrap();
+            e.last = now_secs() - 60 * 86_400;
+        }
+        assert_eq!(store.lookup("wats").map(|(_, b)| b), Some(BOOST_WEAK));
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn manual_pin_ignores_decay() {
+        let store = temp_store();
+        store
+            .set_manual("ffox", "app:firefox.desktop", |_| true)
+            .expect("manual");
+        {
+            let mut g = store.inner.write().unwrap();
+            let e = g.aliases.get_mut("ffox").unwrap();
+            e.last = now_secs() - 400 * 86_400;
+        }
+        assert_eq!(store.lookup("ffox").map(|(_, b)| b), Some(BOOST_STRONG));
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn alias_driven_launch_does_not_entrench() {
+        // Audit P2 (Pass 18): activating the alias-injected top row must not
+        // keep incrementing count (monotone entrenchment with no escape).
+        let store = temp_store();
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        let count = store.inner.read().unwrap().aliases["wats"].count;
+        assert_eq!(count, 2);
+        // Third launch produced by the alias itself: recency refreshes, count stays.
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        let after = store.inner.read().unwrap().aliases["wats"].clone();
+        assert_eq!(after.count, 2);
+        assert!(after.last >= now_secs() - 5);
+        // Fresh + confirmed → still strong (no behavior change for live aliases).
+        assert_eq!(store.lookup("wats").map(|(_, b)| b), Some(BOOST_STRONG));
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn confirmed_alias_survives_conflict_unconfirmed_switches() {
+        // Audit P3 (Pass 13): only below-STRONG counts retarget.
+        let store = temp_store();
+        store.learn_from_launch("firefow", &[], "app:firefox.desktop", "Firefox");
+        // Single observation → conflicting near-title launch retargets.
+        store.learn_from_launch("firefow", &[], "app:firefog.desktop", "Firefog");
+        assert_eq!(
+            store.lookup("firefow").map(|(id, _)| id),
+            Some("app:firefog.desktop".into())
+        );
+        // Confirm twice → a further conflict is ignored.
+        store.learn_from_launch("firefow", &[], "app:firefog.desktop", "Firefog");
+        store.learn_from_launch("firefow", &[], "app:firefox.desktop", "Firefox");
+        assert_eq!(
+            store.lookup("firefow").map(|(id, _)| id),
+            Some("app:firefog.desktop".into()),
+            "twice-confirmed alias must not retarget on one conflict"
+        );
+        store.flush();
+        let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn dead_alias_dropped_after_streak_manual_immune() {
+        // Audit P3 (Pass 18): dead targets stop costing a resolve per keystroke.
+        let store = temp_store();
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        store.learn_from_launch("wats", &[], "app:whatsapp.desktop", "WhatsApp");
+        for _ in 0..4 {
+            store.note_resolve("wats", false);
+        }
+        assert!(store.lookup("wats").is_some());
+        store.note_resolve("wats", false);
+        assert!(store.lookup("wats").is_none());
+        // Manual pins are never auto-removed.
+        store
+            .set_manual("ffox", "app:firefox.desktop", |_| true)
+            .expect("manual");
+        for _ in 0..10 {
+            store.note_resolve("ffox", false);
+        }
+        assert!(store.lookup("ffox").is_some());
         store.flush();
         let _ = fs::remove_file(&store.path);
     }

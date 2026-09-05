@@ -971,7 +971,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `load()`'s `deep_roots.retain(|s| !is_overbroad_deep_root(s))` walks the closure chain down to `discover_mounts()`, which re-reads `/proc/self/mounts` **and** rescans `/mnt`, `/media`, `/run/media` (`config.rs:1005-1035`) once per retained root. `load()` already computed the mount table nearby.
 - **Remediation:** hoist the mount table once at load and pass it into the check.
 
-#### P3 — alias conflict switch contradicts its comment; strong alias at `count == 2` silently retargeted (`src/typos.rs:164-176`)
+#### P3 — alias conflict switch contradicts its comment; strong alias at `count == 2` silently retargeted (`src/typos.rs:164-176`) — **fixed 2026-09-05** (switch only when `count < STRONG_COUNT`; regression test added)
 
 - **Root cause:** the comment says "only switch after the new id wins once more often — replace if counts were low, else keep", but the code switches when `e.count <= 2`, and `STRONG_COUNT == 2` — so a twice-confirmed strong alias is reset to `count = 1` and retargeted by a single conflicting launch. There is no win tally at all.
 - **Remediation:** require the new id to be observed at least as often as the current count before switching, or switch only when `e.count < STRONG_COUNT`.
@@ -1605,12 +1605,12 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - **Root cause:** `AliasEntry` has no `manual` flag; `set_manual` writes `count = STRONG_COUNT.max(2) = 2`, which is exactly the `e.count <= 2` condition the auto-learner treats as "unconfirmed and replaceable". One accidental near-title launch of the same key retargets and resets the user's explicit pin. CWE-1259-class automatic-override defect.
 - **Remediation:** add `manual: bool` (`#[serde(default)]`) to `AliasEntry`; skip the conflict-switch arm when `e.manual`.
 
-#### P2 — alias boost never decays: `lookup` uses only `count`; the 21-day decay is dead code for ranking (`src/typos.rs:96-107` vs `455-464`)
+#### P2 — alias boost never decays: `lookup` uses only `count`; the 21-day decay is dead code for ranking (`src/typos.rs:96-107` vs `455-464`) — **fixed 2026-09-05** (strong boost requires decayed frecency ≥ 1000; manual pins exempt; regression test added)
 
 - **Root cause:** `alias_frecency`'s exponential decay feeds only `list()` and `prune_aliases()`; the runtime ranking path (`lookup` → `apply_typo_alias`, `engine.rs:553-566`) keys purely on `count`, which only grows. A two-year-stale alias still yields `BOOST_STRONG = 18_000` (injection floor 22_000 + 18_000 = 40_000), outranking every prefix hit.
 - **Remediation:** gate the boost on `e.last` recency or scale it by the same decay in `lookup`.
 
-#### P2 — self-reinforcement loop with no escape: alias-driven launches feed the same alias (`src/typos.rs:110-152`, `engine.rs:557-565`, `ui/mod.rs:2058-2061`)
+#### P2 — self-reinforcement loop with no escape: alias-driven launches feed the same alias (`src/typos.rs:110-152`, `engine.rs:557-565`, `ui/mod.rs:2058-2061`) — **fixed 2026-09-05** (`learn_from_launch` detects alias-driven launches via `lookup`; they refresh recency but stop counting once confirmed; regression test added)
 
 - **Root cause:** injection puts the alias target at ≥30_000 (top rows); activating the top row re-runs `learn_from_launch` with the same query, incrementing the alias `count` — monotone entrenchment with no decrement path and no penalty for the correct spelling. One accidental Enter can pin a wrong target at BOOST_STRONG permanently (compounded by the non-decay finding).
 - **Remediation:** pass a `via_alias: bool` flag from search to activation and don't count launches the alias itself produced.
@@ -1645,17 +1645,17 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - Hex-only English words parse as numbers (`decade to dec` becomes base conversion); `from_roman` accepts non-canonical numerals (`roman ic` → 99); reversed `random a b` bounds always return `a` while the badge claims `a..=b`; `format_number` collapses sub-5e-9 values to `0`.
 - **Remediation:** require `0x` prefix or digit-only tokens for hex; validate canonical Roman form; swap/correct reversed-bounds badge; format tiny magnitudes in scientific notation.
 
-#### P3 — full-title alias branch loosens the edit budget (`src/typos.rs:399-411`)
+#### P3 — full-title alias branch loosens the edit budget (`src/typos.rs:399-411`) — **fixed 2026-09-05** (`max_edit_distance(ql)` in both branches)
 
 - **Root cause:** the prefix window uses `max_edit_distance(ql)` but the full-title branch passes `ql.max(tl)` — every 4-char alias gets a doubled error budget (2 edits) against 5–7-char titles (`cdde` matches `codes` despite the declared 1-edit policy for 4-char keys).
 - **Remediation:** use `max_edit_distance(ql)` in both branches.
 
-#### P3 — v2 session sweep learns abandoned dead-end tokens (`src/typos.rs:134-146`)
+#### P3 — v2 session sweep learns abandoned dead-end tokens (`src/typos.rs:134-146`) — **fixed 2026-09-05** (v2 tokens must be within 2 edits of the final query; existing v2 test updated + dead-end regression test added)
 
 - **Root cause:** all raw last-12 keystroke snapshots are evaluated as candidates against the launched title; `wat`→`wats`→`watss`→`whatsapp` mints `wats` and `watss` as independent injected (30_000) aliases — backspace dead-ends the user retreated from still hijack results.
 - **Remediation:** learn only queries within edit distance 1–2 of the *final* query (typo reformulations), not of the title alone.
 
-#### P3 — prune can evict aged manual pins; equal-frecency eviction is process-random (`src/typos.rs:440-452`)
+#### P3 — prune can evict aged manual pins; equal-frecency eviction is process-random (`src/typos.rs:440-452`) — **fixed 2026-09-05** (pins were already exempt 2026-08-28; deterministic id tie-break added today)
 
 - **Root cause:** same missing `manual` flag — a 3-week-old pin (decayed ≈736) loses to a 3-day-old count=1 alias (≈1360) at the 300-cap; HashMap order randomizes tie eviction.
 - **Remediation:** exempt manual entries; tie-break on `(frecency, alias)`.
@@ -1665,12 +1665,12 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - **Root cause:** prefix-only validation lets `"app:"` and `"path:not a path!?"` persist as strong-count zombie aliases (the key side is validated; the id side isn't).
 - **Remediation:** require non-empty remainder after the prefix and engine-resolvability before insert.
 
-#### P3 — alias + usage boosts stack and can outrank an exact-name match (`src/engine.rs:283`, `557-565`)
+#### P3 — alias + usage boosts stack and can outrank an exact-name match (`src/engine.rs:283`, `557-565`) — **fixed 2026-09-05** (combined personal boost clamped to 49,999 when the base is below exact; exact hits never demoted)
 
 - **Root cause:** an alias-target launch increments both stores; prefix 30_000 + 18_000 alias + ~2_400 usage ≈ 51_200 > 50_000 exact score — installing an app literally named `chrom` cannot reclaim the top slot from an old `chrom`→Chrome alias.
 - **Remediation:** cap the combined personal boost below the exact-match score, or apply `max(alias, usage)` for alias targets.
 
-#### P3 — dead `path:` alias targets stat the filesystem per keystroke on the UI thread forever (`src/engine.rs:361-364`, `562`)
+#### P3 — dead `path:` alias targets stat the filesystem per keystroke on the UI thread forever (`src/engine.rs:361-364`, `562`) — **fixed 2026-09-05** (`fail_streak` on entries, dropped after 5 consecutive dead resolves; pins immune; `note_resolve` wired into `apply_typo_alias`; regression test added)
 
 - **Root cause:** `resolve_id` → `resolve_path` runs on every search for the matching query; a renamed/unmounted target means a repeated metadata syscall with no timeout, and the alias never self-cleans (compounds the non-decay finding; on network mounts this is a UI stall).
 - **Remediation:** drop/demote the alias after N consecutive resolve failures.
@@ -2034,20 +2034,20 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P3 | Hex-words parse as numbers; non-canonical roman; reversed random bounds | `calc/quick.rs` | 18 |
 | P3 | `format_number` collapses sub-5e-9 values to `0` | `calc/quick.rs` | 18 |
 
-### 🧠 Learning / Ranking Behavior
+### 🧠 Learning / Ranking Behavior — ✅ triaged 2026-09-05 (8 fixed, 2 already-fixed)
 
-| Sev | Finding | Location | Pass |
-|---|---|---|---|
-| P2 | Manual pins clobbered by one conflicting launch (no manual flag) | `typos.rs:289-296,168-171` | 18 |
-| P2 | Alias boost never decays; 21-day decay dead code for ranking | `typos.rs:96-107` | 18 |
-| P2 | Self-reinforcement loop: alias-driven launches feed the alias | `typos.rs:110-152` | 18 |
-| P2 | Conflict-switch contradicts comment; strong alias retargeted at count==2 | `typos.rs:164-176` | 13 |
-| P2 | urandom-fallback passwords/uuids silently predictable (CWE-338) | `calc/quick.rs:652-678` | 18 |
-| P3 | Full-title alias branch doubles edit budget (4-char vs 5-char titles) | `typos.rs:399-411` | 18 |
-| P3 | Session sweep learns abandoned dead-end tokens | `typos.rs:134-146` | 18 |
-| P3 | Prune can evict aged manual pins; tie eviction process-random | `typos.rs:440-452` | 18 |
-| P3 | Dead `path:` alias targets stat FS per keystroke forever | `engine.rs:361-364` | 18 |
-| P3 | First-use usage entry evicted by its own record | `usage.rs:87-94` | 13 |
+| Sev | Finding | Location | Pass | Status |
+|---|---|---|---|---|
+| P2 | Manual pins clobbered by one conflicting launch (no manual flag) | `typos.rs:289-296,168-171` | 18 | already fixed 2026-08-28 (`manual` flag; verified live) |
+| P2 | Alias boost never decays; 21-day decay dead code for ranking | `typos.rs:96-107` | 18 | fixed (strong boost gated on decayed frecency ≥1000; pins exempt) |
+| P2 | Self-reinforcement loop: alias-driven launches feed the alias | `typos.rs:110-152` | 18 | fixed (alias-driven launches refresh recency only, stop counting once confirmed) |
+| P2 | Conflict-switch contradicts comment; strong alias retargeted at count==2 | `typos.rs:164-176` | 13 | fixed (switch only below `STRONG_COUNT`) |
+| P2 | urandom-fallback passwords/uuids silently predictable (CWE-338) | `calc/quick.rs:652-678` | 18 | already fixed 2026-08-28 (refuse on urandom failure; verified live) |
+| P3 | Full-title alias branch doubles edit budget (4-char vs 5-char titles) | `typos.rs:399-411` | 18 | fixed (query-length budget in both branches) |
+| P3 | Session sweep learns abandoned dead-end tokens | `typos.rs:134-146` | 18 | fixed (v2 tokens must be within 2 edits of final query) |
+| P3 | Prune can evict aged manual pins; tie eviction process-random | `typos.rs:440-452` | 18 | fixed (pins already exempt; deterministic id tie-break added) |
+| P3 | Dead `path:` alias targets stat FS per keystroke forever | `engine.rs:361-364` | 18 | fixed (`fail_streak`, drop after 5 dead resolves; pins immune) |
+| P3 | First-use usage entry evicted by its own record | `usage.rs:87-94` | 13 | fixed (record pins new id during prune; deterministic tie-break) |
 
 ### 🖼 UI / UX Polish — ✅ all fixed 2026-09-05 (except glob scoring, verified already-mitigated)
 
