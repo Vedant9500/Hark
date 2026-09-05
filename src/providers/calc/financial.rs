@@ -13,7 +13,7 @@ use regex::Regex;
 /// Numeric amount, optionally with a magnitude suffix (`5 lakh`, `2k`, `1.5m`
 /// excluded — single letters are units). Fed to `expr::eval_str` so lakh/crore
 /// and friends resolve.
-const AMT: &str = r"[+-]?\d+(?:\.\d+)?(?:\s*(?:k|mil|bn|tn|thousand|thousands|million|millions|billion|billions|trillion|trillions|hundred|hundreds|lakh|lac|lakhs|lacs|crore|crores))?";
+const AMT: &str = r"[+-]?\d+(?:\.\d+)?(?:\s*(?:k|mil|bn|tn|thousand|thousands|million|millions|billion|billions|trillion|trillions|hundred|hundreds|lakh|lac|lakhs|lacs|l|crore|crores|cr|crs))?";
 
 fn amt(s: &str) -> Option<f64> {
     super::expr::eval_str(s)
@@ -431,6 +431,9 @@ mod tests {
         // Magnitude principal works via eval_str.
         let r = try_financial("interest 5 lakh at 10% for 2 years").expect("interest");
         assert_eq!(r.title, "600000");
+        // Short forms: `1 cr` = 1 crore.
+        let r = try_financial("interest 1 cr at 10% for 1 year").expect("crore short");
+        assert_eq!(r.title, "11000000");
         // Compound (annual) beats simple.
         let r = try_financial("interest 1000 at 5% compounded for 3 years").expect("compound");
         assert_eq!(r.title, "1157.63");

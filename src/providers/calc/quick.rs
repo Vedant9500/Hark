@@ -209,15 +209,20 @@ fn try_roman(q: &str) -> Option<SearchResult> {
     if let Some(c) = RE_REV.captures(&lower) {
         let r = c.get(1)?.as_str();
         let n = from_roman(r)?;
-        return Some(card_result(
-            n.to_string(),
-            format!("{r} → {n}"),
-            n.to_string(),
-            shown,
-            "roman",
-            n.to_string(),
-            "number",
-        ));
+        // Reject non-canonical forms (`ic`, `VV`, `IIII`): re-render and
+        // require an exact match so only real numerals convert (audit P3).
+        if to_roman(n).is_some_and(|canon| canon == r.to_ascii_uppercase()) {
+            return Some(card_result(
+                n.to_string(),
+                format!("{r} → {n}"),
+                n.to_string(),
+                shown,
+                "roman",
+                n.to_string(),
+                "number",
+            ));
+        }
+        return None;
     }
     None
 }
@@ -769,11 +774,14 @@ fn try_random(q: &str) -> Option<SearchResult> {
     if let Some(c) = RE_RAND_AB.captures(&lower) {
         let a: i64 = c.get(1)?.as_str().parse().ok()?;
         let b: i64 = c.get(2)?.as_str().parse().ok()?;
-        let v = rng_int(a, b);
+        // Reversed bounds (`random 5 3`) sample the same range the badge
+        // advertises instead of always returning `a` (audit P3).
+        let (lo, hi) = (a.min(b), a.max(b));
+        let v = rng_int(lo, hi);
         let s = v.to_string();
         return Some(card_result(
             s.clone(),
-            format!("{a}..={b}"),
+            format!("{lo}..={hi}"),
             s.clone(),
             "random".into(),
             "random",
@@ -1063,6 +1071,25 @@ mod tests {
         assert_eq!(r.title, "1994");
         assert!(try_quickwin("roman 0").is_none());
         assert!(try_quickwin("roman 5000").is_none());
+    }
+
+    #[test]
+    fn roman_rejects_non_canonical() {
+        // Audit P3 (Pass 8/18): `ic`, `VV`, `IIII`, `IM`, `XD` are not numerals.
+        for bad in ["roman ic", "roman VV", "roman IIII", "roman IM", "roman XD"] {
+            assert!(try_quickwin(bad).is_none(), "{bad}");
+        }
+        let r = try_quickwin("roman xiv").expect("xiv");
+        assert_eq!(r.title, "14");
+    }
+
+    #[test]
+    fn reversed_random_bounds_sample_advertised_range() {
+        // Audit P3 (Pass 18): `random 5 3` returned `a` while claiming `a..=b`.
+        let r = try_quickwin("random 5 3").expect("reversed");
+        assert!(r.subtitle.contains("3..=5"), "{}", r.subtitle);
+        let v: i64 = r.title.parse().expect("numeric title");
+        assert!((3..=5).contains(&v), "{v}");
     }
 
     #[test]

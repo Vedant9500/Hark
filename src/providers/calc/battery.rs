@@ -168,7 +168,10 @@ fn read_battery(path: &Path) -> Option<BatteryInfo> {
         .unwrap_or("BAT")
         .to_string();
     let status = read_trimmed(&path.join("status")).unwrap_or_else(|| "Unknown".into());
-    let capacity = read_trimmed(&path.join("capacity")).and_then(|s| s.parse().ok());
+    let capacity = read_trimmed(&path.join("capacity"))
+        .and_then(|s| s.parse::<u8>().ok())
+        // Firmware can momentarily report >100 while charging (audit P3).
+        .map(|c| c.min(100));
     let power_now_uw = read_u64(&path.join("power_now"));
     // Prefer energy (µWh); fall back to charge (µAh) * voltage for rough energy.
     let energy_now_uwh = read_u64(&path.join("energy_now")).or_else(|| {
@@ -437,6 +440,18 @@ pub(crate) fn is_battery_keyword(q: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_clamped_to_100() {
+        // Audit P3 (Pass 13): firmware can momentarily report >100.
+        let dir = std::env::temp_dir().join(format!("hark-batt-clamp-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("capacity"), "101\n").unwrap();
+        assert_eq!(read_battery(&dir).expect("read").capacity, Some(100));
+        std::fs::write(dir.join("capacity"), "85\n").unwrap();
+        assert_eq!(read_battery(&dir).expect("read").capacity, Some(85));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn keywords_match() {

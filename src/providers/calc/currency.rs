@@ -57,7 +57,7 @@ pub(crate) fn looks_like_currency_query(q: &str) -> bool {
 
 pub(crate) fn try_currency(q: &str, fx: &FxStore) -> Option<SearchResult> {
     let caps = RE_CONVERT.captures(q)?;
-    let value: f64 = caps.get(1)?.as_str().parse().ok()?;
+    let value: f64 = super::util::parse_amount(caps.get(1)?.as_str())?;
     let from_raw = caps.get(2)?.as_str();
     let to_raw = caps.get(3)?.as_str();
     if to_raw.is_empty() {
@@ -70,7 +70,7 @@ pub(crate) fn try_currency(q: &str, fx: &FxStore) -> Option<SearchResult> {
 
 pub(crate) fn try_currency_predict(q: &str, fx: &FxStore) -> Option<SearchResult> {
     let caps = RE_CONVERT_PARTIAL.captures(q)?;
-    let value: f64 = caps.get(1)?.as_str().parse().ok()?;
+    let value: f64 = super::util::parse_amount(caps.get(1)?.as_str())?;
     let from_raw = caps.get(2)?.as_str();
     let to_prefix = caps.get(4).map(|m| m.as_str()).unwrap_or("").trim();
     let from = normalize_currency(from_raw)?;
@@ -83,6 +83,33 @@ pub(crate) fn try_currency_predict(q: &str, fx: &FxStore) -> Option<SearchResult
         return None;
     }
     fx_result(value, from, to, fx)
+}
+
+pub(crate) fn try_currency_home(q: &str, fx: &FxStore) -> Option<SearchResult> {
+    // Bare `10usd` / `10 usd` (no target): convert to the home currency.
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?(?:\s*(?:thousands?|millions?|billions?|trillions?|hundreds?|mil|bn|tn|lakh|lac|lacs|crore|crores|k|cr|crs))?)\s*([a-zA-Z]{3})\s*$")
+            .unwrap()
+    });
+    let caps = RE.captures(q)?;
+    let value = super::util::parse_amount(caps.get(1)?.as_str())?;
+    let from = normalize_currency(caps.get(2)?.as_str())?;
+    let home = super::home::home_currency();
+    let to = if from == home {
+        if home == "USD" {
+            "EUR"
+        } else {
+            "USD"
+        }
+    } else {
+        home
+    };
+    if to == from {
+        return None;
+    }
+    let mut r = fx_result(value, from, to, fx)?;
+    r.score = 10_400;
+    Some(r)
 }
 
 pub(crate) fn fx_result(value: f64, from: &str, to: &str, fx: &FxStore) -> Option<SearchResult> {
@@ -129,8 +156,18 @@ pub(crate) fn predict_currency(prefix: &str, from: &str) -> Option<&'static str>
     ];
     let p = prefix.to_lowercase();
     if p.is_empty() {
-        // Suggest a sensible default different from source
-        return Some(if from == "USD" { "EUR" } else { "USD" });
+        // Bare `10usd to` (no target): convert to the home currency
+        // (`10usd` → INR in India), else fall back to USD.
+        let home = super::home::home_currency();
+        return Some(if from == home {
+            if home == "USD" {
+                "EUR"
+            } else {
+                "USD"
+            }
+        } else {
+            home
+        });
     }
     // Prefer alias prefix match (pou → pound → GBP)
     let mut alias_hits: Vec<(&str, &str)> = ALIASES
@@ -149,4 +186,28 @@ pub(crate) fn predict_currency(prefix: &str, from: &str) -> Option<&'static str>
         .collect();
     code_hits.sort_by_key(|c| c.len());
     code_hits.first().copied().copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn bare_currency_converts_to_home() {
+        // Region-independent: target is always the home currency (or the
+        // USD/EUR fallback when the source already is home).
+        let home = crate::providers::calc::home::home_currency();
+        let mut rates = HashMap::new();
+        rates.insert("USD".into(), 1.1);
+        rates.insert("EUR".into(), 1.0);
+        rates.insert(home.to_string(), 90.0);
+        let store = crate::providers::fx::FxStore::with_cache("EUR", "2026-08-05", rates);
+        let r = try_currency_home("10usd", &store).expect("bare usd");
+        let badge = r.conversion.as_ref().unwrap().right_badge.clone();
+        let expected = if home == "USD" { "EUR" } else { home };
+        assert!(badge.starts_with(expected), "{badge}");
+        // With an explicit target the home default stays out of the way.
+        assert!(try_currency_home("10usd to eur", &store).is_none());
+    }
 }

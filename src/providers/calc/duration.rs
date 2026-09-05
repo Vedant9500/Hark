@@ -68,7 +68,9 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         return None;
     }
     if let Some(s) = scale {
-        if s == 0.0 {
+        // Scale must be a positive finite factor: `1h * -2` has no physical
+        // meaning (audit P3) and unbounded digits parse to inf (audit P3).
+        if !s.is_finite() || s <= 0.0 {
             return None;
         }
         total_secs = if divide {
@@ -76,6 +78,11 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         } else {
             total_secs * s
         };
+    }
+    // Unbounded token digits overflow to inf before the saturating cast in
+    // format_duration can print absurd day counts (audit P3).
+    if !total_secs.is_finite() {
+        return None;
     }
 
     let formatted = format_duration(total_secs.abs());
@@ -213,6 +220,11 @@ fn try_clock_range(lower: &str, original: &str) -> Option<SearchResult> {
 }
 
 pub(crate) fn format_duration(secs: f64) -> String {
+    // Defensive: callers reject non-finite totals, but the saturating
+    // `as i64` cast below would print absurd day counts for inf (audit P3).
+    if !secs.is_finite() {
+        return "0s".into();
+    }
     if secs < 0.001 {
         return "0s".into();
     }
@@ -280,6 +292,24 @@ mod tests {
     fn clock_range_overnight() {
         let r = try_duration_expr("22:00 - 6:30").expect("range");
         assert_eq!(r.title, "8h 30min");
+    }
+
+    #[test]
+    fn negative_scale_rejected() {
+        // Audit P3 (Pass 13): `1h * -2` has no physical meaning.
+        assert!(try_duration_expr("1h 30min * -2").is_none());
+        assert!(try_duration_expr("1h / -2").is_none());
+        // Positive scaling still works.
+        assert!(try_duration_expr("1h 30min * 2").is_some());
+    }
+
+    #[test]
+    fn unbounded_digits_rejected() {
+        // Audit P3 (Pass 13): 400-digit counts parse to inf and the
+        // saturating cast printed absurd day counts.
+        let huge = format!("1{}h 30min", "9".repeat(400));
+        assert!(try_duration_expr(&huge).is_none());
+        assert_eq!(format_duration(f64::INFINITY), "0s");
     }
 
     #[test]

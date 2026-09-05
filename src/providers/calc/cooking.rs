@@ -70,10 +70,22 @@ static INGREDIENTS: &[Ingredient] = &[
 ];
 
 fn find_ingredient(tail: &str) -> Option<&'static Ingredient> {
-    let t = tail.to_ascii_lowercase();
-    INGREDIENTS
-        .iter()
-        .find(|ing| ing.aliases.iter().any(|a| t.contains(a)))
+    // Whole-word, longest-alias-first matching (audit P3): plain substring
+    // matching lets `oil` win inside `oily` and short aliases shadow longer,
+    // more specific ones (`milk` inside `milk chocolate` still resolves to
+    // milk — no chocolate density exists — but at least deliberately).
+    let t = format!(" {} ", tail.to_ascii_lowercase());
+    let mut best: Option<&'static Ingredient> = None;
+    let mut best_len = 0usize;
+    for ing in INGREDIENTS {
+        for a in ing.aliases {
+            if a.len() > best_len && t.contains(&format!(" {a} ")) {
+                best = Some(ing);
+                best_len = a.len();
+            }
+        }
+    }
+    best
 }
 
 /// Volume units → ml. `fl oz` handled after whitespace-normalizing.
@@ -384,6 +396,11 @@ pub(crate) fn try_oven(q: &str) -> Option<SearchResult> {
     } else {
         v_c - FAN_OFFSET_C
     };
+    // Below absolute zero is physically impossible — either side of the
+    // conversion landing there rejects the query (audit P3).
+    if v_c < -273.15 || out_c < -273.15 {
+        return None;
+    }
     let out = match unit.as_str() {
         "c" => out_c,
         _ => out_c * 9.0 / 5.0 + 32.0,
@@ -488,6 +505,25 @@ mod tests {
         assert_eq!(r.title, "4 cups rice");
         assert!(try_recipe_scale("2 cups flour").is_none());
         assert!(try_recipe_scale("double 3 unicorn juice").is_none());
+    }
+
+    #[test]
+    fn ingredient_whole_word_longest_match() {
+        // Audit P3 (Pass 13): substring matching misfires inside larger words.
+        assert_eq!(find_ingredient("oily rag").map(|i| i.name), None);
+        assert_eq!(find_ingredient("olive oil").map(|i| i.name), Some("oil"));
+        assert_eq!(
+            find_ingredient("milk chocolate").map(|i| i.name),
+            Some("milk")
+        );
+    }
+
+    #[test]
+    fn oven_rejects_below_absolute_zero() {
+        // Audit P3 (Pass 13): either side landing below −273.15 °C rejects.
+        assert!(try_oven("conventional -260 c to fan").is_none());
+        assert!(try_oven("fan -300 c to conventional").is_none());
+        assert!(try_oven("fan 180 c to conventional").is_some());
     }
 
     #[test]

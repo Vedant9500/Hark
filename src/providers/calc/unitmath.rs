@@ -38,8 +38,8 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
         // Pure-number expression → plain math owns it.
         return None;
     }
-    // Bare unit values ("5km", "500g", "2kg") render their base value; a bare
-    // fraction quantity ("1/2 cup") shows in its original unit.
+    // Bare unit values ("5km", "500g", "2kg") render the home-aware value;
+    // a bare fraction quantity ("1/2 cup") shows in its original unit.
     if !had_op && !had_fraction {
         return bare_value_card(&qty, q.trim());
     }
@@ -63,7 +63,8 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
     ))
 }
 
-/// Bare unit value ("5km", "500g", "2kg") → base value on the card.
+/// Bare unit value ("5km", "500g", "2kg") → home-aware value on the card
+/// (`10miles` reads as km in India, not base meters).
 /// Single-letter `m`/`b`/`t` stay unresolved here: they are ambiguous
 /// (meters vs minutes/million, bytes vs billion, tonne vs trillion).
 fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
@@ -81,10 +82,29 @@ fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
         Some("time") => "s",
         _ => return None,
     };
+    // Home display unit for the convertible categories; time/data keep
+    // their existing human rendering (durations, smart prefixes).
+    let display_unit: &'static str = match qty.cat {
+        Some("length") | Some("mass") | Some("volume") => {
+            let prefs = super::home::home_prefs();
+            let canon = normalize_unit(unit);
+            super::units::home_default_unit(
+                qty.cat.unwrap_or("length"),
+                &canon,
+                prefs.metric,
+                prefs.temp,
+            )
+            .unwrap_or(base_unit)
+        }
+        _ => base_unit,
+    };
     let title = match qty.cat {
         Some("time") => super::duration::format_duration(qty.base),
         Some("data") => smart_prefix(qty.base, "data"),
-        _ => format!("{} {base_unit}", format_number(qty.base)),
+        _ => {
+            let (df, _) = to_base(display_unit)?;
+            format!("{} {display_unit}", format_number(qty.base / df))
+        }
     };
     let subtitle = format!("{} {} = {title}", format_number(orig), unit);
     Some(card_result(
@@ -92,7 +112,7 @@ fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
         subtitle.clone(),
         subtitle,
         shown.to_string(),
-        base_unit,
+        display_unit,
         title,
         "base",
     ))
@@ -569,19 +589,21 @@ mod tests {
 
     #[test]
     fn bare_unit_values() {
+        // Home-aware display: metric homes read SI, imperial homes US units.
+        let metric = super::super::home::home_prefs().metric;
         let r = try_unit_math("5km").expect("5km");
-        assert_eq!(r.title, "5000 m");
+        assert_eq!(r.title, if metric { "5000 m" } else { "3.1069 mi" });
         assert_eq!(r.conversion.as_ref().unwrap().right_badge, "base");
         let r = try_unit_math("2kg").expect("2kg");
-        assert_eq!(r.title, "2000 g");
+        assert_eq!(r.title, if metric { "2000 g" } else { "4.4092 lb" });
         let r = try_unit_math("500g").expect("500g");
-        assert_eq!(r.title, "500 g");
+        assert_eq!(r.title, if metric { "0.5 kg" } else { "17.637 oz" });
         let r = try_unit_math("100mb").expect("100mb");
         assert_eq!(r.title, "100 mb");
         let r = try_unit_math("5min").expect("5min");
         assert_eq!(r.title, "5min");
         let r = try_unit_math("15.5 cm").expect("decimal");
-        assert_eq!(r.title, "0.155 m");
+        assert_eq!(r.title, if metric { "0.155 m" } else { "6.1024 in" });
         // Ambiguous single-letter units stay unhandled here.
         assert!(try_unit_math("100m").is_none());
         assert!(try_unit_math("1b").is_none());

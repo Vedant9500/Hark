@@ -46,7 +46,7 @@ impl FxStore {
     /// Test-only: inject an in-memory rate table without touching disk or network.
     /// `last_attempt_secs` is pre-set so `convert` never schedules a bg fetch.
     #[cfg(test)]
-    fn with_cache(base: &str, date: &str, rates: HashMap<String, f64>) -> Self {
+    pub(crate) fn with_cache(base: &str, date: &str, rates: HashMap<String, f64>) -> Self {
         let fetched_at = now_secs();
         Self {
             shared: Arc::new(FxShared {

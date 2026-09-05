@@ -472,8 +472,8 @@ fn magnitude_factor(word: &str) -> Option<f64> {
         "tn" | "trillion" | "trillions" => Some(1_000_000_000_000.0),
         "hundred" | "hundreds" => Some(100.0),
         // Common South-Asian scales (optional nicety).
-        "lakh" | "lac" | "lakhs" | "lacs" => Some(100_000.0),
-        "crore" | "crores" => Some(10_000_000.0),
+        "lakh" | "lac" | "lakhs" | "lacs" | "l" => Some(100_000.0),
+        "crore" | "crores" | "cr" | "crs" => Some(10_000_000.0),
         _ => None,
     }
 }
@@ -659,6 +659,9 @@ mod tests {
         // Scientific still works; not confused with magnitude
         assert!((eval_str("1e3").unwrap() - 1_000.0).abs() < 1e-12);
         assert!((eval_str("1e3 + 1k").unwrap() - 2_000.0).abs() < 1e-9);
+        // South-Asian shorts: `1.5cr`, `5l`.
+        assert!((eval_str("1.5cr").unwrap() - 15_000_000.0).abs() < 1.0);
+        assert!((eval_str("5l").unwrap() - 500_000.0).abs() < 1e-9);
         // Unit-like tokens must not be partially eaten as magnitude
         assert!(eval_str("10km").is_none());
     }

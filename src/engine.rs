@@ -1274,6 +1274,36 @@ mod engine_search_tests {
     }
 
     #[test]
+    fn tier2_home_defaults_render_cards() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        // Slashed + abbreviated speed units with explicit targets.
+        for q in ["36 kmph to m/s", "60 mph to km/h", "10 m/s to kph"] {
+            let r = te.engine.search(q);
+            assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "{q}");
+        }
+        // Bare temperature converts to the home default (region-independent:
+        // F→C and C→F round-trip in every region).
+        let r = te.engine.search("100f");
+        assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "100f");
+        // Bare imperial renders home-aware via unitmath (`10miles` → km on
+        // metric homes; kind stays Calc like all unitmath base cards).
+        let r = te.engine.search("10miles");
+        assert_eq!(first_kind(&r), Some(ResultKind::Calc), "10miles");
+        assert!(r[0].conversion.is_some(), "10miles must carry a card");
+        // Magnitude-suffixed amounts convert like finance.
+        let r = te.engine.search("10k kg to lb");
+        assert_eq!(first_kind(&r), Some(ResultKind::Conversion), "10k kg to lb");
+        // Bare magnitudes still belong to math, not bare units.
+        assert!(
+            te.engine
+                .search("10k")
+                .iter()
+                .all(|x| x.kind != ResultKind::Conversion),
+            "10k must not produce a conversion card"
+        );
+    }
+
+    #[test]
     fn tier2_quickwins_renders_cards() {
         let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
         for q in [

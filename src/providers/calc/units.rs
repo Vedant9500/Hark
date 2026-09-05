@@ -6,10 +6,10 @@ use regex::Regex;
 
 pub(crate) static RE_CONVERT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)\s*",
-        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?(?:\s*(?:thousands?|millions?|billions?|trillions?|hundreds?|mil|bn|tn|lakh|lac|lacs|crore|crores|cr|crs|k))?)\s*",
+        r"([a-zA-Z°²³/µμ/]+(?:\^[23])?)\s+",
         r"(?:to|in|as|->|→)\s+",
-        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)?\s*$",
+        r"([a-zA-Z°²³/µμ/]+(?:\^[23])?)?\s*$",
     ))
     .unwrap()
 });
@@ -17,27 +17,25 @@ pub(crate) static RE_CONVERT: Lazy<Regex> = Lazy::new(|| {
 // Incomplete: "10kg to pou" / "10 kg to" (target optional/partial)
 pub(crate) static RE_CONVERT_PARTIAL: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
-        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)\s*",
-        r"([a-zA-Z°²³/µμ]+(?:\^[23])?)\s+",
+        r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?(?:\s*(?:thousands?|millions?|billions?|trillions?|hundreds?|mil|bn|tn|lakh|lac|lacs|crore|crores|cr|crs|k))?)\s*",
+        r"([a-zA-Z°²³/µμ/]+(?:\^[23])?)\s+",
         r"(to|in|as|->|→)\s*",
-        r"([a-zA-Z°²³/µμ]*)\s*$",
+        r"([a-zA-Z°²³/µμ/]*)\s*$",
     ))
     .unwrap()
 });
 
 pub(crate) fn try_conversion(q: &str) -> Option<SearchResult> {
     let caps = RE_CONVERT.captures(q)?;
-    let value: f64 = super::util::parse_qty_number(caps.get(1)?.as_str())?;
-    let from_raw = caps.get(2)?.as_str();
+    let (value, from) = split_amount_unit(caps.get(1)?.as_str(), caps.get(2)?.as_str())?;
     let to_raw = caps.get(3)?.as_str();
     if to_raw.is_empty() {
         return None;
     }
     // Skip pure currency pairs (handled by FX)
-    if is_currency(from_raw) && is_currency(to_raw) {
+    if is_currency(&from) && is_currency(to_raw) {
         return None;
     }
-    let from = resolve_unit(from_raw)?;
     let to = resolve_unit(to_raw)?;
     unit_result(value, &from, &to)
 }
@@ -49,12 +47,11 @@ pub(crate) fn try_conversion(q: &str) -> Option<SearchResult> {
 /// renders as the fixed hero card; ↓/↑ wheels the other targets through it.
 pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
     let caps = RE_CONVERT_PARTIAL.captures(q)?;
-    let value: f64 = super::util::parse_qty_number(caps.get(1)?.as_str())?;
-    let from_raw = caps.get(2)?.as_str();
+    let (value, from) = split_amount_unit(caps.get(1)?.as_str(), caps.get(2)?.as_str())?;
     let to_prefix = caps.get(4).map(|m| m.as_str()).unwrap_or("").trim();
 
     // Don't steal currency queries
-    if is_currency(from_raw) {
+    if is_currency(&from) {
         return None;
     }
     // Exact unit already handled
@@ -62,7 +59,6 @@ pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
         return None;
     }
 
-    let from = resolve_unit(from_raw)?;
     let from_cat = to_base(&from)?.1;
     let mut targets = predict_units(to_prefix, from_cat, &from);
     if targets.is_empty() {
@@ -83,6 +79,254 @@ pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
     } else {
         Some(out)
     }
+}
+
+/// Bare temperature with no target (`100f`, `30c`): convert to the home
+/// default (C in India, F in the US).
+/// Other categories already render bare base-value cards via unitmath, so
+/// claiming them here would only duplicate that lane — temperature is the
+/// one bare gap (unitmath has no temperature support).
+/// Glued magnitudes (`10k`) are refused so math/finance keep pure numbers.
+pub(crate) fn try_unit_home(q: &str) -> Option<SearchResult> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)(\s*)([a-zA-Z°²³/µμ/]+(?:\^[23])?)\s*$")
+            .unwrap()
+    });
+    let caps = RE.captures(q)?;
+    let num_raw = caps.get(1)?.as_str();
+    let sep = caps.get(2)?.as_str();
+    let unit_raw = caps.get(3)?.as_str();
+    // `10k` = ten thousand (math), `10 k` = ten kelvin: a glued
+    // magnitude word never reads as a unit here.
+    if sep.is_empty() && is_magnitude_word(unit_raw) {
+        return None;
+    }
+    // Bare single-letter m/b/t stay silent (meters vs minutes/million…):
+    // same ambiguity rule as unitmath's bare_value_card.
+    if matches!(unit_raw.to_ascii_lowercase().as_str(), "m" | "b" | "t") {
+        return None;
+    }
+    let value = super::util::parse_qty_number(num_raw.trim())?;
+    let from = resolve_unit(unit_raw)?;
+    // Temperature-only (see doc comment): unitmath owns every other bare lane.
+    if !matches!(from.as_str(), "c" | "f" | "k") {
+        return None;
+    }
+    let category = "temperature";
+    let home = super::home::home_prefs();
+    let to = home_default_unit(category, &from, home.metric, home.temp)?;
+    if to == from {
+        return None;
+    }
+    let mut r = unit_result(value, &from, to)?;
+    r.score = 9_900;
+    Some(r)
+}
+
+/// Words that read as magnitudes when glued to a number (`10k`, `5cr`).
+/// Single `m`/`b`/`t` are units (meters/bytes/tonnes), never magnitudes here.
+fn is_magnitude_word(w: &str) -> bool {
+    matches!(
+        w.to_ascii_lowercase().as_str(),
+        "k" | "l"
+            | "cr"
+            | "crs"
+            | "lac"
+            | "lacs"
+            | "lakh"
+            | "lakhs"
+            | "mil"
+            | "bn"
+            | "tn"
+            | "thousand"
+            | "thousands"
+            | "million"
+            | "millions"
+            | "billion"
+            | "billions"
+            | "trillion"
+            | "trillions"
+            | "hundred"
+            | "hundreds"
+            | "crore"
+            | "crores"
+    )
+}
+
+/// Home default target per category, never equal to `from`.
+/// Metric homes land on SI-ish units, imperial homes on US customary;
+/// small units step to a readable neighbor rather than a silly extreme
+/// (`10in` → cm, not km).
+pub(crate) fn home_default_unit(
+    category: &str,
+    from: &str,
+    metric: bool,
+    temp: &str,
+) -> Option<&'static str> {
+    // Normalize to a 'static temp so branches below never borrow the param.
+    let home_t: &'static str = if temp == "c" { "c" } else { "f" };
+    let to = match category {
+        "length" if metric => match from {
+            "mi" | "nmi" => "km",
+            "yd" | "ft" => "m",
+            "in" => "cm",
+            "km" => "m",
+            "m" => "km",
+            "cm" => "m",
+            _ => "m",
+        },
+        "length" => match from {
+            "in" => "ft",
+            "ft" => "mi",
+            "yd" => "ft",
+            "mi" => "km",
+            "km" => "mi",
+            "m" => "ft",
+            "cm" => "in",
+            _ => "ft",
+        },
+        "mass" if metric => match from {
+            "lb" => "kg",
+            "oz" => "g",
+            "st" | "t" => "kg",
+            "kg" => "g",
+            "g" => "kg",
+            "mg" | "ug" => "g",
+            _ => "kg",
+        },
+        "mass" => match from {
+            "oz" => "lb",
+            "lb" => "oz",
+            "st" => "lb",
+            "g" => "oz",
+            "kg" => "lb",
+            _ => "oz",
+        },
+        "volume" if metric => match from {
+            "gal" | "qt" => "l",
+            "cup" | "pt" | "tbsp" | "tsp" | "floz" => "ml",
+            "l" => "ml",
+            "ml" => "l",
+            _ => "ml",
+        },
+        "volume" => match from {
+            "ml" => "cup",
+            "l" => "gal",
+            "cup" | "pt" => "floz",
+            "gal" => "qt",
+            "qt" => "cup",
+            "tbsp" => "floz",
+            "tsp" => "tbsp",
+            _ => "cup",
+        },
+        "temperature" => {
+            if from == home_t {
+                if home_t == "c" {
+                    "f"
+                } else {
+                    "c"
+                }
+            } else {
+                home_t
+            }
+        }
+        "speed" if metric => match from {
+            "mph" | "kn" => "km/h",
+            "ft/s" => "m/s",
+            "m/s" => "km/h",
+            _ => "m/s",
+        },
+        "speed" => match from {
+            "mph" => "ft/s",
+            "ft/s" | "kn" | "m/s" | "km/h" => "mph",
+            _ => "mph",
+        },
+        "time" => match from {
+            "s" => "min",
+            "min" => "h",
+            "h" => "d",
+            "d" => "wk",
+            _ => "h",
+        },
+        "data" => match from {
+            "b" => "kb",
+            "kb" => "mb",
+            "mb" => "gb",
+            "gb" => "tb",
+            "tb" => "pb",
+            "kib" => "mib",
+            "mib" => "gib",
+            "gib" => "tib",
+            _ => "mb",
+        },
+        "area" if metric => {
+            if from == "ha" {
+                "m2"
+            } else {
+                "ha"
+            }
+        }
+        "area" => {
+            if from == "acre" {
+                "ft2"
+            } else {
+                "acre"
+            }
+        }
+        "pressure" => {
+            if from == "kpa" {
+                "pa"
+            } else {
+                "kpa"
+            }
+        }
+        "energy" => {
+            if from == "kj" {
+                "j"
+            } else {
+                "kj"
+            }
+        }
+        "power" => {
+            if from == "kw" {
+                "w"
+            } else {
+                "kw"
+            }
+        }
+        "angle" => {
+            if from == "deg" {
+                "rad"
+            } else {
+                "deg"
+            }
+        }
+        "frequency" => {
+            if from == "mhz" {
+                "khz"
+            } else {
+                "mhz"
+            }
+        }
+        _ => return None,
+    };
+    Some(to)
+}
+
+/// Split a regex amount group and its unit, undoing greedy magnitude lexes:
+/// `36 kmph` lexes as number `36 k` + unit `mph`, but `kmph` is a real unit —
+/// the unit reading wins. Otherwise applies the magnitude (`10k kg` → 10000).
+pub(crate) fn split_amount_unit(raw_num: &str, unit_raw: &str) -> Option<(f64, String)> {
+    let (num, _, word) = super::util::split_magnitude_word(raw_num);
+    if let Some(w) = word {
+        let combined = format!("{w}{unit_raw}");
+        if let Some(canon) = resolve_unit(&combined) {
+            let v = super::util::parse_qty_number(num)?;
+            return Some((v, canon));
+        }
+    }
+    let v = super::util::parse_amount(raw_num)?;
+    Some((v, resolve_unit(unit_raw)?))
 }
 
 pub(crate) fn unit_result(value: f64, from: &str, to: &str) -> Option<SearchResult> {
@@ -163,13 +407,22 @@ pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<Str
         }
     }
 
-    // Empty prefix: prefer common targets per category
+    // Empty prefix: prefer common targets per category. The first entries
+    // follow the home region (metric vs US customary) so bare `10miles`
+    // offers km in India and `10km` offers mi in the US.
     if p.is_empty() {
+        let metric = super::home::home_uses_metric();
+        let temp_home = super::home::home_temp_unit();
         let preferred: &[&str] = match category {
+            "mass" if metric => &["kg", "g", "lb", "oz", "t"],
             "mass" => &["lb", "g", "oz", "t"],
-            "length" => &["mi", "ft", "cm", "in"],
+            "length" if metric => &["km", "m", "cm", "mi", "ft", "in"],
+            "length" => &["mi", "ft", "km", "cm", "in"],
+            "volume" if metric => &["l", "ml", "cup", "gal"],
             "volume" => &["gal", "ml", "cup"],
+            "temperature" if temp_home == "c" => &["c", "f", "k"],
             "temperature" => &["f", "c", "k"],
+            "speed" if metric => &["km/h", "m/s", "mph", "kn"],
             "speed" => &["mph", "km/h", "kn"],
             "data" => &["mb", "gb", "kib"],
             "time" => &["min", "h", "d"],
@@ -280,6 +533,9 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("km/h", "km/h"),
     ("kph", "km/h"),
     ("kmh", "km/h"),
+    ("kmph", "km/h"),
+    ("km/s", "km/s"),
+    ("kmps", "km/s"),
     ("m/s", "m/s"),
     ("kn", "kn"),
     ("knot", "kn"),
@@ -359,6 +615,7 @@ pub(crate) fn normalize_unit(u: &str) -> String {
         "tebibytes" | "tebibyte" => "tib".into(),
         "mps" | "meterspersecond" | "metrespersecond" => "m/s".into(),
         "kilometersperhour" | "kilometresperhour" => "km/h".into(),
+        "kilometerspersecond" | "kilometrespersecond" => "km/s".into(),
         "mi/h" | "milesperhour" => "mph".into(),
         "fps" | "ft/s" | "feetpersecond" => "ft/s".into(),
         "kt" | "kts" => "kn".into(),
@@ -482,6 +739,7 @@ pub(crate) fn to_base(unit: &str) -> Option<(f64, &'static str)> {
         // speed → m/s
         "m/s" => Some((1.0, "speed")),
         "km/h" => Some((1000.0 / 3600.0, "speed")),
+        "km/s" => Some((1000.0, "speed")),
         "mph" => Some((1609.344 / 3600.0, "speed")),
         "ft/s" => Some((0.3048, "speed")),
         "kn" => Some((1852.0 / 3600.0, "speed")),
@@ -530,7 +788,60 @@ pub(crate) fn to_base(unit: &str) -> Option<(f64, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{try_conversion, try_conversion_predict};
+    use super::{home_default_unit, try_conversion, try_conversion_predict, try_unit_home};
+
+    #[test]
+    fn speed_units_complete() {
+        // km/s was missing; kmph/kmps abbreviations now resolve.
+        let r = try_conversion("36 kmph to m/s").expect("kmph");
+        assert_eq!(r.title, "10 m/s");
+        let r = try_conversion("1 kmps to m/s").expect("kmps");
+        assert_eq!(r.title, "1000 m/s");
+        // Slash forms parse directly in the unit grammar now.
+        let r = try_conversion("10 m/s to kph").expect("slash unit");
+        assert_eq!(r.title, "36 km/h");
+    }
+
+    #[test]
+    fn bare_temperature_converts_to_home_default() {
+        // Region-independent: F→C and C→F round-trip in every region
+        // (home temp only decides same-unit input: `30c`→F everywhere).
+        let r = try_unit_home("100f").expect("bare f");
+        assert!(r.title.starts_with("37.7778"), "{}", r.title);
+        let r = try_unit_home("30c").expect("bare c");
+        assert!(r.title.starts_with("86"), "{}", r.title);
+        // Other bare lanes belong to unitmath — stay out.
+        assert!(try_unit_home("10miles").is_none());
+        assert!(try_unit_home("10kg").is_none());
+        // Glued magnitudes belong to math, not bare units.
+        assert!(try_unit_home("10k").is_none());
+        assert!(try_unit_home("100").is_none());
+        assert!(try_unit_home("firefox").is_none());
+    }
+
+    #[test]
+    fn home_defaults_follow_region() {
+        // India: metric, C.
+        assert_eq!(home_default_unit("length", "mi", true, "c"), Some("km"));
+        assert_eq!(home_default_unit("temperature", "f", true, "c"), Some("c"));
+        assert_eq!(home_default_unit("speed", "mph", true, "c"), Some("km/h"));
+        // US: customary, F.
+        assert_eq!(home_default_unit("length", "km", false, "f"), Some("mi"));
+        assert_eq!(home_default_unit("temperature", "c", false, "f"), Some("f"));
+        assert_eq!(home_default_unit("speed", "km/h", false, "f"), Some("mph"));
+    }
+
+    #[test]
+    fn magnitude_suffix_converts() {
+        // Audit P3 (Pass 7): `10k kg` works like finance amounts.
+        let r = try_conversion("10k kg to lb").expect("10k kg");
+        assert!(r.title.starts_with("22046.2"), "{}", r.title);
+        let r = try_conversion("1cr g to kg").expect("1cr");
+        assert_eq!(r.title, "10000 kg");
+        // Bare `k` stays kelvin (suffix must not steal the unit).
+        assert!(try_conversion("10 k to c").is_some());
+        assert!(try_conversion("10 kg to lb").is_some());
+    }
 
     #[test]
     fn fractional_quantity_converts() {

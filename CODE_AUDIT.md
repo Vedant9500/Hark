@@ -632,7 +632,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** low-severity wrong/unhelpful answers, not crashes.
 - **Remediation:** define and enforce provider-specific bounds (e.g. percentage 0–100 where “off/GST” semantically implies it, reasonable rate/term ranges) and reject non-finite derived outputs at one shared boundary before `card_result`.
 
-#### P3 — currency/unit conversion value parsing rejects magnitude-suffixed amounts (`src/providers/calc/units.rs:7-42`, `src/providers/calc/currency.rs:58-85`)
+#### P3 — currency/unit conversion value parsing rejects magnitude-suffixed amounts (`src/providers/calc/units.rs:7-42`, `src/providers/calc/currency.rs:58-85`) — **fixed 2026-09-05** (shared `split_magnitude`/`parse_amount` in `util.rs`, finance word parity minus colliding `m`; `k` stays kelvin via regex backtracking, locked by test)
 
 - **Root cause:** `RE_CONVERT`/`RE_CONVERT_PARTIAL` capture a bare decimal number and parse it with `str::parse::<f64>()`; unlike financial amounts, they do not call `expr::eval_str` or accept `k/mil/crore` suffixes.
 - **Verified pathway:** `10k kg to lb` does not match the unit grammar because `10k` is not a valid bare decimal token; plain `10 kg to lb` works. Currency likewise supports `100 usd to inr` but not `1.5k usd to inr`, while the same magnitude spelling works in finance.
@@ -671,21 +671,21 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P2 — invalid Roman numeral strings are accepted and silently converted (`src/providers/calc/quick.rs:160-186`)
+#### P2 — invalid Roman numeral strings are accepted and silently converted (`src/providers/calc/quick.rs:160-186`) — **fixed 2026-09-05** (reverse conversion must round-trip through canonical `to_roman`; regression cases added)
 
 - **Root cause:** `from_roman` only walks characters right-to-left, subtracts a smaller value after a larger one, and rejects zero/overflow. It does not validate canonical Roman-numeral syntax or the standard 1–3999 range on reverse conversion. `to_roman` enforces the range, but reverse conversion does not.
 - **Mechanical examples verified against the implementation:** `IIII` → 4, `IVIV` → 8, `IXIX` → 18, `VIVI` → 10, `VV` → 10, `LL` → 100, `DD` → 1000, `IM` → 999, `IC` → 99, `XD` → 490, `XM` → 990, `MIM` → 1999. All are non-canonical, and subtractive prefixes such as `IM`/`IC`/`XD`/`XM` were never legal Roman numerals.
 - **Impact:** authoritative-looking wrong calculator answers (`roman IM` presents “999” as a conversion). No panic or security impact.
 - **Remediation:** parse with a strict canonical-form regex (`^M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$`) and reject empty/zero matches, or generate every canonical numeral 1–3999 into a lookup map. Add regression cases for every malformed family above.
 
-#### P3 — ambiguous timezone prediction can map unrelated prefixes to a city (`src/providers/calc/timezone.rs:288-330`)
+#### P3 — ambiguous timezone prediction can map unrelated prefixes to a city (`src/providers/calc/timezone.rs:288-330`) — **fixed 2026-09-05** (same ≥3-char fuzzy gate as the Pass 18 short-alias finding)
 
 - **Root cause:** `predict_tz` includes matches when `p.starts_with(alias)` **or** `alias.starts_with(p)`, then sorts by score but gives every “other” match 100 and falls back to lexical alias order. Short ambiguous prefixes can therefore resolve to a seemingly arbitrary city rather than surfacing ambiguity.
 - **Verified logic path:** a prefix that is not an exact/startswith alias but is a superstring of an alias (for example a phrase beginning with `la`, `ny`, or `sf`) is accepted for the contained alias; a short prefix matching multiple aliases chooses lexicographically first among equal 100 scores. No single deterministic wrong city is asserted here without runtime GTK-independent evidence, so the confirmed defect is ambiguity acceptance/arbitrary tie-breaking, not a specific pair.
 - **Impact:** plausible wrong timezone answer for ambiguous input.
 - **Remediation:** when more than one distinct timezone matches, return an ambiguity/error result (or produce prediction rows as the unit picker does); require the alias-prefix direction for prediction and reserve superstring matching for exact normalized lookup.
 
-#### P3 — timezone conversions silently resolve nonexistent local times to no result during DST gaps (`src/providers/calc/timezone.rs:501-543`)
+#### P3 — timezone conversions silently resolve nonexistent local times to no result during DST gaps (`src/providers/calc/timezone.rs:501-543`) — **fixed 2026-09-05** (same `build_tz_conversion_on` fix as the Pass 18 DST finding)
 
 - **Root cause:** `and_local_timezone(from_tz).single()?` intentionally rejects ambiguous/nonexistent local timestamps. Rejecting a nonexistent spring-forward time is safe, but because the provider returns `Option<SearchResult>`, users receive no explanation—the query falls through to other providers or empty state.
 - **Impact:** usability/error-feedback defect, not an incorrect conversion. Ambiguous fall-back times are also silently discarded rather than showing both possibilities.
@@ -939,7 +939,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Impact:** dropped/cancelled drags and a wedged session when two drags start within 1.2 s (common when dragging several files in sequence). CWE-362 / CWE-404.
 - **Remediation:** store the pending `glib::SourceId` in `DragSession`; `begin_session` removes any pending timer before arming flags; additionally make the timer body a no-op when `session.active.get()` is true.
 
-#### P2 — NaN/inf fuel-economy values pass the `<= 0.0` guard (`src/providers/calc/fueleco.rs:59-67`)
+#### P2 — NaN/inf fuel-economy values pass the `<= 0.0` guard (`src/providers/calc/fueleco.rs:59-67`) — **already fixed** (verified live 2026-09-05: `is_finite` input guard + finite-output gate)
 
 - **Root cause:** the value is parsed with bare `str::parse::<f64>()`, which accepts `"nan"`, `"inf"`, `"infinity"` spellings; the only guard is `value <= 0.0`, which is false for NaN, and `inf > 0` also passes. `nan km/l to mpg` produces a `NaN mpg` card (`format_number` stringifies non-finite values by design, `util.rs:16-18`); `nan mpg to l/100km` divides by NaN.
 - **Impact:** garbage calculator card (CWE-20 numeric validation).
@@ -991,27 +991,27 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** a brand-new id scores `1*1000 + 5000 = 6000`; a day-old entry with `count ≥ 2` scores ≥ 7000. With the map at `MAX_ENTRIES`, the just-launched id is the coldest and is pruned inside the same `record` that inserted it — the write is a no-op but still marks dirty and triggers a disk rewrite. Prune math itself is correct.
 - **Remediation:** pin the recorded id during prune.
 
-#### P3 — duration scale accepts negative multipliers (`src/providers/calc/duration.rs:53-59`, `71`)
+#### P3 — duration scale accepts negative multipliers (`src/providers/calc/duration.rs:53-59`, `71`) — **fixed 2026-09-05** (scale must be positive finite; regression test added)
 
 - **Root cause:** `RE_SCALE` captures `[+-]?\d+(?:\.\d+)?`; the guard only rejects `s == 0.0`. `1h 30min * -2` yields a `-3h` title via the explicit negative-formatting branch.
 - **Remediation:** reject `s < 0.0` unless negative durations are a documented feature.
 
-#### P3 — unbounded duration digits overflow to `inf`, saturating cast prints absurd values (`src/providers/calc/duration.rs:216-220`)
+#### P3 — unbounded duration digits overflow to `inf`, saturating cast prints absurd values (`src/providers/calc/duration.rs:216-220`) — **fixed 2026-09-05** (non-finite totals rejected + defensive `format_duration` guard; regression test added)
 
 - **Root cause:** `parse_duration_tokens` caps neither token count nor digit length; a ≥309-digit count parses to `f64::INFINITY`, `inf < 0.001` is false, and `inf.round() as i64` saturates to `i64::MAX`, producing `106751991167300d 15h 30min 8s`-class titles. No crash (saturating cast), purely wrong output (CWE-190).
 - **Remediation:** early-return in `format_duration` for non-finite input and cap token digit length in the parser.
 
-#### P3 — cooking ingredient match is substring-based, assigning wrong densities (`src/providers/calc/cooking.rs:74-79`)
+#### P3 — cooking ingredient match is substring-based, assigning wrong densities (`src/providers/calc/cooking.rs:74-79`) — **fixed 2026-09-05** (whole-word, longest-alias-first; regression test added)
 
 - **Root cause:** `find_ingredient` matches the first table alias **contained** in the tail string. `1 cup milk chocolate` matches `"milk"` (244 g/cup) instead of a chocolate density (~40% error); `2 cups sugar free pudding mix` matches `"sugar"`; `100g flour tortilla in cups` matches `"flour"`.
 - **Remediation:** require whole-word (whitespace-boundary) alias matching.
 
-#### P3 — oven conversion accepts physically impossible temperatures (`src/providers/calc/cooking.rs:378-391`)
+#### P3 — oven conversion accepts physically impossible temperatures (`src/providers/calc/cooking.rs:378-391`) — **fixed 2026-09-05** (reject when either side < −273.15 °C; regression test added — note the audit's `-260 c` example only violates in the conventional→fan direction)
 
 - **Root cause:** the fan/conventional regex accepts `[+-]?\d+` with no range check; `fan -260 c to conventional` renders `-280 c`, below absolute zero.
 - **Remediation:** reject `v_c < -273.15` (or clamp to a sane cooking range) after unit conversion.
 
-#### P3 — battery capacity `u8` accepts firmware values above 100 (`src/providers/calc/battery.rs:173-174`)
+#### P3 — battery capacity `u8` accepts firmware values above 100 (`src/providers/calc/battery.rs:173-174`) — **fixed 2026-09-05** (clamped to 100 at parse; regression test added)
 
 - **Root cause:** `capacity` parses into `Option<u8>` (0–255); some firmware momentarily reports >100 while charging, rendering `battery 101%`. Cosmetic/environmental, no crash.
 - **Remediation:** clamp to `c.min(100)` after parse.
@@ -1590,7 +1590,7 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 
 ### New verified findings
 
-#### P2 — DST-gap/ambiguous local times silently produce no card (`src/providers/calc/timezone.rs:510-516`)
+#### P2 — DST-gap/ambiguous local times silently produce no card (`src/providers/calc/timezone.rs:510-516`) — **fixed 2026-09-05** (`build_tz_conversion_on`: gap → "doesn't exist" error card, ambiguous → earliest occurrence; date-injectable for deterministic tests)
 
 - **Root cause:** `and_local_timezone(from_tz).single()?` returns `None` when a wall-clock time falls in a DST gap (spring-forward) or is ambiguous (fall-back). `01:30 in new york` on a fall-back date yields nothing at all — no card, no error, the query just falls through.
 - **Remediation:** use `.earliest()`/`.latest()` with a disambiguation hint (or render both candidates in the card) instead of `.single()?`.
@@ -1635,12 +1635,12 @@ Areas targeted per the Pass 17 close-out: `calc/timezone.rs` + `quick.rs` at inc
 - **Trace:** `index.exclude = ["/"]` survives load (no sanitize) → `ExcludeSet::from_list` pushes an empty pattern (`config.rs:1185-1195`) → any scoped query at a missing absolute path (`report.md in /nonxistent`) falls back to walking `/` (Pass 16 finding, `deep.rs:285-290`) → the walk's first entry hits `should_skip_entry(root="/")` (`deep.rs:646`) → `ExcludeSet::matches` calls `comps.windows(0)` (`config.rs:1220-1234`) → **panic** — and the deep walk thread (`ui/mod.rs:2676`) has no `catch_unwind`, with `panic = "abort"` the entire daemon dies. Deterministic, repeatable, user-input-triggered. CWE-20 + CWE-754. (Compounds two individually-known findings into a P1 chain; the `windows(0)` empty-pattern fix and the `/`-fallback fix each break the chain independently.)
 - **Remediation:** fix either leg (skip empty exclude patterns; or stop the `/` fallback) — and consider `catch_unwind` in the deep-walk worker as defense-in-depth.
 
-#### P3 — predict-tz short-alias scoring misroutes ambiguous city prefixes (`src/providers/calc/timezone.rs`)
+#### P3 — predict-tz short-alias scoring misroutes ambiguous city prefixes (`src/providers/calc/timezone.rs`) — **fixed 2026-09-05** (fuzzy branches require ≥3-char input; exact `ny`/`la`/`sf` kept; `fold_diacritic` in `normalize_place_key` so `são paulo` resolves)
 
 - **Root cause:** `starts_with(alias)` matching routes `time in s` → San Francisco and `15:00 in las` → Los Angeles; `15:00 in b` → BST/London; no diacritic folding makes `são paulo` unresolvable. CET/EST abbreviation labels contradict the DST math in summer.
 - **Remediation:** require ≥3-char aliases, fold diacritics, and relabel fixed-offset abbreviations during DST.
 
-#### P3 — quickwin numeric/roman edge cases (`src/providers/calc/quick.rs`)
+#### P3 — quickwin numeric/roman edge cases (`src/providers/calc/quick.rs`) — **partial 2026-09-05** (roman canonical check via `to_roman` round-trip + reversed-bounds swap fixed with tests; bare-hex words kept as tested `ff to dec` feature — ambiguous by nature, wontfix; `format_number` scientific below 1e-6 fixed in `util.rs`)
 
 - Hex-only English words parse as numbers (`decade to dec` becomes base conversion); `from_roman` accepts non-canonical numerals (`roman ic` → 99); reversed `random a b` bounds always return `a` while the badge claims `a..=b`; `format_number` collapses sub-5e-9 values to `0`.
 - **Remediation:** require `0x` prefix or digit-only tokens for hex; validate canonical Roman form; swap/correct reversed-bounds badge; format tiny magnitudes in scientific notation.
@@ -2016,23 +2016,23 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P3 | Wheel flip primes outgoing panel mid-transition | `ui/rows.rs:449-477` | 17 |
 | P3 | Trash pre-check TOCTOU degrades error message | `files/mod.rs:583-589` | 17 |
 
-### 🧮 Mathematical / Numeric
+### 🧮 Mathematical / Numeric — ✅ triaged 2026-09-05 (10 fixed, 2 already-fixed, 1 wontfix)
 
-| Sev | Finding | Location | Pass |
-|---|---|---|---|
-| P2 | NaN/inf fuel-economy values pass the `<= 0.0` guard | `calc/fueleco.rs:59-67` | 13 |
-| P2 | DST-gap/ambiguous times silently produce no card | `calc/timezone.rs:510-516` | 18 |
-| P3 | Compound-interest inf/NaN passthrough (financial) | `calc/financial.rs:34-55` | 7-family |
-| P3 | Non-finite fraction literals accepted (`NaN/1`) | `calc/util.rs:5-15` | 7-family |
-| P3 | Magnitude-suffixed amounts rejected in units/currency (`10k kg`) | `calc/units.rs`, `currency.rs` | 7-family |
-| P3 | Duration scale accepts negative multipliers (`1h * -2` → `-3h`) | `calc/duration.rs:53-71` | 13 |
-| P3 | Unbounded duration digits → inf → saturating cast absurd output | `calc/duration.rs:216-220` | 13 |
-| P3 | Cooking ingredient substring match assigns wrong density | `calc/cooking.rs:74-79` | 13 |
-| P3 | Oven conversion accepts below-absolute-zero temps | `calc/cooking.rs:378-391` | 13 |
-| P3 | Battery capacity u8 accepts >100 firmware values | `calc/battery.rs:173-174` | 13 |
-| P3 | Predict-tz short-alias misrouting (`s`→SF, `b`→BST); no diacritic folding | `calc/timezone.rs` | 18 |
-| P3 | Hex-words parse as numbers; non-canonical roman; reversed random bounds | `calc/quick.rs` | 18 |
-| P3 | `format_number` collapses sub-5e-9 values to `0` | `calc/quick.rs` | 18 |
+| Sev | Finding | Location | Pass | Status |
+|---|---|---|---|---|
+| P2 | NaN/inf fuel-economy values pass the `<= 0.0` guard | `calc/fueleco.rs:59-67` | 13 | already fixed (`is_finite` guard live) |
+| P2 | DST-gap/ambiguous times silently produce no card | `calc/timezone.rs:510-516` | 18 | fixed (gap → error card; ambiguous → earliest) |
+| P3 | Compound-interest inf/NaN passthrough (financial) | `calc/financial.rs:34-55` | 7-family | already fixed 2026-08-26 |
+| P3 | Non-finite fraction literals accepted (`NaN/1`) | `calc/util.rs:5-15` | 7-family | already fixed 2026-08-26 |
+| P3 | Magnitude-suffixed amounts rejected in units/currency (`10k kg`) | `calc/units.rs`, `currency.rs` | 7-family | fixed (shared `split_magnitude`/`parse_amount`, finance word parity minus `m`; extended 2026-09-05: `cr`/`crs` shorts + home-region bare defaults, see QoL notes below) |
+| P3 | Duration scale accepts negative multipliers (`1h * -2` → `-3h`) | `calc/duration.rs:53-71` | 13 | fixed (scale must be positive finite) |
+| P3 | Unbounded duration digits → inf → saturating cast absurd output | `calc/duration.rs:216-220` | 13 | fixed (reject non-finite totals + defensive `format_duration` guard) |
+| P3 | Cooking ingredient substring match assigns wrong density | `calc/cooking.rs:74-79` | 13 | fixed (whole-word, longest-alias-first) |
+| P3 | Oven conversion accepts below-absolute-zero temps | `calc/cooking.rs:378-391` | 13 | fixed (reject when either side < −273.15 °C) |
+| P3 | Battery capacity u8 accepts >100 firmware values | `calc/battery.rs:173-174` | 13 | fixed (clamp to 100 at parse) |
+| P3 | Predict-tz short-alias misrouting (`s`→SF, `b`→BST); no diacritic folding | `calc/timezone.rs` | 18 | fixed (fuzzy needs ≥3 chars, exact short aliases kept; Latin diacritic fold) |
+| P3 | Hex-words parse as numbers; non-canonical roman; reversed random bounds | `calc/quick.rs` | 18 | partial: roman canonical + reversed bounds fixed; bare-hex kept (tested `ff to dec` feature, ambiguous by nature) |
+| P3 | `format_number` collapses sub-5e-9 values to `0` | `calc/quick.rs` | 18 | fixed (scientific notation below 1e-6) |
 
 ### 🧠 Learning / Ranking Behavior — ✅ triaged 2026-09-05 (8 fixed, 2 already-fixed)
 

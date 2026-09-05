@@ -6,6 +6,7 @@ mod duration;
 mod expr;
 mod financial;
 mod fueleco;
+mod home;
 mod math;
 mod quick;
 mod timezone;
@@ -15,7 +16,7 @@ mod util;
 
 use battery::try_battery;
 use cooking::{try_cooking, try_oven, try_recipe_scale};
-use currency::{normalize_money_query, try_currency, try_currency_predict};
+use currency::{normalize_money_query, try_currency, try_currency_home, try_currency_predict};
 use datetime::try_datetime;
 use duration::try_duration_expr;
 use financial::try_financial;
@@ -24,7 +25,7 @@ use math::{looks_like_math, try_math, try_natural};
 use quick::try_quickwin;
 use timezone::{try_timezone, try_timezone_predict};
 use unitmath::try_unit_math;
-use units::{try_conversion, try_conversion_predict};
+use units::{try_conversion, try_conversion_predict, try_unit_home};
 
 use super::fx::FxStore;
 use super::SearchResult;
@@ -73,6 +74,10 @@ impl CalcProvider {
         if let Some(r) = try_currency_predict(&q_norm, &self.fx) {
             return vec![r];
         }
+        // Bare `10usd` (no target) → home currency.
+        if let Some(r) = try_currency_home(&q_norm, &self.fx) {
+            return vec![r];
+        }
         if let Some(r) = try_recipe_scale(&q_norm) {
             return vec![r];
         }
@@ -87,6 +92,10 @@ impl CalcProvider {
         }
         if let Some(results) = try_conversion_predict(&q_norm) {
             return results;
+        }
+        // Bare `10miles` (no target) → home default for the category.
+        if let Some(r) = try_unit_home(&q_norm) {
+            return vec![r];
         }
         if let Some(r) = try_quickwin(&q_norm) {
             return vec![r];

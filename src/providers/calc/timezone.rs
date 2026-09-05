@@ -307,6 +307,15 @@ pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
         .iter()
         .filter(|(alias, _, _)| {
             let a = *alias;
+            if *a == p || a.replace('_', "") == p.replace('_', "") {
+                return true;
+            }
+            // Fuzzy prefix matching needs at least 3 chars: 1-char inputs
+            // otherwise misroute (`s` → SF, `b` → BST) instead of failing
+            // (audit P3). Exact short aliases (`ny`, `la`, `sf`) still work.
+            if p.chars().count() < 3 {
+                return false;
+            }
             a.starts_with(&p)
                 || p.starts_with(a)
                 || a.replace('_', "").starts_with(&p.replace('_', ""))
@@ -438,11 +447,41 @@ fn normalize_place_key(token: &str) -> String {
     token
         .trim()
         .to_lowercase()
+        .chars()
+        .map(fold_diacritic)
+        .collect::<String>()
         .replace('-', "_")
         .split_whitespace()
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("_")
+}
+
+/// Fold Latin diacritics to ASCII so `são paulo` resolves like `sao paulo`
+/// (audit P3). Covers Latin-1 plus common extended-Latin spellings.
+fn fold_diacritic(c: char) -> char {
+    match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ę' => 'e',
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' => 'i',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' => 'u',
+        'ý' | 'ÿ' => 'y',
+        'ç' | 'ć' | 'ĉ' | 'č' => 'c',
+        'ñ' | 'ń' => 'n',
+        'š' | 'ś' | 'ş' => 's',
+        'ž' | 'ź' | 'ż' => 'z',
+        'ğ' => 'g',
+        'ł' => 'l',
+        'ř' => 'r',
+        'ß' => 's',
+        'æ' => 'a',
+        'œ' => 'o',
+        'ø' => 'o',
+        'ð' => 'd',
+        'þ' => 't',
+        _ => c,
+    }
 }
 
 pub(crate) fn parse_clock(
@@ -507,10 +546,55 @@ pub(crate) fn build_tz_conversion(
     to_tz: Tz,
     to_label: &str,
 ) -> Option<SearchResult> {
-    let time = NaiveTime::from_hms_opt(hour, minute, second)?;
     let today = Utc::now().with_timezone(&from_tz).date_naive();
+    build_tz_conversion_on(
+        today,
+        (hour, minute, second),
+        from_tz,
+        from_label,
+        to_tz,
+        to_label,
+    )
+}
+
+fn build_tz_conversion_on(
+    today: chrono::NaiveDate,
+    (hour, minute, second): (u32, u32, u32),
+    from_tz: Tz,
+    from_label: &str,
+    to_tz: Tz,
+    to_label: &str,
+) -> Option<SearchResult> {
+    let time = NaiveTime::from_hms_opt(hour, minute, second)?;
     let naive = NaiveDateTime::new(today, time);
-    let from_dt = naive.and_local_timezone(from_tz).single()?;
+    let from_dt = match naive.and_local_timezone(from_tz) {
+        chrono::LocalResult::Single(dt) => dt,
+        // Fall-back overlap: show the first occurrence rather than nothing.
+        chrono::LocalResult::Ambiguous(early, _) => early,
+        // Spring-forward gap: the wall time never occurs — say so explicitly
+        // instead of silently producing no card (audit P2).
+        chrono::LocalResult::None => {
+            let when = format_ampm_compact(hour, minute);
+            let title = format!("{when} doesn't exist");
+            let subtitle = format!("skipped by daylight saving in {from_label} on {today}");
+            return Some(SearchResult {
+                id: format!("tz:gap:{from_label}:{today}:{hour}:{minute}"),
+                title: title.clone(),
+                subtitle: subtitle.clone(),
+                kind: ResultKind::Conversion,
+                score: 10_800,
+                icon: Some("preferences-system-time".into()),
+                action: Action::Copy(subtitle.clone()),
+                conversion: Some(ConversionView {
+                    left_title: format!("{when} {from_label}"),
+                    left_badge: "nonexistent time".into(),
+                    right_title: title,
+                    right_badge: subtitle,
+                }),
+                matched: None,
+            });
+        }
+    };
     let to_dt = from_dt.with_timezone(&to_tz);
 
     let left_title = format_ampm_compact(from_dt.hour(), from_dt.minute());
@@ -798,7 +882,10 @@ pub(crate) fn local_as_tz() -> Option<(Tz, String)> {
 
 #[cfg(test)]
 mod timezone_query_tests {
-    use super::{predict_tz, resolve_place, try_timezone};
+    use super::{
+        build_tz_conversion_on, normalize_place_key, predict_tz, resolve_place, try_timezone,
+    };
+    use chrono_tz::Tz;
 
     #[test]
     fn local_to_many_cities() {
@@ -863,6 +950,40 @@ mod timezone_query_tests {
         assert!(resolve_place("hong kong").is_some());
         assert!(resolve_place("here").is_some());
         assert!(resolve_place("tokyo").is_some());
+    }
+
+    #[test]
+    fn single_char_prefixes_do_not_fuzzy_resolve() {
+        // Audit P3 (Pass 18): `s` → SF and `b` → BST misrouted instead of failing.
+        assert!(predict_tz("s").is_none());
+        assert!(predict_tz("b").is_none());
+        // Exact short aliases still resolve.
+        assert!(predict_tz("sf").is_some());
+        assert!(predict_tz("ny").is_some());
+        assert!(predict_tz("la").is_some());
+    }
+
+    #[test]
+    fn diacritics_fold_in_place_keys() {
+        assert_eq!(normalize_place_key("São Paulo"), "sao_paulo");
+        assert!(resolve_place("são paulo").is_some());
+    }
+
+    #[test]
+    fn dst_gap_produces_error_card() {
+        use chrono::NaiveDate;
+        let ny: Tz = "America/New_York".parse().unwrap();
+        let lon: Tz = "Europe/London".parse().unwrap();
+        // US spring forward 2025-03-09: 02:30 never occurs in New York.
+        let gap = NaiveDate::from_ymd_opt(2025, 3, 9).unwrap();
+        let r = build_tz_conversion_on(gap, (2, 30, 0), ny, "NY", lon, "LONDON")
+            .expect("gap must produce an error card, not nothing");
+        assert!(r.title.contains("doesn't exist"), "{}", r.title);
+        // Fall-back overlap resolves to the first occurrence instead of nothing.
+        let overlap = NaiveDate::from_ymd_opt(2025, 11, 2).unwrap();
+        let r = build_tz_conversion_on(overlap, (1, 30, 0), ny, "NY", lon, "LONDON")
+            .expect("ambiguous time must resolve");
+        assert!(!r.title.contains("doesn't exist"), "{}", r.title);
     }
 
     #[test]
