@@ -31,14 +31,30 @@ fi
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 
 echo "Installing hark → $BIN_DIR/hark"
-install -Dm755 "$BIN_SRC" "$BIN_DIR/hark"
+# tmp+rename: overwriting a running daemon's binary hits ETXTBSY and aborts
+# mid-script under `set -e` (audit P3); rename over it succeeds.
+TMP_BIN="$BIN_DIR/.hark.new.$$"
+install -m755 "$BIN_SRC" "$TMP_BIN"
+mv -f "$TMP_BIN" "$BIN_DIR/hark"
+
+# Escape sed-replacement metacharacters in the install path (`&\` and the
+# `|` delimiter) so exotic XDG_BIN_HOME values can't inject (audit P3).
+ESC_BIN_DIR="${BIN_DIR//\\/\\\\}"
+ESC_BIN_DIR="${ESC_BIN_DIR//|/\\|}"
+ESC_BIN_DIR="${ESC_BIN_DIR//&/\\&}"
+# Quote Exec when the path contains spaces (audit P3).
+if [[ "$BIN_DIR" == *" "* ]]; then
+  DESKTOP_EXEC="\"$BIN_DIR/hark\""
+else
+  DESKTOP_EXEC="$BIN_DIR/hark"
+fi
 
 # Desktop entry
 if [[ -f "$ROOT/hark.desktop" ]]; then
-  sed "s|^Exec=.*|Exec=$BIN_DIR/hark|" "$ROOT/hark.desktop" \
+  sed "s|^Exec=.*|Exec=${ESC_BIN_DIR}/hark|" "$ROOT/hark.desktop" \
     > "$APP_DIR/hark.desktop"
 elif [[ -f "$ROOT/share/applications/hark.desktop" ]]; then
-  sed "s|^Exec=.*|Exec=$BIN_DIR/hark|" "$ROOT/share/applications/hark.desktop" \
+  sed "s|^Exec=.*|Exec=${ESC_BIN_DIR}/hark|" "$ROOT/share/applications/hark.desktop" \
     > "$APP_DIR/hark.desktop"
 else
   cat > "$APP_DIR/hark.desktop" <<EOF
@@ -46,7 +62,7 @@ else
 Type=Application
 Name=Hark
 Comment=Raycast-style launcher for Linux
-Exec=$BIN_DIR/hark
+Exec=$DESKTOP_EXEC
 Icon=hark
 Terminal=false
 Categories=Utility;
@@ -74,7 +90,7 @@ if [[ "${1:-}" == "--autostart" ]]; then
 Type=Application
 Name=Hark (daemon)
 Comment=Preload Hark launcher
-Exec=$BIN_DIR/hark --daemon
+Exec=$DESKTOP_EXEC --daemon
 Icon=hark
 Terminal=false
 Categories=Utility;
@@ -91,12 +107,12 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1 && [[ -d "$DATA_HOME/icons/h
   gtk-update-icon-cache -f "$DATA_HOME/icons/hicolor" 2>/dev/null || true
 fi
 
-# Ensure ~/.local/bin is on PATH hint
+# Ensure the install dir is on PATH hint
 if ! command -v hark >/dev/null 2>&1; then
   echo
   echo "Note: $BIN_DIR is not on your PATH yet."
   echo "Add this to your shell rc:"
-  echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  echo "  export PATH=\"$BIN_DIR:\$PATH\""
 fi
 
 echo

@@ -70,6 +70,19 @@ pub(crate) struct IndexState {
     build_lock: Mutex<()>,
 }
 
+/// Resets `indexing` when the build scope exits — including via panic — so
+/// the UI never wedges on "indexing…" (the explicit `store(false)` at the
+/// end of `ensure_fresh` still runs on the happy path).
+struct IndexingGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for IndexingGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Relaxed);
+    }
+}
+
 impl IndexState {
     pub fn new(config: Arc<ConfigStore>) -> Self {
         Self {
@@ -167,6 +180,11 @@ impl IndexState {
         }
 
         self.indexing.store(true, Ordering::Relaxed);
+        // Drop guard: a panicking builder must not wedge the UI on
+        // "indexing…" until the next successful build (audit P3).
+        let _indexing_guard = IndexingGuard {
+            flag: &self.indexing,
+        };
         self.progress.store(0, Ordering::Relaxed);
         self.capped.store(false, Ordering::Relaxed);
         self.capped_by_deep.store(false, Ordering::Relaxed);

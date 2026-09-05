@@ -401,7 +401,9 @@ fn daemon_stats() -> Option<DaemonSnap> {
         if cols.len() < 5 {
             continue;
         }
-        let pid: i32 = cols[0].parse().ok()?;
+        let Ok(pid) = cols[0].parse::<i32>() else {
+            continue;
+        };
         if pid as u32 == self_pid {
             continue;
         }

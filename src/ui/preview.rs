@@ -787,7 +787,19 @@ impl PreviewPanel {
             let (tx, rx) = async_channel::bounded::<Option<String>>(1);
             let path_worker = path_check.clone();
             std::thread::spawn(move || {
-                let text = std::fs::read_to_string(&path_worker).ok();
+                // Re-enforce the size gate here: the file may have grown (or
+                // been replaced) since the stat in update() — `take()` bounds
+                // the read (TOCTOU, audit P3). Lossy decode serves UTF-16 /
+                // Latin-1 sources instead of "Could not load file" (audit P3).
+                let text = std::fs::File::open(&path_worker).ok().and_then(|f| {
+                    use std::io::Read as _;
+                    let mut buf = Vec::new();
+                    f.take(MAX_CODE_BYTES + 1).read_to_end(&mut buf).ok()?;
+                    if buf.len() as u64 > MAX_CODE_BYTES {
+                        return None;
+                    }
+                    Some(String::from_utf8_lossy(&buf).into_owned())
+                });
                 let _ = tx.send_blocking(text);
             });
             let gen_cell2 = gen_cell.clone();

@@ -100,8 +100,13 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "Installed: $BIN"
 
   # Desktop entry + icon from packaging/
+  # (same sed-escaping as packaging/install-user.sh: `&`/`\`/`|` in the
+  # path would otherwise inject into the replacement).
+  ESC_BIN="${BIN//\\/\\\\}"
+  ESC_BIN="${ESC_BIN//|/\\|}"
+  ESC_BIN="${ESC_BIN//&/\\&}"
   if [[ -f "$ROOT/packaging/hark.desktop" ]]; then
-    sed "s|^Exec=.*|Exec=$BIN|" "$ROOT/packaging/hark.desktop" \
+    sed "s|^Exec=.*|Exec=$ESC_BIN|" "$ROOT/packaging/hark.desktop" \
       > "$APP_DIR/hark.desktop"
   else
     cat > "$APP_DIR/hark.desktop" <<EOF

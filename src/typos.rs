@@ -71,7 +71,11 @@ impl TypoStore {
             inner: RwLock::new(TypoFile::default()),
             path: std::path::PathBuf::from("<test>"),
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 
@@ -90,7 +94,11 @@ impl TypoStore {
             inner: RwLock::new(data),
             path,
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 
@@ -541,7 +549,11 @@ mod tests {
             inner: RwLock::new(TypoFile::default()),
             path,
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 

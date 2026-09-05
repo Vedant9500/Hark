@@ -881,13 +881,13 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** UI stall on NFS/FUSE/removable media paths.
 - **Remediation:** derive previewability from the indexed path and item kind, then perform metadata/fingerprint probing in the worker and reconcile with a generation token.
 
-#### P3 — CSS accepts 3/4/8-digit hex where RGB byte parsing requires six digits (`src/theme/mod.rs:226-232`, `theme/css.rs:3-28`)
+#### P3 — CSS accepts 3/4/8-digit hex where RGB byte parsing requires six digits (`src/theme/mod.rs:226-232`, `theme/css.rs:3-28`) — **fixed 2026-09-05** (`rgb_bytes` expands shorthand, drops alpha byte; regression test added)
 
 - **Root cause:** `sanitize_hex` deliberately permits `#fff`, `#ffff`, and `#RRGGBBAA`, but `is_light_theme` and `rgba` strip only `#` and then test only `len < 6`. A three-digit `#fff` reaches slicing `h[0..6]`, which is short, and therefore falls into the fallback path; four- and eight-digit forms similarly either fall back or use only the first RGB bytes without honoring alpha. The behavior is safe (no panic; fallback color), but inconsistent with the sanitizer’s advertised accepted formats.
 - **Impact:** valid shorthand/RGBA scheme colors are silently replaced by fallback RGB; no CSS injection because all forms remain ASCII hex.
 - **Remediation:** normalize 3/4-digit shorthand and 8-digit RGBA to the actual values CSS should use, or restrict `sanitize_hex` to six ASCII hex digits if shorthand is not intended.
 
-#### P3 — literal glob candidates can score lower than glob matches (`src/providers/files/search/glob.rs:100-117`)
+#### P3 — literal glob candidates can score lower than glob matches (`src/providers/files/search/glob.rs:100-117`) — **verified already-mitigated 2026-09-05, no change** (literal prefix 40k > wildcard 38k; contains 24k stays below `DEEP_SKIP_IF_INDEX_SCORE` by design per P16 — raising it would regress that fix)
 
 - **Root cause:** literal name patterns without `*`/`?` score 50,000 on exact match, but a mere prefix gets 40,000 and substring gets 32,000. A wildcard match receives a base 38,000 plus segment boosts and an extension-glob bonus. Therefore `readme` (literal prefix, no scope) can rank below `*.md` or a pattern with a path segment even when the literal prefix is a more confident user intent.
 - **Impact:** ordering inconsistency between literal and wildcard glob results in mixed queries; no incorrect inclusion/exclusion.
@@ -951,12 +951,12 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Impact:** durability gap (CWE-755); interacts with the wipe finding to destroy data after a crash.
 - **Remediation:** `File::create` + `write_all` + `sync_all` on the tmp before rename (optionally sync the parent dir), and remove the tmp on rename failure.
 
-#### P3 — `resolve_icon_name` indexes an empty candidate slice (`src/ui/rows.rs:727-729`)
+#### P3 — `resolve_icon_name` indexes an empty candidate slice (`src/ui/rows.rs:727-729`) — **fixed 2026-09-05** (`last().copied().unwrap_or("text-x-generic")`; regression test added)
 
 - **Root cause:** `let fallback = candidates[candidates.len() - 1];` runs before any length check. Called from mode-bar icon resolution (`ui/mod.rs:2271-2300`) inside GTK callbacks, so a future empty call site panics on the daemon's single main loop. All current call sites pass non-empty literals — latent, not live (CWE-125-style index panic).
 - **Remediation:** `candidates.last().copied().unwrap_or("text-x-generic")`.
 
-#### P3 — stacked 220 ms swap-class cleanup timers truncate a newer swap animation (`src/ui/rows.rs:479-487`)
+#### P3 — stacked 220 ms swap-class cleanup timers truncate a newer swap animation (`src/ui/rows.rs:479-487`) — **fixed 2026-09-05** (per-row `swap_timer` slot, previous timer cancelled on re-arm)
 
 - **Root cause:** each animated conversion swap removes+re-adds `hark-conv-swap` and arms an independent one-shot timer that removes the class. Two swaps within 220 ms: the older timer fires mid-flight and strips the class, truncating the newer keyframe. Each timer also strongly clones `conv_root`, pinning the widget subtree up to 220 ms past teardown — bounded and self-terminating, so cosmetic.
 - **Remediation:** store a `RefCell<Option<glib::SourceId>>` per row; remove the previous timer before arming the new one.
@@ -1031,7 +1031,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `parse_ipv4_literal` accepts only dotted-decimal, so `http://2130706173` (decimal 127.0.0.1) is treated as a hostname and passes; any DNS name resolving to link-local/metadata IPs also passes. The code comment claims SSRF protection ("block cloud-metadata / link-local targets"). Low severity: the endpoint is user-configured local settings, not remote input; the blocklist is defense-in-depth only.
 - **Remediation:** resolve the host at request time and re-check the resolved IP, or document the blocklist as literal-only.
 
-#### P3 — drag-thumbnail memo pins one `gdk::Texture` for process lifetime (`src/ui/dnd.rs:324-338`)
+#### P3 — drag-thumbnail memo pins one `gdk::Texture` for process lifetime (`src/ui/dnd.rs:324-338`) — **fixed 2026-09-05** (memo hoisted to file scope + `clear_drag_thumbnail_memo()` called from preview `clear()`)
 
 - **Root cause:** the thread-local single-entry memo is never cleared, so the last dragged image's texture (GPU memory) outlives window destruction. One ≤256 px texture — negligible.
 - **Remediation:** clear the memo on window hide, or accept as-is.
@@ -1041,7 +1041,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `store_freedesktop_thumbnail` writes only `large`/`normal`, while the reader probes `large`, `normal`, `x-large`. Staleness is correctly rejected by mtime checks, so no stale entry is ever served — the cost is only needless regeneration/cosmetic sizing.
 - **Remediation:** none required; optionally skip the `x-large` probe or write `x-large` for large sources.
 
-#### P3 (theoretical) — `Instant::now() - SAVE_DEBOUNCE` startup subtraction panics if monotonic clock < 2 s (`src/typos.rs:70,88`, `src/usage.rs:67,76`)
+#### P3 (theoretical) — `Instant::now() - SAVE_DEBOUNCE` startup subtraction panics if monotonic clock < 2 s (`src/typos.rs:70,88`, `src/usage.rs:67,76`) — **fixed 2026-09-05** (`checked_sub(...).unwrap_or_else(Instant::now)` at all 6 sites)
 
 - **Root cause:** `Instant - Duration` panics on overflow; on Linux `CLOCK_MONOTONIC` starts at boot, so this requires the daemon to start within 2 s of boot — effectively unreachable, but it is the only arithmetic panic in these files.
 - **Remediation:** `Instant::now().checked_sub(SAVE_DEBOUNCE).unwrap_or_else(Instant::now)`.
@@ -1154,7 +1154,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** the ack read result is ignored; `true` is returned after write success even if the listener died between write and dispatch, so `main.rs:48-50` skips spawning an instance and the keypress silently does nothing.
 - **Remediation:** require `ok\n` within the timeout for the `true` return, or log acked vs unacked.
 
-#### P3 — settings row-removal closures form strong reference cycles leaking row subtrees (`src/ui/settings.rs:788-818`, `1577-1627`)
+#### P3 — settings row-removal closures form strong reference cycles leaking row subtrees (`src/ui/settings.rs:788-818`, `1577-1627`) — **fixed 2026-09-05** (both handlers capture `row.downgrade()` + `upgrade()` inside)
 
 - **Root cause:** the remove button's `connect_clicked` closure strongly captures `row`, and `row.append(&rm)` puts the button inside the row — a cycle that keeps the subtree (labels, handlers, `Arc<Engine>` clones) alive for the process lifetime after detach/refill. Every alias/extra-folder/exclusion/deep-root removal and every list refill leaks one subtree in the long-lived daemon. CWE-401. The weak-capture pattern already exists in the codebase (`open_with.rs:88-91`).
 - **Remediation:** capture `row.downgrade()` and `upgrade()` inside the handler.
@@ -1164,7 +1164,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** all use `connect_changed`; `ConfigStore::update` ends with `save()` — a full JSON serialize + tmp write + rename per character. A 30-char endpoint = 30 disk writes, and each intermediate value is momentarily the live config consumed by the running translation path (sanitization at `config.rs:467-487` prevents bad values, but partial URLs go live).
 - **Remediation:** debounce ~500 ms or persist on focus-loss/`activate`.
 
-#### P3 — settings j/k/arrow navigation dead-keys on filtered rows (`src/ui/settings.rs:313-328`)
+#### P3 — settings j/k/arrow navigation dead-keys on filtered rows (`src/ui/settings.rs:313-328`) — **fixed 2026-09-05** (direction-aware scan to next visible row with wrap; `Proceed` when no visible target)
 
 - **Root cause:** `row_at_index` counts hidden rows; when the target row is filtered out, the handler neither scans for the next visible row nor propagates the key — it still returns `Propagation::Stop`. With a filter leaving rows 2 and 5 visible, ↓ from row 2 silently does nothing.
 - **Remediation:** scan forward/backward to the next visible row, or don't `Stop` when no move happened.
@@ -1174,12 +1174,12 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** `let _ = Command::new("xdg-open").spawn();` is followed unconditionally by popdown/hide — on minimal-WM setups without `xdg-open`, nothing opens and there is no feedback (contrast the AppInfo branch at `119-131` which logs and keeps the popover open). CWE-754.
 - **Remediation:** match on the spawn result; on `Err`, log, reset `firing`, keep the popover open.
 
-#### P3 — control characters in filenames vertically expand the Open With popover (`src/ui/open_with.rs:60-67`)
+#### P3 — control characters in filenames vertically expand the Open With popover (`src/ui/open_with.rs:60-67`) — **fixed 2026-09-05** (`display_file_name` strips control chars, caps 128 chars; regression test added)
 
 - **Root cause:** the filename is embedded verbatim in the header label; `set_ellipsize(Middle)` bounds width but embedded `\n` (legal in Linux filenames) forces multi-line height expansion.
 - **Remediation:** strip control chars (`chars().filter(|c| !c.is_control())`) before display.
 
-#### P3 — Open With app list ordering is desktop-scan order, unsorted (`src/ui/open_with.rs:342-352`)
+#### P3 — Open With app list ordering is desktop-scan order, unsorted (`src/ui/open_with.rs:342-352`) — **fixed 2026-09-05** (recommended-first kept; remainder sorted by name before truncate)
 
 - **Root cause:** `recommended_for_type` then `all_for_type` appended in GIO iteration order with only dedup + truncate; the 40-app cap can select a machine-dependent subset. Recommended-first ordering (the main intent) is preserved.
 - **Remediation:** sort the post-recommended remainder by `app.name()` before truncation.
@@ -1225,7 +1225,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** every conversion row's action is `Action::Copy`, and `completion_text_for` returns `Some(item.title.clone())` for it; Tab therefore replaces `100 kg in lb` with e.g. `220.462 lb` — which itself parses as a new conversion query, silently destroying the user's input and churning the result set.
 - **Remediation:** skip Tab when `is_conv_set(&results)`, or return `None` from `completion_text_for` for `ResultKind::Conversion`.
 
-#### P2 — untracked `preview.clear()` timer fires after re-show blanks a freshly populated preview (`src/ui/mod.rs:1388-1391`)
+#### P2 — untracked `preview.clear()` timer fires after re-show blanks a freshly populated preview (`src/ui/mod.rs:1388-1391`) — **fixed 2026-09-05** (tracked `preview_clear` slot cancelled by `show()` + hidden-guard in callback)
 
 - **Root cause:** `hide()` arms a one-shot `HIDE_FADE_MS` timer to clear the preview; unlike `hide_delay` (cancelled by `show()` at `1300-1302`), this source is not tracked anywhere. Escape followed by a summon within the fade window: `show()` cancels the fade, the user types, a preview populates — then the orphaned timer fires `preview.clear()` and blanks it until the next selection change. CWE-362 / CWE-404.
 - **Remediation:** track this source in a slot cancelled by `show()`, or guard the callback with `if !window.is_visible()`.
@@ -1270,7 +1270,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** `if app.no_display || … { continue; }` drops the entry entirely, so `resolve_id` and `display_name_for_desktop_id` cannot resolve stored `app:<id>` actions or default-app references to NoDisplay helpers (spec: hidden from menus but launchable/associatable).
 - **Remediation:** retain NoDisplay entries in a side map consulted by `resolve_id`/`display_name_for_desktop_id`, filtering them only out of `search`.
 
-#### P3 — panic during index build leaves `indexing=true` permanently (`src/providers/files/index.rs:168-181`)
+#### P3 — panic during index build leaves `indexing=true` permanently (`src/providers/files/index.rs:168-181`) — **fixed 2026-09-05** (`IndexingGuard` Drop-guard resets the flag on all exits)
 
 - **Root cause:** after `indexing.store(true)` there is no `catch_unwind` and no Drop guard resetting the flag; any panic inside `build_index` leaves the UI spinning "indexing…" until a later build happens to complete. CWE-754.
 - **Remediation:** guard struct whose `Drop` stores `false`, or `catch_unwind` around the build body.
@@ -1305,17 +1305,17 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** the XDG spec requires the variable to be absolute; a relative value here produces a CWD-dependent scheme path that silently falls back to the built-in palette when the daemon's CWD differs.
 - **Remediation:** only honor `state.starts_with('/')`.
 
-#### P3 — `install-user.sh` sed replacement injects `$BIN_DIR` unescaped (`packaging/install-user.sh:38-44`)
+#### P3 — `install-user.sh` sed replacement injects `$BIN_DIR` unescaped (`packaging/install-user.sh:38-44`) — **fixed 2026-09-05** (escape `&\|` + quote Exec on spaces; sibling `scripts/install.sh` sed hardened too)
 
 - **Root cause:** `&`/`|`/`\` in an `XDG_BIN_HOME` path expand inside the sed replacement text; a path with spaces also yields an unquoted `Exec=` that breaks desktop-entry parsing. CWE-78-adjacent, user-self-inflicted.
 - **Remediation:** escape specials before substitution and quote the exec value.
 
-#### P3 — `install-user.sh` has no ETXTBSY handling; upgrading over a running daemon aborts the install mid-script (`packaging/install-user.sh:32`)
+#### P3 — `install-user.sh` has no ETXTBSY handling; upgrading over a running daemon aborts the install mid-script (`packaging/install-user.sh:32`) — **fixed 2026-09-05** (install to tmp name + `mv` over the live binary)
 
 - **Root cause:** `install -Dm755` hits `open(O_TRUNC)` on the running executable → "Text file busy" → `set -euo pipefail` aborts, skipping the desktop entry/icon/autostart steps. `scripts/install.sh:91` documents this exact hazard but the logic wasn't carried over.
 - **Remediation:** write to a temp name + `mv` (rename over a busy binary succeeds), or kill the daemon first.
 
-#### P3 — `bench.rs` `daemon_stats()` returns `None` on any unparseable pid line (`src/bench.rs:400-406`)
+#### P3 — `bench.rs` `daemon_stats()` returns `None` on any unparseable pid line (`src/bench.rs:400-406`) — **fixed 2026-09-05** (`let Ok(pid) … else { continue; }`)
 
 - **Root cause:** `cols[0].parse().ok()?` uses the function-level `Option`, so one non-pid line aborts the whole scan — "(no daemon process found)" while a daemon is running.
 - **Remediation:** `let Ok(pid) = cols[0].parse() else { continue; };`
@@ -1437,17 +1437,17 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** endpoint validation explicitly allows plain HTTP (loopback test at `config.rs:1430-1432`); a LAN endpoint sends the key in cleartext. Disk storage is already mode-0600 (acceptable); the transport is the gap.
 - **Remediation:** warn or refuse `api_key` + non-https endpoints unless the host is loopback.
 
-#### P3 — no HTTP retry/backoff; single-shot requests (`src/providers/http.rs`)
+#### P3 — no HTTP retry/backoff; single-shot requests (`src/providers/http.rs`) — **fixed 2026-09-05** (one retry on transport errors for the three GET helpers; POSTs stay single-shot)
 
 - **Root cause:** `get_bytes`/`get_bytes_query`/`post_json` each issue exactly one call; a transient TLS/DNS blip surfaces as "unreachable". translate partially compensates with backend racing and the fail-cache; fx with refresh backoff.
 - **Remediation:** one idempotent-GET retry with jitter; keep POSTs single-shot.
 
-#### P3 — stat-vs-read TOCTOU bypasses the 2 MiB code gate (`src/ui/preview.rs:724` vs `755`)
+#### P3 — stat-vs-read TOCTOU bypasses the 2 MiB code gate (`src/ui/preview.rs:724` vs `755`) — **fixed 2026-09-05** (worker re-enforces the gate via `take(MAX_CODE_BYTES + 1)`)
 
 - **Root cause:** the size gate uses the stat captured in `update()`; the worker read 45 ms later happily loads a file grown/replaced past the cap, feeding it to main-thread `set_text` (compounding the freeze finding). CWE-367.
 - **Remediation:** re-stat or `Read::take(MAX_CODE_BYTES + 1)` in the worker.
 
-#### P3 — non-UTF-8 code files report "Could not load file" (`src/ui/preview.rs:755-766`)
+#### P3 — non-UTF-8 code files report "Could not load file" (`src/ui/preview.rs:755-766`) — **fixed 2026-09-05** (`fs::read` + `from_utf8_lossy` in the worker)
 
 - **Root cause:** `read_to_string` fails on any invalid byte; UTF-16/Latin-1 sources are conflated with unreadable files. CWE-755.
 - **Remediation:** `fs::read` + `String::from_utf8_lossy` in the worker; reserve the error for real I/O failures.
@@ -1467,7 +1467,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** temp PNG removal is not in a Drop guard; SIGKILL/OOM mid-conversion leaves files in `~/.cache/hark/preview/` forever with no startup sweep.
 - **Remediation:** RAII deletion guard and a startup sweep of entries older than ~1 hour.
 
-#### P3 — `clear()` leaves prior file's text in the code buffer (`src/ui/preview.rs:396-406`)
+#### P3 — `clear()` leaves prior file's text in the code buffer (`src/ui/preview.rs:396-406`) — **fixed 2026-09-05** (`buffer().set_text("")` in `clear()`)
 
 - **Root cause:** `clear()` resets picture/stack/path/gen but never the sourceview buffer; up to 2 MiB of previously previewed source stays resident after hide (no visible flash today since all paths set chrome first — retained memory only).
 - **Remediation:** `buffer().set_text("")` in `clear()`.
@@ -1775,17 +1775,17 @@ Areas targeted per the Pass 19 close-out: `calc/expr.rs`+`math.rs` at increased 
 - **Root cause:** `curl -fsSL "$URL_VERSIONED" -o "$TMP/pkg.tar.gz"` then straight to `tar -xzf`; TLS is the only protection while `dist/SHA256SUMS` exists. CWE-494.
 - **Remediation:** fetch and `sha256sum -c` the checksums before extraction.
 
-#### P3 — PATH hint ignores `XDG_BIN_HOME` (`packaging/install-user.sh:95-98`)
+#### P3 — PATH hint ignores `XDG_BIN_HOME` (`packaging/install-user.sh:95-98`) — **fixed 2026-09-05** (hint prints `$BIN_DIR`)
 
 - **Root cause:** the install honors `${XDG_BIN_HOME:-…}` (line 7) but the hint always prints `$HOME/.local/bin`. Users with custom XDG paths get misleading advice.
 - **Remediation:** print `"$BIN_DIR"`.
 
-#### P3 — release-pipeline rename skew breaks the online installer (`scripts/package-release.sh:27,30` vs `dist/install.sh:20`)
+#### P3 — release-pipeline rename skew breaks the online installer (`scripts/package-release.sh:27,30` vs `dist/install.sh:20`) — **stale 2026-09-05, no change** (tree consistent: `PKG_NAME` and installer `ASSET` both `hark-…`, `dist/install.sh` has embedded-checksum gate; premise doesn't match source)
 
 - **Root cause:** `package-release.sh` still stages `hark-${VERSION}-…` packages (and its documented default repo is the Hark repo), while the installer fetches `blink-${VERSION}-…` — a freshly packaged release produces an asset the installer can never find (404 on both URL variants).
 - **Remediation:** complete the rename in `package-release.sh` (PKG_NAME, repo fallback) or parameterize both.
 
-#### P3 — dev install script restarts the wrong process name (`scripts/install.sh:46-66,92-94`)
+#### P3 — dev install script restarts the wrong process name (`scripts/install.sh:46-66,92-94`) — **stale 2026-09-05, no change** (binary is `hark` per `Cargo.toml`; `pgrep -x hark` correct — no `blink`-named release exists in tree)
 
 - **Root cause:** `pgrep -x hark`/`pkill -x hark` target the old binary name; on machines running the blink-named release, restart kills/starts nothing while reporting success or errors confusingly. Self-consistent for dev use only.
 - **Remediation:** match the shipped binary name (or accept it as a dev-only script and document).
@@ -2049,36 +2049,36 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 | P3 | Dead `path:` alias targets stat FS per keystroke forever | `engine.rs:361-364` | 18 |
 | P3 | First-use usage entry evicted by its own record | `usage.rs:87-94` | 13 |
 
-### 🖼 UI / UX Polish
+### 🖼 UI / UX Polish — ✅ all fixed 2026-09-05 (except glob scoring, verified already-mitigated)
 
-| Sev | Finding | Location | Pass |
-|---|---|---|---|
-| P2 | Untracked preview.clear timer blanks freshly populated preview | `ui/mod.rs:1388-1391` | 15 |
-| P3 | Stacked 220 ms swap-class timers truncate newer animation | `ui/rows.rs:479-487` | 13 |
-| P3 | `resolve_icon_name` empty-slice index (latent) | `ui/rows.rs:727-729` | 13 |
-| P3 | Control chars in filenames expand Open With popover | `ui/open_with.rs:60-67` | 14 |
-| P3 | Open With app list unsorted (scan-order) | `ui/open_with.rs:342-352` | 14 |
-| P3 | Settings j/k navigation dead-keys on filtered rows | `settings.rs:313-328` | 14 |
-| P3 | Row-removal closures form strong ref cycles (widget leak) | `settings.rs:788-818,1577-1627` | 14 |
-| P3 | `clear()` leaves prior file text in code buffer (retained memory) | `ui/preview.rs:396-406` | 16 |
-| P3 | Drag-thumbnail memo pins one texture forever | `ui/dnd.rs:324-338` | 13 |
-| P3 | CSS hex shorthand (`#fff`/`#RRGGBBAA`) silently falls back | `theme/mod.rs:226-232` | 12-family |
-| P3 | Literal glob candidates score below wildcard matches | `glob.rs:100-117` | 12-family |
+| Sev | Finding | Location | Pass | Status |
+|---|---|---|---|---|
+| P2 | Untracked preview.clear timer blanks freshly populated preview | `ui/mod.rs:1388-1391` | 15 | fixed |
+| P3 | Stacked 220 ms swap-class timers truncate newer animation | `ui/rows.rs:479-487` | 13 | fixed |
+| P3 | `resolve_icon_name` empty-slice index (latent) | `ui/rows.rs:727-729` | 13 | fixed |
+| P3 | Control chars in filenames expand Open With popover | `ui/open_with.rs:60-67` | 14 | fixed |
+| P3 | Open With app list unsorted (scan-order) | `ui/open_with.rs:342-352` | 14 | fixed |
+| P3 | Settings j/k navigation dead-keys on filtered rows | `settings.rs:313-328` | 14 | fixed |
+| P3 | Row-removal closures form strong ref cycles (widget leak) | `settings.rs:788-818,1577-1627` | 14 | fixed |
+| P3 | `clear()` leaves prior file text in code buffer (retained memory) | `ui/preview.rs:396-406` | 16 | fixed |
+| P3 | Drag-thumbnail memo pins one texture forever | `ui/dnd.rs:324-338` | 13 | fixed |
+| P3 | CSS hex shorthand (`#fff`/`#RRGGBBAA`) silently falls back | `theme/mod.rs:226-232` | 12-family | fixed |
+| P3 | Literal glob candidates score below wildcard matches | `glob.rs:100-117` | 12-family | verified already-mitigated — prefix 40k > wildcard 38k; contains 24k stays below deep-skip gate by design (P16); no change |
 
-### 🛠 Robustness / Error Handling
+### 🛠 Robustness / Error Handling — ✅ triaged 2026-09-05 (8 fixed, 2 stale)
 
-| Sev | Finding | Location | Pass |
-|---|---|---|---|
-| P3 | `Instant::now() - SAVE_DEBOUNCE` startup panic (<2 s monotonic clock, theoretical) | `typos.rs:70,88`, `usage.rs:67,76` | 13 |
-| P3 | Panic in index build leaves indexing=true (also listed under Logic) | `files/index.rs:168-181` | 15 |
-| P3 | Non-UTF-8 code files report "Could not load file" | `ui/preview.rs:755-766` | 16 |
-| P3 | Stat-vs-read TOCTOU bypasses 2 MiB code gate | `ui/preview.rs:724,755` | 16 |
-| P3 | `bench.rs` `daemon_stats()` aborts on one unparseable line | `bench.rs:400-406` | 15 |
-| P3 | install-user.sh: sed replacement metachar injection + ETXTBSY abort | `install-user.sh:32-44` | 15 |
-| P3 | Release-pipeline rename skew breaks online installer asset lookup | `package-release.sh:27-30` | 20 |
-| P3 | Dev install script restarts wrong process name (hark vs blink) | `scripts/install.sh:46-66` | 20 |
-| P3 | PATH hint ignores XDG_BIN_HOME | `install-user.sh:95-98` | 20 |
-| P3 | No HTTP retry/backoff; single-shot requests | `http.rs` | 16 |
+| Sev | Finding | Location | Pass | Status |
+|---|---|---|---|---|
+| P3 | `Instant::now() - SAVE_DEBOUNCE` startup panic (<2 s monotonic clock, theoretical) | `typos.rs:70,88`, `usage.rs:67,76` | 13 | fixed (`checked_sub().unwrap_or_else(now)`, all 6 sites) |
+| P3 | Panic in index build leaves indexing=true (also listed under Logic) | `files/index.rs:168-181` | 15 | fixed (`IndexingGuard` Drop resets flag) |
+| P3 | Non-UTF-8 code files report "Could not load file" | `ui/preview.rs:755-766` | 16 | fixed (lossy decode in worker) |
+| P3 | Stat-vs-read TOCTOU bypasses 2 MiB code gate | `ui/preview.rs:724,755` | 16 | fixed (`take(MAX+1)` re-gate in worker) |
+| P3 | `bench.rs` `daemon_stats()` aborts on one unparseable line | `bench.rs:400-406` | 15 | fixed (`let Ok else continue`) |
+| P3 | install-user.sh: sed replacement metachar injection + ETXTBSY abort | `install-user.sh:32-44` | 15 | fixed (escape `&\|\`; tmp+rename; sibling `scripts/install.sh` sed hardened too) |
+| P3 | Release-pipeline rename skew breaks online installer asset lookup | `package-release.sh:27-30` | 20 | stale — tree consistent (`hark-` both sides, checksum gate present); premise doesn't match source |
+| P3 | Dev install script restarts wrong process name (hark vs blink) | `scripts/install.sh:46-66` | 20 | stale — binary is `hark` (`Cargo.toml`), `pgrep -x hark` correct |
+| P3 | PATH hint ignores XDG_BIN_HOME | `install-user.sh:95-98` | 20 | fixed (prints `$BIN_DIR`) |
+| P3 | No HTTP retry/backoff; single-shot requests | `http.rs` | 16 | fixed (one retry on transport errors for GETs; POSTs single-shot) |
 
 ### 📄 Documentation
 

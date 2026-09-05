@@ -83,7 +83,11 @@ impl UsageStore {
             inner: RwLock::new(data),
             path,
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 
@@ -106,7 +110,11 @@ impl UsageStore {
             inner: RwLock::new(UsageFile::default()),
             path: dir.join("usage.json"),
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 
@@ -301,7 +309,11 @@ mod usage_tests {
             inner: RwLock::new(UsageFile::default()),
             path: path.clone(),
             dirty: AtomicBool::new(false),
-            last_save: Mutex::new(Instant::now() - SAVE_DEBOUNCE),
+            last_save: Mutex::new(
+                Instant::now()
+                    .checked_sub(SAVE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            ),
         };
         (store, dir)
     }

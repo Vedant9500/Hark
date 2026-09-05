@@ -45,9 +45,27 @@ fn no_redirect_agent() -> &'static ureq::Agent {
     })
 }
 
+/// One retry on transport-level failure for idempotent GETs (audit P3): a
+/// transient TLS/DNS blip surfaces as "unreachable" otherwise. Only
+/// `Transport` errors retry — HTTP statuses and timeouts return immediately.
+/// POSTs stay single-shot (non-idempotent). Callers all run on worker
+/// threads, so the 200 ms backoff never blocks the UI.
+fn call_get_with_retry(
+    make: impl Fn() -> Result<ureq::Response, Box<ureq::Error>>,
+) -> Result<ureq::Response, String> {
+    match make() {
+        Ok(resp) => Ok(resp),
+        Err(e) if matches!(*e, ureq::Error::Transport(_)) => {
+            std::thread::sleep(Duration::from_millis(200));
+            make().map_err(|e| short_err(*e))
+        }
+        Err(e) => Err(short_err(*e)),
+    }
+}
+
 /// GET body as bytes (status must be 2xx; ureq maps non-2xx to Err).
 pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let resp = agent().get(url).call().map_err(short_err)?;
+    let resp = call_get_with_retry(|| agent().get(url).call().map_err(Box::new))?;
     let mut buf = Vec::new();
     resp.into_reader()
         .take(4 * 1024 * 1024)
@@ -74,7 +92,7 @@ fn background_agent() -> &'static ureq::Agent {
 /// GET body as bytes with generous timeouts; for background fetches that never
 /// block the UI (e.g. currency-rate refresh).
 pub fn get_bytes_background(url: &str) -> Result<Vec<u8>, String> {
-    let resp = background_agent().get(url).call().map_err(short_err)?;
+    let resp = call_get_with_retry(|| background_agent().get(url).call().map_err(Box::new))?;
     let mut buf = Vec::new();
     resp.into_reader()
         .take(4 * 1024 * 1024)
@@ -85,11 +103,13 @@ pub fn get_bytes_background(url: &str) -> Result<Vec<u8>, String> {
 
 /// GET with simple query pairs (values are form-urlencoded by ureq).
 pub fn get_bytes_query(url: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, String> {
-    let mut req = agent().get(url);
-    for (k, v) in query {
-        req = req.query(k, v);
-    }
-    let resp = req.call().map_err(short_err)?;
+    let resp = call_get_with_retry(|| {
+        let mut req = agent().get(url);
+        for (k, v) in query {
+            req = req.query(k, v);
+        }
+        req.call().map_err(Box::new)
+    })?;
     let mut buf = Vec::new();
     resp.into_reader()
         .take(4 * 1024 * 1024)
