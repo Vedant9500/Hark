@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -66,6 +66,59 @@ fn default_version() -> u32 {
     1
 }
 
+/// Load with backup + per-entry salvage (audit P2): a truncated file, an
+/// empty file, or one wrong-typed entry used to wipe every learned alias
+/// silently, and the next debounced save then persisted the wipe. Now the
+/// corrupt file is copied aside + logged, and each intact entry survives.
+fn load_typo_file(path: &Path) -> TypoFile {
+    let Some(s) = crate::config::read_private_file(path) else {
+        return TypoFile::default();
+    };
+    match serde_json::from_str::<TypoFile>(&s) {
+        Ok(f) => f,
+        Err(err) => {
+            match crate::config::backup_invalid_config(path) {
+                Some(b) => eprintln!(
+                    "hark: invalid typos store {} ({err}); salvaging intact aliases (backup: {})",
+                    path.display(),
+                    b.display()
+                ),
+                None => eprintln!(
+                    "hark: invalid typos store {} ({err}); salvaging intact aliases (backup failed)",
+                    path.display()
+                ),
+            }
+            salvage_typo_file(&s)
+        }
+    }
+}
+
+/// Best-effort rescue: keep every entry that still parses, skip the rest.
+fn salvage_typo_file(s: &str) -> TypoFile {
+    let mut out = TypoFile::default();
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+        return out;
+    };
+    out.version = v
+        .get("version")
+        .and_then(|x| serde_json::from_value(x.clone()).ok())
+        .unwrap_or_else(default_version);
+    if let Some(map) = v.get("aliases").and_then(|a| a.as_object()) {
+        for (k, ev) in map {
+            if k.is_empty() {
+                continue;
+            }
+            if let Ok(e) = serde_json::from_value::<AliasEntry>(ev.clone()) {
+                if e.id.is_empty() {
+                    continue;
+                }
+                out.aliases.insert(k.clone(), e);
+            }
+        }
+    }
+    out
+}
+
 pub struct TypoStore {
     inner: RwLock<TypoFile>,
     path: PathBuf,
@@ -93,9 +146,7 @@ impl TypoStore {
         let path = typo_path();
         // read_private_file refuses files in shared /tmp fallback space not
         // owned by this user — a planted aliases file would steer launches.
-        let mut data: TypoFile = crate::config::read_private_file(&path)
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut data = load_typo_file(&path);
         let now = now_secs();
         if data.aliases.len() > MAX_ALIASES {
             prune_aliases(&mut data.aliases, MAX_ALIASES, now);
@@ -899,5 +950,36 @@ mod tests {
         );
         assert!(raw.contains("wats"));
         let _ = fs::remove_file(&store.path);
+    }
+
+    #[test]
+    fn corrupt_store_backs_up_and_salvages_intact_aliases() {
+        // Audit P2: one wrong-typed entry must not wipe the whole file.
+        let dir = scratch_dir("salvage");
+        let path = dir.join("typos.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"aliases":{"good":{"id":"app:a.desktop","count":2,"last":0},"bad":{"id":"","count":"nope"}}}"#,
+        )
+        .unwrap();
+        let f = load_typo_file(&path);
+        assert!(f.aliases.contains_key("good"));
+        assert!(!f.aliases.contains_key("bad"));
+        assert!(
+            path.with_extension("json.invalid").exists(),
+            "corrupt store must be copied aside"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncated_store_backs_up_to_empty() {
+        let dir = scratch_dir("salvage-trunc");
+        let path = dir.join("typos.json");
+        fs::write(&path, r#"{"version":1,"aliases":{"a":"#).unwrap();
+        let f = load_typo_file(&path);
+        assert!(f.aliases.is_empty());
+        assert!(path.with_extension("json.invalid").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

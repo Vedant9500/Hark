@@ -854,12 +854,25 @@ fn save_cache(items: &[IndexedPath], fingerprint: &str, capped_by_deep: bool) {
     // Meta stamp only after the rename lands: a failed write/rename must keep
     // the old meta so `cache_ttl_stale` still reports the cache as stale.
     if let Ok(data) = serde_json::to_vec(&cf) {
+        // fsync before rename (audit P3) so a crash cannot publish a
+        // truncated file; remove the tmp when the rename fails so
+        // rename-failed tmps don't accumulate (audit P3).
         let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, &data).is_ok() && fs::rename(&tmp, &path).is_ok() {
+        let wrote = (|| -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&data)?;
+            f.sync_all()?;
+            Ok(())
+        })()
+        .is_ok();
+        if wrote && fs::rename(&tmp, &path).is_ok() {
             let _ = fs::write(
                 meta_path(),
                 format!("{} {} {}", CACHE_VERSION, now_secs(), fingerprint),
             );
+        } else {
+            let _ = fs::remove_file(&tmp);
         }
     }
 }

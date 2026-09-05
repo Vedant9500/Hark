@@ -59,9 +59,7 @@ impl UsageStore {
         let path = dir.join("usage.json");
         // read_private_file refuses files in shared /tmp fallback space not
         // owned by this user — a planted usage table would skew ranking.
-        let mut data: UsageFile = crate::config::read_private_file(&path)
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut data = load_usage_file(&path);
         data = UsageFile {
             version: data.version,
             entries: data
@@ -295,6 +293,55 @@ fn prune_entries_pinning(
     entries.retain(|id, _| id == pin || retain.contains(id));
 }
 
+/// Load with backup + per-entry salvage (audit P2): mirrors the typos
+/// store — a corrupt file is copied aside + logged, and each intact entry
+/// survives instead of the whole history being silently wiped.
+fn load_usage_file(path: &std::path::Path) -> UsageFile {
+    let Some(s) = crate::config::read_private_file(path) else {
+        return UsageFile::default();
+    };
+    match serde_json::from_str::<UsageFile>(&s) {
+        Ok(f) => f,
+        Err(err) => {
+            match crate::config::backup_invalid_config(path) {
+                Some(b) => eprintln!(
+                    "hark: invalid usage store {} ({err}); salvaging intact entries (backup: {})",
+                    path.display(),
+                    b.display()
+                ),
+                None => eprintln!(
+                    "hark: invalid usage store {} ({err}); salvaging intact entries (backup failed)",
+                    path.display()
+                ),
+            }
+            salvage_usage_file(&s)
+        }
+    }
+}
+
+/// Best-effort rescue: keep every entry that still parses, skip the rest.
+fn salvage_usage_file(s: &str) -> UsageFile {
+    let mut out = UsageFile::default();
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+        return out;
+    };
+    out.version = v
+        .get("version")
+        .and_then(|x| serde_json::from_value(x.clone()).ok())
+        .unwrap_or_else(default_version);
+    if let Some(map) = v.get("entries").and_then(|a| a.as_object()) {
+        for (k, ev) in map {
+            if k.is_empty() {
+                continue;
+            }
+            if let Ok(e) = serde_json::from_value::<UsageEntry>(ev.clone()) {
+                out.entries.insert(k.clone(), e);
+            }
+        }
+    }
+    out
+}
+
 fn frecency(count: u64, last: u64, now: u64) -> i64 {
     let age = now.saturating_sub(last);
     let recency = if age < 86_400 {
@@ -454,6 +501,29 @@ mod usage_tests {
         assert!(batched[0] > 0 && batched[1] > 0);
         assert_eq!(batched[2], 0);
         assert!(store.boost_many(&[]).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_store_backs_up_and_salvages_intact_entries() {
+        // Audit P2: one wrong-typed entry must not wipe the whole history.
+        let (store, dir) = temp_store();
+        let path = dir.join("usage.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"entries":{"app:good":{"count":3,"last":0},"app:bad":{"count":"lots"}}}"#,
+        )
+        .unwrap();
+        let loaded = UsageStore::load_with_dir(&dir);
+        let g = loaded.inner.read().unwrap();
+        assert!(g.entries.contains_key("app:good"));
+        assert!(!g.entries.contains_key("app:bad"));
+        drop(g);
+        assert!(
+            path.with_extension("json.invalid").exists(),
+            "corrupt store must be copied aside"
+        );
+        drop(store);
         let _ = fs::remove_dir_all(&dir);
     }
 }

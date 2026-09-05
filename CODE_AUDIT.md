@@ -920,7 +920,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 
 ### New verified findings
 
-#### P2 — malformed store JSON is silently wiped with no backup (`src/typos.rs:76-81`, `src/usage.rs:44-49`)
+#### P2 — malformed store JSON is silently wiped with no backup (`src/typos.rs:76-81`, `src/usage.rs:44-49`) — **fixed 2026-09-05** (corrupt file copied aside + logged; per-entry salvage keeps intact aliases/entries; 3 regression tests)
 
 - **Root cause:** both stores load with `fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()`. Any parse failure — truncated file, empty file, or a single wrong-typed field (`"count": "2"` fails the whole `TypoFile`/`UsageFile` struct) — falls through to the empty default with no log and no backup, unlike `config.rs` which does `backup_invalid_config` (`config.rs:856-862`). The next debounced save then atomically overwrites the user's entire learned-alias and usage history with the empty default, making the loss unrecoverable.
 - **Failure pathway:** crash/power loss between `fs::write` and durable rename (compounded by the no-fsync issue below), disk corruption, or hand-editing → load silently wipes → save persists the wipe.
@@ -1021,7 +1021,7 @@ Areas targeted for increased depth beyond Passes 1–12: the persistent state st
 - **Root cause:** `fs::write` creates `*.json.tmp` with default umask (typically 0644); the `translate` API key inside config is on disk group/world-readable for the window between write and `set_permissions(0o600)`. CWE-732.
 - **Remediation:** create with `OpenOptions::new().mode(0o600)` before writing.
 
-#### P3 — unknown config keys are silently dropped on next save (`src/config.rs:645-657`)
+#### P3 — unknown config keys are silently dropped on next save (`src/config.rs:645-657`) — **fixed 2026-09-05** (`flatten` extras on all config structs round-trip unknown keys; test pinned)
 
 - **Root cause:** `HarkConfig` and nested structs have no `deny_unknown_fields` and no preserved-extra map; unknown keys parse as defaults and are permanently erased on the next `save()`. A typo'd key reads as default rather than erroring. Related: `backup_invalid_config` overwrites `config.json.invalid` on each successive failure, retaining only the latest corrupt version.
 - **Remediation:** `deny_unknown_fields` (the backup path already exists) or a `#[serde(flatten)] extra: Map` preserved on rewrite.
@@ -1462,7 +1462,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** `Pixbuf::from_file_at_scale` ignores the EXIF Orientation tag; phone photos preview sideways and poison the shared FreeDesktop thumbnail cache with unrotated images.
 - **Remediation:** read orientation and `rotate_simple` before caching.
 
-#### P3 — converter scratch files leak on crash; no GC (`src/ui/preview.rs:1284-1293`, removal only at `1374`, `1468`)
+#### P3 — converter scratch files leak on crash; no GC (`src/ui/preview.rs:1284-1293`, removal only at `1374`, `1468`) — **fixed 2026-09-05** (startup sweep removes entries older than 1 h from the exclusive scratch dir)
 
 - **Root cause:** temp PNG removal is not in a Drop guard; SIGKILL/OOM mid-conversion leaves files in `~/.cache/hark/preview/` forever with no startup sweep.
 - **Remediation:** RAII deletion guard and a startup sweep of entries older than ~1 hour.
@@ -1816,27 +1816,27 @@ Areas targeted per the Pass 20 close-out. All line numbers verified against curr
 
 ### New verified findings
 
-#### P2 — `IndexConfig` has no `sanitize()`; `extra_roots` accepts unvalidated relative and `~otheruser` paths (`src/config.rs:806-813`, `src/ui/settings.rs:852-855`, `files/index.rs:251-255`, `720-731`)
+#### P2 — `IndexConfig` has no `sanitize()`; `extra_roots` accepts unvalidated relative and `~otheruser` paths (`src/config.rs:806-813`, `src/ui/settings.rs:852-855`, `files/index.rs:251-255`, `720-731`) — **fixed 2026-09-05** (`IndexConfig::sanitize` on load + update; Settings add rejects non-absolute)
 
 - **Root cause:** `update` sanitizes only `ui` and `translate`; Settings pushes raw trimmed text into `extra_roots`. `expand_user` handles only `~/` and exact `~`, so `~otheruser/x` becomes a literal relative path; both it and bare relative paths fail `is_dir()` and are **silently ignored** — the Settings list shows them as active while the index never walks them. If the daemon cwd happens to contain a matching directory, an unintended tree is indexed. CWE-20/CWE-22.
 - **Remediation:** add `IndexConfig::sanitize()` that absolutizes/canonicalizes `extra_roots` (rejecting non-`~/` tilde and relative paths), called from `load` and `update`; validate in the Settings add handler like `promote_deep_root` does.
 
-#### P2 — `save()` race: shared tmp filename + lock dropped before save lets two writers corrupt `config.json` (`src/config.rs:806-818`, `822-845`, concurrent writer at `engine.rs:745-827`)
+#### P2 — `save()` race: shared tmp filename + lock dropped before save lets two writers corrupt `config.json` (`src/config.rs:806-818`, `822-845`, concurrent writer at `engine.rs:745-827`) — **fixed (pre-existing)** (shared `write_private_file`: process-wide lock, unique tmp, fsync; verified 2026-09-05)
 
 - **Root cause:** `update` drops the write lock before `save()`, which uses a **fixed** tmp path. `auto_promote_deep_root` runs on a worker thread and calls `config.update` concurrently with GTK Settings edits: two `fs::write`s interleave on the same tmp, then a rename can publish partial content. Next launch the parse fails → the whole config is backed up and reset to defaults — user loses all settings from a benign concurrent pin. CWE-362/CWE-367.
 - **Remediation:** hold the write lock (or a save `Mutex`) across tmp-write→rename; unique tmp names; fsync before rename.
 
-#### P3 — `max_depth` out-of-range repair resets to the default (2) instead of clamping to the boundary (`src/config.rs:736-739`)
+#### P3 — `max_depth` out-of-range repair resets to the default (2) instead of clamping to the boundary (`src/config.rs:736-739`) — **fixed 2026-09-05** (`IndexConfig::sanitize` clamps `1..=6` on load + update)
 
 - **Root cause:** `if cfg.index.max_depth > 6 { cfg.index.max_depth = default_depth(); }` — a hand-edited `7`/`8` silently becomes **2**, and the cache rebuild (which hashes `max_depth`) drops most of the user's tree. Also `max_depth: 0` bypasses this guard entirely (only `> 6` is repaired), persisted verbatim and relying on five independent consumer sites to re-clamp. CWE-20.
 - **Remediation:** normalize to `1..=6` once in `load` (`min(6).max(1)`).
 
-#### P3 — `save()` swallows every error; UI shows settings as applied while nothing was persisted (`src/config.rs:822-845`)
+#### P3 — `save()` swallows every error; UI shows settings as applied while nothing was persisted (`src/config.rs:822-845`) — **fixed 2026-09-05** (failed `write_private_file` now logs the path)
 
 - **Root cause:** every fallible step (`create_dir_all`, `to_string_pretty`, `fs::write`, `fs::rename`, both chmods) discards its error with no log. Disk-full/read-only configs silently lose all Settings changes; also masks the race above. CWE-754.
 - **Remediation:** return `Result`/log; surface a UI toast on failure (load failures are already logged this way).
 
-#### P3 — per-keystroke translate-field writes persist cleared endpoint state mid-typing (`src/ui/settings.rs:2151-2206`, `config.rs:485-488`)
+#### P3 — per-keystroke translate-field writes persist cleared endpoint state mid-typing (`src/ui/settings.rs:2151-2206`, `config.rs:485-488`) — **fixed 2026-09-05** (endpoint/key/target commit on Enter/focus-loss; mid-typing values never reach the store)
 
 - **Root cause:** `connect_changed` fires per character; intermediate invalid endpoints are cleared by `TranslateConfig::sanitize`, so a daemon exit mid-typing persists an empty endpoint — translate silently falls back to free public backends. Every keystroke of the secret `api_key` also rewrites it to disk (amplifying the Pass 13 tmp-window exposure). CWE-20/CWE-524 aspect.
 - **Remediation:** commit on `activate`/focus-leave or debounce; show validation feedback instead of silent clearing. (Compounds Pass 14's per-keystroke persistence finding with the sanitization interaction.)
@@ -1846,7 +1846,7 @@ Areas targeted per the Pass 20 close-out. All line numbers verified against curr
 - **Root cause:** byte-equality `contains` check against a lowercased-at-match-time set; `Node_Modules` alongside `node_modules` is accepted and persisted forever (the default-merge path is also case-sensitive). CWE-20.
 - **Remediation:** case-insensitive duplicate check; lowercase-normalize in `IndexConfig::sanitize`.
 
-#### P3 — any single field type error discards the entire config to defaults (`src/config.rs:698-714`)
+#### P3 — any single field type error discards the entire config to defaults (`src/config.rs:698-714`) — **fixed 2026-09-05** (per-section parse: only the broken section defaults, with backup + named-section log)
 
 - **Root cause:** one whole-tree `from_str::<HarkConfig>`; a single wrong-typed field (`max_depth: "3"`) resets **all** sections — index roots, mounts, open_with, UI — to defaults (mitigated by, but distinct from, the Pass 13 backup/unknown-key findings: field-level serde defaults never engage because the struct aborts). CWE-754/CWE-20.
 - **Remediation:** per-section deserialization or field-level `Result` wrappers so a bad field degrades only that field.
@@ -1933,19 +1933,19 @@ Termination condition still **not met** (Passes 13–21: 24, 21, 25, 21, 12, 15,
 
 | Sev | Finding | Location | Pass |
 |---|---|---|---|
-| P2 | Malformed store JSON silently wiped, no backup, then overwritten | `typos.rs:76-81`, `usage.rs:44-49` | 13 |
-| P2 | `save()` race: shared tmp + lock dropped early → config.json corruption → all settings lost | `config.rs:806-845` | 21 |
-| P2 | Non-fsync store writes: crash leaves truncated file (feeds the wipe) | `typos.rs:215-219`, `usage.rs:175-179` | 13 |
-| P2 | Store JSON save races: same-shaped bug in typos/usage stores | `typos.rs`, `usage.rs` save paths | 21* |
-| P2 | Corrupt-but-parseable usage count → daemon abort (data-poisoning leg) | see Security table | 18 |
-| P3 | Unknown config keys silently dropped on next save | `config.rs:645-657` | 13 |
-| P3 | `save()` swallows all errors; settings appear saved but aren't | `config.rs:822-845` | 21 |
-| P3 | `max_depth > 6` reset to default 2 instead of clamping; `0` bypasses | `config.rs:736-739` | 21 |
-| P3 | Single field type error resets the entire config to defaults | `config.rs:698-714` | 21 |
-| P3 | Per-keystroke translate writes persist cleared endpoint mid-typing | `settings.rs:2151-2206` | 21 |
-| P3 | Rename-failed index tmp files accumulate; no cleanup | `files/index.rs:810-819` | 15 |
-| P3 | Converter scratch files leak on crash; no GC sweep | `ui/preview.rs:1284-1293` | 16 |
-| P3 | `IndexConfig` unsanitized; `extra_roots` accepts relative/`~otheruser` (silently ignored) | `config.rs`, `settings.rs:852-855` | 21 |
+| P2 | Malformed store JSON silently wiped, no backup, then overwritten ✅ fixed 2026-09-05 | `typos.rs:76-81`, `usage.rs:44-49` | 13 |
+| P2 | `save()` race: shared tmp + lock dropped early → config.json corruption → all settings lost ✅ fixed (pre-existing `SAVE_LOCK` in shared helper; verified 2026-09-05) | `config.rs:806-845` | 21 |
+| P2 | Non-fsync store writes: crash leaves truncated file (feeds the wipe) ✅ fixed (stores via shared helper since 2026-08-27; index `save_cache` fsynced 2026-09-05) | `typos.rs:215-219`, `usage.rs:175-179` | 13 |
+| P2 | Store JSON save races: same-shaped bug in typos/usage stores ✅ fixed (pre-existing shared lock + dirty-retry; verified 2026-09-05) | `typos.rs`, `usage.rs` save paths | 21* |
+| P2 | Corrupt-but-parseable usage count → daemon abort (data-poisoning leg) ✅ fixed (pre-existing count clamp; verified 2026-09-05) | see Security table | 18 |
+| P3 | Unknown config keys silently dropped on next save ✅ fixed 2026-09-05 | `config.rs:645-657` | 13 |
+| P3 | `save()` swallows all errors; settings appear saved but aren't ✅ fixed 2026-09-05 | `config.rs:822-845` | 21 |
+| P3 | `max_depth > 6` reset to default 2 instead of clamping; `0` bypasses ✅ fixed 2026-09-05 | `config.rs:736-739` | 21 |
+| P3 | Single field type error resets the entire config to defaults ✅ fixed 2026-09-05 | `config.rs:698-714` | 21 |
+| P3 | Per-keystroke translate writes persist cleared endpoint mid-typing ✅ fixed 2026-09-05 | `settings.rs:2151-2206` | 21 |
+| P3 | Rename-failed index tmp files accumulate; no cleanup ✅ fixed 2026-09-05 | `files/index.rs:810-819` | 15 |
+| P3 | Converter scratch files leak on crash; no GC sweep ✅ fixed 2026-09-05 | `ui/preview.rs:1284-1293` | 16 |
+| P3 | `IndexConfig` unsanitized; `extra_roots` accepts relative/`~otheruser` (silently ignored) ✅ fixed 2026-09-05 | `config.rs`, `settings.rs:852-855` | 21 |
 
 ### ⚡ Performance
 

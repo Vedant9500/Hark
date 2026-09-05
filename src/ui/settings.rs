@@ -5,8 +5,8 @@ use gtk::gdk::Key;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{
-    Box as GtkBox, Button, CheckButton, Entry, EventControllerKey, Image, Label, ListBox,
-    ListBoxRow, Orientation, ScrolledWindow, Separator,
+    Box as GtkBox, Button, CheckButton, Entry, EventControllerFocus, EventControllerKey, Image,
+    Label, ListBox, ListBoxRow, Orientation, ScrolledWindow, Separator,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -914,10 +914,15 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
                 return;
             }
             // Normalize like the pin path does so `~/x` and `/home/u/x`
-            // can't both be stored as separate rows.
+            // can't both be stored as separate rows. Reject relative and
+            // `~otheruser` forms (audit P3): they are silently ignored
+            // downstream, and `update` sanitizing would drop them anyway.
             let p = crate::providers::files::expand_user_path(&raw)
                 .to_string_lossy()
                 .to_string();
+            if !std::path::Path::new(&p).is_absolute() {
+                return;
+            }
             engine.config().update(|c| {
                 if !c.index.extra_roots.iter().any(|r| r == &p) {
                     c.index.extra_roots.push(p.clone());
@@ -2178,6 +2183,29 @@ fn build_appearance_page(
     outer
 }
 
+/// Commit an entry's text on Enter or focus loss instead of per keystroke
+/// (audit P3): typing an endpoint char-by-char can persist a half-typed
+/// (sanitize-cleared) value if the daemon exits mid-typing, and every
+/// api_key keystroke rewrites the secret to disk. Initial `set_text` runs
+/// before handlers attach, so programmatic fills are unaffected.
+fn commit_entry_on_idle(entry: &Entry, commit: impl Fn(String) + 'static) {
+    let commit = Rc::new(commit);
+    {
+        let entry = entry.clone();
+        let commit = commit.clone();
+        entry
+            .clone()
+            .connect_activate(move |_| commit(entry.text().to_string()));
+    }
+    let focus = EventControllerFocus::new();
+    {
+        let entry = entry.clone();
+        let commit = commit.clone();
+        focus.connect_leave(move |_| commit(entry.text().to_string()));
+    }
+    entry.add_controller(focus);
+}
+
 fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> GtkBox {
     let (outer, body) = page_shell(
         "applications-utilities-symbolic",
@@ -2241,8 +2269,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     card.append(&target_row);
     {
         let engine = engine.clone();
-        target_entry.connect_changed(move |entry| {
-            let text = entry.text().to_string();
+        commit_entry_on_idle(&target_entry, move |text| {
             engine.config().update(|c| {
                 c.translate.target_lang = text;
             });
@@ -2266,8 +2293,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     card.append(&ep_row);
     {
         let engine = engine.clone();
-        ep_entry.connect_changed(move |entry| {
-            let text = entry.text().to_string();
+        commit_entry_on_idle(&ep_entry, move |text| {
             engine.config().update(|c| {
                 c.translate.endpoint = text;
             });
@@ -2291,8 +2317,7 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     card.append(&key_row);
     {
         let engine = engine.clone();
-        key_entry.connect_changed(move |entry| {
-            let text = entry.text().to_string();
+        commit_entry_on_idle(&key_entry, move |text| {
             engine.config().update(|c| {
                 let t = text.trim();
                 c.translate.api_key = if t.is_empty() {

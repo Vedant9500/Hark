@@ -397,6 +397,10 @@ impl PreviewPanel {
         let drag = PathDragBinding::new(drag_session);
         drag.attach(&root);
 
+        // Crash/kill between converter write and cleanup orphans PNGs here
+        // (audit P3) — sweep entries older than an hour once per process.
+        sweep_converter_scratch();
+
         Self {
             root,
             sep,
@@ -1442,6 +1446,31 @@ fn converter_scratch_dir() -> Option<PathBuf> {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
     Some(dir)
+}
+
+/// Remove converter outputs orphaned by a crash (audit P3): anything older
+/// than an hour in our exclusive scratch dir. Fresh files may belong to an
+/// in-flight decode, so they are left alone. Best-effort — failures ignored.
+fn sweep_converter_scratch() {
+    let Some(dir) = converter_scratch_dir() else {
+        return;
+    };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    const MAX_AGE_SECS: u64 = 3600;
+    for entry in rd.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() > MAX_AGE_SECS)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Best-effort OS-entropy token so output filenames are unpredictable across

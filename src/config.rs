@@ -33,6 +33,10 @@ pub struct IndexConfig {
     pub max_depth: usize,
     #[serde(default)]
     pub path_style: PathStyle,
+    /// Unknown keys preserved verbatim across rewrites (audit P3): a typo'd
+    /// or newer-schema key must not be silently erased on the next save.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -178,7 +182,21 @@ impl Default for IndexConfig {
             exclude: default_excludes(),
             max_depth: default_depth(),
             path_style: PathStyle::Label,
+            extra: Default::default(),
         }
+    }
+}
+
+impl IndexConfig {
+    /// Clamp/normalize index knobs (load + update paths). `max_depth` clamps
+    /// to the walkable boundary instead of resetting to the default (audit
+    /// P3); `extra_roots` keeps only absolute paths — relative and
+    /// `~otheruser` forms are silently ignored downstream, so carrying them
+    /// in the file lies about what is indexed (audit P3).
+    pub fn sanitize(&mut self) {
+        self.max_depth = self.max_depth.clamp(1, 6);
+        self.extra_roots
+            .retain(|s| PathBuf::from(expand_user_path(s)).is_absolute());
     }
 }
 
@@ -203,6 +221,9 @@ pub struct OpenWithConfig {
     pub documents: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archives: Option<String>,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl OpenWithConfig {
@@ -373,6 +394,9 @@ pub struct UiThemeConfig {
     /// Compact = search+footer until typing; Expanded = always show results body.
     #[serde(default)]
     pub layout_mode: LayoutMode,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_opacity() -> f32 {
@@ -398,6 +422,7 @@ impl Default for UiThemeConfig {
             symbolic_icons: false,
             radius: default_radius(),
             layout_mode: LayoutMode::default(),
+            extra: Default::default(),
         }
     }
 }
@@ -446,6 +471,9 @@ pub struct TranslateConfig {
     /// Max source characters accepted for translation.
     #[serde(default = "default_translate_max_chars")]
     pub max_chars: usize,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_translate_target() -> String {
@@ -465,6 +493,7 @@ impl Default for TranslateConfig {
             api_key: None,
             auto_detect: true,
             max_chars: default_translate_max_chars(),
+            extra: Default::default(),
         }
     }
 }
@@ -695,6 +724,9 @@ pub struct HarkConfig {
     /// Translate-on-paste (non-Latin scripts / `tr ` prefix). Online via LibreTranslate or free backends.
     #[serde(default)]
     pub translate: TranslateConfig,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Current on-disk schema after migrations in `ConfigStore::load`.
@@ -740,8 +772,7 @@ impl ConfigStore {
         let mut recovered = false;
         let mut cfg = if path.exists() {
             match fs::read_to_string(&path) {
-                Ok(contents) => match serde_json::from_str::<HarkConfig>(&contents) {
-                    Ok(cfg) => cfg,
+                Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
                     Err(err) => {
                         recovered = true;
                         match backup_invalid_config(&path) {
@@ -756,6 +787,61 @@ impl ConfigStore {
                             ),
                         }
                         HarkConfig::default()
+                    }
+                    // Per-section parse (audit P3): one wrong-typed field
+                    // used to discard the whole file. Now only the broken
+                    // section falls back — the rest survives.
+                    Ok(v) => {
+                        let mut bad_sections = Vec::new();
+                        let cfg = HarkConfig {
+                            version: v
+                                .get("version")
+                                .and_then(|s| serde_json::from_value(s.clone()).ok())
+                                .unwrap_or_else(default_version),
+                            index: section_or_default(&v, "index", &mut bad_sections),
+                            open_with: section_or_default(&v, "open_with", &mut bad_sections),
+                            ui: section_or_default(&v, "ui", &mut bad_sections),
+                            translate: section_or_default(&v, "translate", &mut bad_sections),
+                            // Flattened extras are written inline, so unknown
+                            // top-level keys reappear here on reload — gather
+                            // them back so they survive rewrites (audit P3).
+                            extra: v
+                                .as_object()
+                                .map(|map| {
+                                    map.iter()
+                                        .filter(|(k, _)| {
+                                            !matches!(
+                                                k.as_str(),
+                                                "version"
+                                                    | "index"
+                                                    | "open_with"
+                                                    | "ui"
+                                                    | "translate"
+                                                    | "extra"
+                                            )
+                                        })
+                                        .map(|(k, val)| (k.clone(), val.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        };
+                        if !bad_sections.is_empty() {
+                            recovered = true;
+                            match backup_invalid_config(&path) {
+                                Some(backup) => eprintln!(
+                                    "hark: invalid config section(s) {} in {} — defaults used for those sections (backup: {})",
+                                    bad_sections.join(", "),
+                                    path.display(),
+                                    backup.display()
+                                ),
+                                None => eprintln!(
+                                    "hark: invalid config section(s) {} in {} — defaults used (backup failed)",
+                                    bad_sections.join(", "),
+                                    path.display()
+                                ),
+                            }
+                        }
+                        cfg
                     }
                 },
                 Err(err) => {
@@ -774,11 +860,16 @@ impl ConfigStore {
         // Seed mount defaults for newly discovered mounts
         let mounts = discover_mounts();
         let mut changed = false;
-        // Migrate older deep-scan configs (default used to be 8).
-        // FileProvider clamps walk to 1..=6 — allow up to 6 here.
-        if cfg.index.max_depth > 6 {
-            cfg.index.max_depth = default_depth();
-            changed = true;
+        // Normalize index knobs (audit P3): `max_depth` clamps to the
+        // walkable boundary instead of resetting to the default, and
+        // non-absolute `extra_roots` are dropped (silently ignored
+        // downstream, so keeping them lies about what is indexed).
+        {
+            let before_idx = cfg.index.clone();
+            cfg.index.sanitize();
+            if cfg.index != before_idx {
+                changed = true;
+            }
         }
         // Drop accidental mega-pins (home / / /home …) — depth-6 walks explode the index.
         let before_deep = cfg.index.deep_roots.len();
@@ -848,8 +939,8 @@ impl ConfigStore {
         f(g.as_ref())
     }
 
-    /// Apply a mutation. Clones the config, runs `f`, sanitizes UI/translate.
-    /// Swaps the Arc and schedules a disk write **only when** the result
+    /// Apply a mutation. Clones the config, runs `f`, sanitizes
+    /// UI/translate/index. Swaps the Arc and schedules a disk write **only when** the result
     /// differs from the previous snapshot (no-op promote/settings toggles
     /// must not thrash I/O). Writes run on a background thread, coalesced
     /// through `pending_save` — so per-keystroke updates never do main-thread
@@ -860,6 +951,7 @@ impl ConfigStore {
         f(&mut cfg);
         cfg.ui.sanitize();
         cfg.translate.sanitize();
+        cfg.index.sanitize();
         if cfg == **g {
             return;
         }
@@ -902,7 +994,11 @@ fn write_config_disk(path: &Path, data: &str) {
     if data.is_empty() {
         return;
     }
-    write_private_file(path, data.as_bytes());
+    // Surface persistence failures (audit P3): settings must not look saved
+    // when the write never landed (disk-full, read-only config, …).
+    if !write_private_file(path, data.as_bytes()) {
+        eprintln!("hark: failed to persist config {}", path.display());
+    }
 }
 
 pub fn config_path() -> PathBuf {
@@ -1024,10 +1120,32 @@ pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> bool {
 }
 
 /// Copy a corrupt config aside (`config.json.invalid`) so the user can recover
-/// settings, returning the backup path on success.
-fn backup_invalid_config(path: &Path) -> Option<PathBuf> {
+/// settings, returning the backup path on success. Also used for the
+/// typos/usage stores (`<name>.json.invalid`) — same shape, same recovery
+/// story (audit P2).
+pub(crate) fn backup_invalid_config(path: &Path) -> Option<PathBuf> {
     let backup = path.with_extension("json.invalid");
     fs::copy(path, &backup).ok().map(|_| backup)
+}
+
+/// One config section from a parsed `Value`: missing → default (same as the
+/// field-level `serde(default)`s today); present-but-wrong-type → default +
+/// recorded in `bad` so the caller backs up and logs the section name
+/// instead of discarding the whole file (audit P3).
+fn section_or_default<T>(v: &serde_json::Value, key: &'static str, bad: &mut Vec<&'static str>) -> T
+where
+    T: Default + for<'de> serde::Deserialize<'de>,
+{
+    match v.get(key) {
+        None => T::default(),
+        Some(sv) => match serde_json::from_value::<T>(sv.clone()) {
+            Ok(t) => t,
+            Err(_) => {
+                bad.push(key);
+                T::default()
+            }
+        },
+    }
 }
 
 /// Filesystems that are not real on-disk user data (pseudo / overlay / volatile).
@@ -1477,6 +1595,61 @@ mod config_store_tests {
         assert!(list.contains(&"node_modules".into()));
         // Second merge is a no-op.
         assert!(!merge_missing_default_excludes(&mut list));
+    }
+
+    #[test]
+    fn unknown_keys_survive_rewrite() {
+        // Audit P3: typo'd/future keys must not be erased on save.
+        let cfg: HarkConfig = serde_json::from_str(
+            r#"{"version":2,"future_top":true,"index":{"max_depth":3,"mystery":1},"ui":{"opacity":0.9,"weird":2}}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.index.max_depth, 3);
+        let raw = serde_json::to_string(&cfg).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v.get("future_top").and_then(|x| x.as_bool()), Some(true));
+        assert_eq!(
+            v.pointer("/index/mystery").and_then(|x| x.as_u64()),
+            Some(1)
+        );
+        assert_eq!(v.pointer("/ui/weird").and_then(|x| x.as_u64()), Some(2));
+    }
+
+    #[test]
+    fn bad_section_defaults_only_itself() {
+        // Audit P3: one wrong-typed section must not reset the rest.
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"version":2,"index":{"max_depth":4},"ui":{"opacity":"opaque"}}"#,
+        )
+        .unwrap();
+        let mut bad = Vec::new();
+        let index: IndexConfig = section_or_default(&v, "index", &mut bad);
+        let ui: UiThemeConfig = section_or_default(&v, "ui", &mut bad);
+        assert_eq!(index.max_depth, 4);
+        assert_eq!(ui, UiThemeConfig::default());
+        assert_eq!(bad, vec!["ui"]);
+    }
+
+    #[test]
+    fn index_sanitize_clamps_and_drops_relative() {
+        // Audit P3: max_depth clamps to the boundary (7→6, 0→1);
+        // relative / ~otheruser roots are dropped, ~/ kept.
+        let mut idx = IndexConfig {
+            max_depth: 9,
+            extra_roots: vec![
+                "relative/path".into(),
+                "~otheruser/x".into(),
+                "~/docs".into(),
+                "/abs/path".into(),
+            ],
+            ..Default::default()
+        };
+        idx.sanitize();
+        assert_eq!(idx.max_depth, 6);
+        assert_eq!(idx.extra_roots.len(), 2);
+        idx.max_depth = 0;
+        idx.sanitize();
+        assert_eq!(idx.max_depth, 1);
     }
 
     #[test]
