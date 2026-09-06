@@ -26,7 +26,7 @@ use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Entry, EventControllerKey, Label, ListBox,
     ListBoxRow, Orientation, PolicyType, ScrolledWindow, Stack, Viewport,
 };
-use preview::PreviewPanel;
+use preview::{PreviewPanel, PREVIEW_WIDTH};
 use rows::{HeroAnim, ResultRowPool};
 use settings::SettingsPanel;
 use std::cell::{Cell, RefCell};
@@ -38,8 +38,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Compact fixed outer width. When the media preview opens, the window widens
-/// by PREVIEW_WIDTH + separator (see `preview.set_visibility_cb` below).
+/// to PREVIEW_WINDOW_WIDTH (list keeps its full 720; the panel takes its own
+/// 280 + separator) with an app-side glide — never squeezing the list column.
 pub(crate) const WINDOW_WIDTH: i32 = 720;
+/// Preview-open outer width: full list + panel + separator. Single locked
+/// geometry — per-content widths are what made the window "dance".
+pub(crate) const PREVIEW_WINDOW_WIDTH: i32 = WINDOW_WIDTH + PREVIEW_WIDTH + 1;
 pub(crate) const EXPANDED_WINDOW_HEIGHT: i32 = 480; // Vicinae 770×480 (1.60) / Raycast 750×474 (1.58) — 720×480=1.50 fits preview 380+90
 pub(crate) const COMPACT_WINDOW_HEIGHT: i32 = 110;
 /// Extra transparent margin around the rounded shell (for soft drop-shadow).
@@ -238,19 +242,8 @@ impl Launcher {
 
         let preview = Rc::new(PreviewPanel::new(drag_session.clone(), theme.is_light()));
         // Preview pane only appears for media (images / video / audio).
-
-        // Preview now lives inside constant 1001×470 surface — no window
-        // widen. List expands to 1001 when preview hidden, 720+280 when shown.
-        {
-            let _shell = shell.clone();
-            let _window = window.clone();
-            preview.set_visibility_cb(move |_vis| {
-                // No window resize here — window stays 1001×470 (expanded) or
-                // 720×110 (compact) via apply_body_chrome. Preview just
-                // toggles its own visibility inside fixed surface, so no
-                // texture expansion ghost on gemi→gemin.
-            });
-        }
+        // Width geometry is driven by preview visibility (see the visibility
+        // callback registered below, after size_anim exists).
 
         body.append(&list_col);
         body.append(preview.separator());
@@ -314,6 +307,7 @@ impl Launcher {
             apply_body_chrome(
                 compact0,
                 true,
+                false,
                 &body,
                 &body_revealer,
                 &footer_sep,
@@ -349,6 +343,31 @@ impl Launcher {
             ui_cfg0.layout_mode,
             crate::config::LayoutMode::Compact
         )));
+        // Preview open/close glides the window between the two locked widths
+        // (720 ↔ 1001) so the list column never squeezes. Height is derived
+        // from live compact/query state — not the mid-tween request — so a
+        // width hop mid-expand can't freeze the height halfway. App-side
+        // (compositor anims are no_anim): window+shell step together.
+        {
+            let window_c = window.clone();
+            let shell_c = shell.clone();
+            let size_anim_c = size_anim.clone();
+            let search_c = search.clone();
+            let ui_compact_c = ui_compact.clone();
+            preview.set_visibility_cb(move |open| {
+                let w = if open {
+                    PREVIEW_WINDOW_WIDTH
+                } else {
+                    WINDOW_WIDTH
+                };
+                let h = if ui_compact_c.get() && search_c.text().trim().is_empty() {
+                    COMPACT_WINDOW_HEIGHT
+                } else {
+                    EXPANDED_WINDOW_HEIGHT
+                };
+                size_anim_c.glide(&window_c, &shell_c, w, h);
+            });
+        }
         let in_settings = Rc::new(Cell::new(false));
         // Bumped on every query change; stale async deep walks are ignored.
         let deep_gen: Rc<Cell<u64>> = Rc::new(Cell::new(0));
@@ -408,9 +427,12 @@ impl Launcher {
                 // Expand/collapse body immediately (don't wait for search debounce).
                 // This stays instant for compact idle → typing, but no longer
                 // forces a window resize on every keystroke (see apply_body_chrome).
+                // Width follows current preview state; the visibility callback
+                // corrects it once the new results select.
                 apply_body_chrome(
                     ui_compact.get(),
                     q.trim().is_empty(),
+                    preview.is_showing(),
                     &body_c,
                     &body_revealer_c,
                     &footer_sep_c,
@@ -501,6 +523,9 @@ impl Launcher {
             let settings_nav = settings.nav.clone();
             let shell_frz = shell.clone();
             let settings_root = settings.widget().clone();
+            let window_s = window.clone();
+            let shell_s = shell.clone();
+            let size_anim_s = size_anim.clone();
             Rc::new(move || {
                 in_settings.set(true);
                 // Freeze the footprint: the stack is vhomogeneous=false, so
@@ -513,6 +538,11 @@ impl Launcher {
                 // nothing and behaves exactly as before.
                 let frozen = shell_frz.height();
                 settings_root.set_size_request(WINDOW_WIDTH, frozen);
+                // Settings is a 720-wide page: narrow the window back while
+                // it is open (a 1001 preview-width shell would strand it
+                // off-center). Close restores via the refresh glide, which
+                // re-reads preview visibility.
+                size_anim_s.glide(&window_s, &shell_s, WINDOW_WIDTH, shell_s.height_request());
                 stack.set_visible_child_name("settings");
                 if let Some(row) = settings_nav
                     .selected_row()
@@ -2257,6 +2287,7 @@ fn note_session_query(session: &Rc<RefCell<VecDeque<String>>>, q: &str) {
 fn apply_body_chrome(
     compact: bool,
     query_empty: bool,
+    preview_open: bool,
     body: &GtkBox,
     body_revealer: &gtk::Revealer,
     footer_sep: &gtk::Separator,
@@ -2298,14 +2329,15 @@ fn apply_body_chrome(
             }
         }
     }
-    // Variable height when expanded — window+shell follow content
-    // (header+body+footer) to avoid awkward 470h empty gap for 4 rows
-    // like `ge`. Both are set together to same size so no transparent
-    // gap (ghost) appears between window and shell. Window stays 720
-    // wide so preview show/hide doesn't widen window — gemi→gemin no
-    // resize ghost. This also keeps window == shell so rounded corners
-    // have no visible rectangular window backing (the "padding" square).
-    let target_w = WINDOW_WIDTH;
+    // Locked two-width geometry: the list keeps its full 720 in both states
+    // and the panel takes its own 280 + separator when open. Both are set
+    // together to same size so no transparent gap (ghost) appears between
+    // window and shell, and per-content widths can never "dance".
+    let target_w = if preview_open {
+        PREVIEW_WINDOW_WIDTH
+    } else {
+        WINDOW_WIDTH
+    };
     let target_h = if show_body {
         EXPANDED_WINDOW_HEIGHT
     } else {
@@ -2538,6 +2570,7 @@ fn refresh_results(
     apply_body_chrome(
         compact,
         query_empty,
+        preview.is_showing(),
         body,
         body_revealer,
         footer_sep,

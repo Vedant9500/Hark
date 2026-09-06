@@ -176,6 +176,22 @@ All pattern-based, cheap to add. Shipped 2026-08-15 in `src/providers/calc/quick
 | ✅ | Text utils | word count (`wc`), slugify (`slug`), case convert (`case snake Hello World`) |
 | ✅ | Date diff / age | `1998-03-15 to now`, `age 1998-03-15` |
 
+## Preview / window redesign (shipped 2026-09-06, visual pass pending)
+
+Full issue list with code refs + screenshots mapping: [docs/PREVIEW-REDESIGN.md](docs/PREVIEW-REDESIGN.md).
+
+| Priority | Item | Notes |
+|----------|------|-------|
+| ✅ | Preview squeezes results column (720 → ~440px list) | Locked 720/1001 widths; list constant 720, panel takes own 280+sep, glide on toggle |
+| ✅ | No fixed list/preview split, window dances on scroll | Two geometries only; code min height unified to image stage (186); settings narrows to 720 |
+| ✅ | Sharpness non-deterministic (thumb-first + upscale) | 248px header-only thumb gate → full decode; native-dims labels for image thumbs |
+| ✅ | Display size ignores native res (2K small, 128px big) | `ContentFit::ScaleDown`: large shrinks, small centers native in fixed 4:3 stage |
+| ✅ | Resize snaps, no smooth animation | `SizeTweener` Euclidean travel; preview open/close glides ~180ms app-side (no_anim kept) |
+
+> Follow-ups (adaptive height, exact-fit scrolls, bezel) were tried and
+> reverted same day — laggy + render glitch; see
+> [docs/PREVIEW-REDESIGN.md](docs/PREVIEW-REDESIGN.md) follow-up section.
+
 ## Architecture / hygiene
 
 | Priority | Item | Notes |

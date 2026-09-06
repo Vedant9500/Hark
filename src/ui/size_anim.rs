@@ -14,9 +14,10 @@ use gtk::glib::ControlFlow;
 use gtk::prelude::*;
 use gtk::{ApplicationWindow, Box as GtkBox};
 
-/// Below this height delta a glide is imperceptible — snap instead.
+/// Below this travel a glide is imperceptible — snap instead.
 const RESIZE_MIN_PX: f64 = 2.0;
-/// Compact↔expanded hop duration floor.
+/// Compact↔expanded hop duration floor. Width-only hops (preview open/close,
+/// 720↔1001) travel a similar distance and share the same easing budget.
 const RESIZE_MIN_MS: u64 = 160;
 /// Cap for the largest size change.
 const RESIZE_MAX_MS: u64 = 240;
@@ -67,20 +68,27 @@ impl SizeTweener {
 
     /// Animated resize to `(w, h)`. Retargets from the current request when a
     /// tween is already running; snaps while hidden (`show()` lays out at the
-    /// final size before mapping) and for sub-pixel deltas.
+    /// final size before mapping) and for sub-pixel travels.
+    ///
+    /// Travel is Euclidean over both axes so width-only hops (preview
+    /// open/close) animate instead of snapping — the old height-only
+    /// distance treated them as zero-travel.
     pub fn glide(&self, win: &ApplicationWindow, shell: &GtkBox, w: i32, h: i32) {
         let from = (shell.width_request(), shell.height_request());
-        let dist = (h - from.1).abs() as f64;
+        let dw = (w - from.0) as f64;
+        let dh = (h - from.1) as f64;
+        let dist = dw.hypot(dh);
         if !win.is_visible() || dist < RESIZE_MIN_PX {
             self.snap(win, shell, w, h);
             return;
         }
         self.cancel();
+        let span = (from.0.max(w) as f64).hypot(from.1.max(h) as f64);
         *self.state.tween.borrow_mut() = Some(Tween {
             from,
             target: (w, h),
             start_us: None,
-            dur_ms: resize_duration_ms(dist, from.1.max(h) as f64),
+            dur_ms: resize_duration_ms(dist, span),
         });
         // Weak state reference: the widget owns the tick closure, so a strong
         // Rc here (state → tick id → closure → state) would leak the tween.
@@ -162,5 +170,19 @@ mod tests {
         assert_eq!(resize_duration_ms(10_000.0, 480.0), RESIZE_MAX_MS);
         // Degenerate span must not divide by zero.
         assert_eq!(resize_duration_ms(50.0, 0.0), RESIZE_MAX_MS);
+    }
+
+    #[test]
+    fn width_only_hop_animates_like_height() {
+        // Preview open/close (720 → 1001 at 480h): Euclidean travel ≈ 281px
+        // over a ≈1110px span — must clear the snap floor and stay capped.
+        let dist = 281f64.hypot(0.0);
+        let span = 1001f64.hypot(480.0);
+        let d = resize_duration_ms(dist, span);
+        assert!(
+            (RESIZE_MIN_MS..=RESIZE_MAX_MS).contains(&d),
+            "width hop {d}ms"
+        );
+        assert!(d > 0, "width-only travel must not snap");
     }
 }

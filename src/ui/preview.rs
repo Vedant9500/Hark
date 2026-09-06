@@ -41,6 +41,15 @@ const IMAGE_FRAME_WIDTH: i32 = PREVIEW_WIDTH - 32;
 const IMAGE_FRAME_HEIGHT: i32 = IMAGE_FRAME_WIDTH * 3 / 4; // 4:3
 /// Decode target (≈2× frame for HiDPI). Keeps textures small.
 const DECODE_MAX_PX: i32 = IMAGE_FRAME_WIDTH * 2;
+/// Minimum cached-thumb width served directly. Below the frame width the
+/// pixels would upscale ~2× and blur — the full decode runs instead.
+const THUMB_MIN_WIDTH: i32 = IMAGE_FRAME_WIDTH;
+
+/// True when a cached thumb is big enough to display without upscaling.
+/// Pure so the decode gate stays unit-testable without image files.
+fn thumb_meets_frame(w: i32, h: i32) -> bool {
+    w >= THUMB_MIN_WIDTH && h > 0
+}
 /// How many decoded textures to keep in RAM.
 const TEXTURE_CACHE_CAP: usize = 24;
 /// Skip decode work while the user is still arrowing through results.
@@ -172,7 +181,6 @@ impl MediaKind {
 /// Panel visibility callback — fired when the preview shows/hides so the
 /// launcher can widen/narrow the window.
 type VisibilityCallback = Rc<RefCell<Option<Rc<dyn Fn(bool)>>>>;
-
 pub struct PreviewPanel {
     pub root: GtkBox,
     pub sep: gtk::Separator,
@@ -287,13 +295,17 @@ impl PreviewPanel {
 
         let picture = Picture::new();
         picture.add_css_class("hark-preview-picture");
-        picture.set_content_fit(ContentFit::Contain);
+        // ScaleDown, not Contain: large art shrinks to fit, small art stays
+        // native-size centered (never upscaled into a blurry mess). The fixed
+        // 4:3 stage keeps geometry constant; letterbox bands are honest.
+        picture.set_content_fit(ContentFit::ScaleDown);
         picture.set_can_shrink(true);
         picture.set_hexpand(true);
         picture.set_vexpand(false);
         picture.set_halign(Align::Fill);
         picture.set_valign(Align::Center);
-        // Fixed 4:3 frame so previews stay consistent.
+        // Fixed 4:3 stage so geometry stays constant across selections;
+        // ScaleDown letterboxes honestly instead of stretching small art.
         picture.set_size_request(IMAGE_FRAME_WIDTH, IMAGE_FRAME_HEIGHT);
 
         let image_title = Label::new(None);
@@ -350,7 +362,9 @@ impl PreviewPanel {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .min_content_height(120)
+            // Same minimum as the image stage so code/image/icon pages share
+            // one content box — switching kinds must not resize the chrome.
+            .min_content_height(IMAGE_FRAME_HEIGHT)
             .max_content_height(380)
             .hexpand(true)
             .vexpand(true)
@@ -437,6 +451,12 @@ impl PreviewPanel {
 
     pub fn separator(&self) -> &gtk::Separator {
         &self.sep
+    }
+
+    /// Whether the panel is currently shown (drives the two-width window
+    /// geometry in `apply_body_chrome`).
+    pub fn is_showing(&self) -> bool {
+        self.root.is_visible()
     }
 
     fn set_panel_visible(&self, visible: bool) {
@@ -1401,24 +1421,37 @@ fn decode_preview_media(path: &Path) -> Option<DecodedPixels> {
     None
 }
 
-/// Prefer FreeDesktop thumb; fall back to scaled original (single open each).
+/// Prefer a sufficiently-large FreeDesktop thumb; fall back to the full
+/// decode otherwise. A small cached thumb (e.g. 128px `normal` for a 2K
+/// source) served directly is the classic crisp-vs-blurry lottery — the
+/// header-only gate below keeps those on the full-decode path.
 fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels> {
-    if let Ok(pb) = Pixbuf::from_file(thumb) {
-        if let Some(mut px) = pixbuf_to_pixels(&pb) {
-            let kind = media_kind(original);
-            let is_pdf = original
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("pdf"))
-                .unwrap_or(false);
-            px.dims_label = if kind == MediaKind::Video {
-                format!("Video · {} × {}", px.width, px.height)
-            } else if is_pdf {
-                format!("PDF · {} × {}", px.width, px.height)
-            } else {
-                format!("Thumbnail · {} × {}", px.width, px.height)
-            };
-            return Some(px);
+    // Header-only: never pays a full thumb decode just to reject it.
+    let thumb_big_enough = Pixbuf::file_info(thumb)
+        .map(|(_, w, h)| thumb_meets_frame(w, h))
+        .unwrap_or(false);
+    if thumb_big_enough {
+        if let Ok(pb) = Pixbuf::from_file(thumb) {
+            if let Some(mut px) = pixbuf_to_pixels(&pb) {
+                let kind = media_kind(original);
+                let is_pdf = original
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false);
+                px.dims_label = if kind == MediaKind::Video {
+                    format!("Video · {} × {}", px.width, px.height)
+                } else if is_pdf {
+                    format!("PDF · {} × {}", px.width, px.height)
+                } else if let Some((w, h)) = native_dims(original) {
+                    // Report the source resolution, not the thumb's — a
+                    // 256px cached tile must still read as the 2K file it is.
+                    format!("{w} × {h}")
+                } else {
+                    format!("Thumbnail · {} × {}", px.width, px.height)
+                };
+                return Some(px);
+            }
         }
     }
     // Thumb corrupt — fall through by kind.
@@ -1435,6 +1468,14 @@ fn decode_thumb_or_scaled(thumb: &Path, original: &Path) -> Option<DecodedPixels
         return decode_pdf_page(original);
     }
     decode_image_scaled(original)
+}
+
+/// Header-only native dimensions for labels. `None` when unreadable —
+/// callers fall back to decoded-pixel dims.
+fn native_dims(path: &Path) -> Option<(i32, i32)> {
+    Pixbuf::file_info(path)
+        .map(|(_, w, h)| (w, h))
+        .filter(|(w, h)| *w > 0 && *h > 0)
 }
 
 /// User-private scratch space for converter output (ffmpeg/pdftoppm PNG
@@ -1943,6 +1984,23 @@ fn format_modified(time: SystemTime) -> String {
             }
             Err(_) => "Modified".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod thumb_gate_tests {
+    use super::{thumb_meets_frame, IMAGE_FRAME_HEIGHT, IMAGE_FRAME_WIDTH};
+
+    #[test]
+    fn large_thumb_passes_normal_thumb_fails() {
+        // 256px `large` slot serves directly; 128px `normal` falls through
+        // to the full decode instead of upscaling ~2× into blur.
+        assert!(thumb_meets_frame(256, 144));
+        assert!(thumb_meets_frame(IMAGE_FRAME_WIDTH, IMAGE_FRAME_HEIGHT));
+        assert!(!thumb_meets_frame(128, 128));
+        assert!(!thumb_meets_frame(128, 72));
+        assert!(!thumb_meets_frame(0, 0));
+        assert!(!thumb_meets_frame(300, 0));
     }
 }
 
