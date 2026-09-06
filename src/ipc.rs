@@ -71,18 +71,49 @@ pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
     spawn_listener_at(&socket_path(), on_toggle);
 }
 
+/// True when `dir` sits under shared scratch space (`/tmp`, `/var/tmp`).
+/// Mirrors the private-store trust policy for the socket fallback path.
+#[cfg(unix)]
+fn is_shared_space(dir: &std::path::Path) -> bool {
+    dir.ancestors()
+        .any(|a| a == std::path::Path::new("/tmp") || a == std::path::Path::new("/var/tmp"))
+}
+
 /// Bind `path` and serve toggles. Split from [`spawn_listener`] so tests can
 /// exercise the accept/handler logic on a scratch socket.
 pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + 'static + Clone) {
     // Ensure the socket directory exists and is user-private. XDG_RUNTIME_DIR
     // is already 0700 by spec; the cache-dir fallback needs to be created and
-    // locked down here.
+    // locked down here. Failures are logged, not silent (audit P3): a
+    // silently un-hardened dir would host a supplantable socket.
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "hark: ipc: cannot create socket dir {}: {e}",
+                parent.display()
+            );
+            return;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            if std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).is_err() {
+                eprintln!(
+                    "hark: ipc: cannot lock down socket dir {}",
+                    parent.display()
+                );
+                return;
+            }
+            // Same ownership gate as the private stores (audit P3): refuse to
+            // serve from a shared-space dir we do not own — a pre-planted
+            // /tmp/hark must not host our toggle socket.
+            if !crate::config::dir_is_trusted(parent) && is_shared_space(parent) {
+                eprintln!(
+                    "hark: ipc: refusing untrusted socket dir {}",
+                    parent.display()
+                );
+                return;
+            }
         }
     }
 

@@ -140,6 +140,14 @@ pub(crate) fn store_freedesktop_thumbnail(
     if fs::create_dir_all(&dir).is_err() {
         return false;
     }
+    // FreeDesktop privacy mode (audit P3): thumbnails can expose scaled
+    // document/image content — keep our cache dirs user-private. Best
+    // effort: a foreign-owned dir keeps its modes rather than failing open.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
     let dest = dir.join(format!("{digest}.png"));
     // Keep a matching entry; overwrite one that is stale or missing MTime.
     if dest.is_file() && thumb_is_current(&dest, &canon) {

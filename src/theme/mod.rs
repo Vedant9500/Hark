@@ -222,8 +222,13 @@ impl ThemeManager {
 }
 
 fn scheme_path() -> PathBuf {
+    // A relative XDG_STATE_HOME would resolve against the daemon's cwd
+    // (audit P3) — only honor absolute paths.
     if let Ok(state) = std::env::var("XDG_STATE_HOME") {
-        return PathBuf::from(state).join("caelestia/scheme.json");
+        let p = PathBuf::from(&state);
+        if p.is_absolute() {
+            return p.join("caelestia/scheme.json");
+        }
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

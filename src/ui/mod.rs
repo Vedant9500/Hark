@@ -499,8 +499,20 @@ impl Launcher {
             let stack = stack.clone();
             let in_settings = in_settings.clone();
             let settings_nav = settings.nav.clone();
+            let shell_frz = shell.clone();
+            let settings_root = settings.widget().clone();
             Rc::new(move || {
                 in_settings.set(true);
+                // Freeze the footprint: the stack is vhomogeneous=false, so
+                // the window follows the visible child's natural height —
+                // and search content (~510 with margins) vs settings (~491)
+                // differ, dancing 512↔493 on every open/close. Pin the
+                // settings root to the live shell height so opening never
+                // resizes; close restores via the normal refresh glide.
+                // Safe fallback by construction: a 0 height constrains
+                // nothing and behaves exactly as before.
+                let frozen = shell_frz.height();
+                settings_root.set_size_request(WINDOW_WIDTH, frozen);
                 stack.set_visible_child_name("settings");
                 if let Some(row) = settings_nav
                     .selected_row()

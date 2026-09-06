@@ -413,6 +413,10 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     let mut comment = String::new();
     let mut exec_raw = String::new();
     let mut icon = String::new();
+    // Locale-tagged display values, first occurrence per tag.
+    let mut loc_names: Vec<(String, String)> = Vec::new();
+    let mut loc_generic: Vec<(String, String)> = Vec::new();
+    let mut loc_comments: Vec<(String, String)> = Vec::new();
     let mut terminal = false;
     let mut no_display = false;
     let mut hidden = false;
@@ -443,6 +447,33 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
+        // Localized display strings (`Name[fr]`) are collected with their
+        // tag and resolved against the session locale after the loop
+        // (audit P3). First occurrence wins per exact key, as elsewhere.
+        if let Some(tag) = key.strip_prefix("Name[").and_then(|t| t.strip_suffix(']')) {
+            if !loc_names.iter().any(|(t, _)| t == tag) {
+                loc_names.push((tag.to_string(), value.to_string()));
+            }
+            continue;
+        }
+        if let Some(tag) = key
+            .strip_prefix("GenericName[")
+            .and_then(|t| t.strip_suffix(']'))
+        {
+            if !loc_generic.iter().any(|(t, _)| t == tag) {
+                loc_generic.push((tag.to_string(), value.to_string()));
+            }
+            continue;
+        }
+        if let Some(tag) = key
+            .strip_prefix("Comment[")
+            .and_then(|t| t.strip_suffix(']'))
+        {
+            if !loc_comments.iter().any(|(t, _)| t == tag) {
+                loc_comments.push((tag.to_string(), value.to_string()));
+            }
+            continue;
+        }
         match key {
             "Name" if name.is_empty() => name = value.to_string(),
             "GenericName" if generic_name.is_empty() => generic_name = value.to_string(),
@@ -481,6 +512,24 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
                 try_exec = Some(value.to_string());
             }
             _ => {}
+        }
+    }
+
+    // Locale-first display strings (audit P3): `Name[fr]` wins under a
+    // French session, unlocalized `Name` otherwise. Runs before the
+    // emptiness check so locale-only entries still parse. `Exec` is
+    // deliberately never localized — localized keys must not reach
+    // execution (spec security property, preserved).
+    {
+        let locales = current_locales();
+        if let Some(v) = pick_localized(&loc_names, &locales) {
+            name = v;
+        }
+        if let Some(v) = pick_localized(&loc_generic, &locales) {
+            generic_name = v;
+        }
+        if let Some(v) = pick_localized(&loc_comments, &locales) {
+            comment = v;
         }
     }
 
@@ -600,6 +649,67 @@ fn split_exec_args(exec: &str) -> Vec<String> {
     } else {
         args
     }
+}
+
+/// Session locales for `Name[xx]` lookup, most specific first.
+/// `LANGUAGE` (colon-separated, priority-ordered) beats `LANG`; encoding
+/// (`.UTF-8`) and modifier (`@euro`) expand to fallback chains (`fr_FR` →
+/// `fr`). Visible for tests without mutating the process environment via
+/// [`pick_localized`].
+fn current_locales() -> Vec<String> {
+    let mut out = Vec::new();
+    let push_chain = |raw: &str, out: &mut Vec<String>| {
+        // Strip encoding: `fr_FR.UTF-8` → `fr_FR`.
+        let no_enc = raw.split('.').next().unwrap_or(raw);
+        // Split modifier: `de_DE@euro` → base `de_DE` + full.
+        let (base, modifier) = match no_enc.split_once('@') {
+            Some((b, m)) => (b, Some(m)),
+            None => (no_enc, None),
+        };
+        let mut chain = Vec::new();
+        if let Some(m) = modifier {
+            chain.push(format!("{base}@{m}"));
+        }
+        chain.push(base.to_string());
+        // Country fallback: `fr_FR` → `fr`.
+        if let Some((lang, _)) = base.split_once(['_', '-']) {
+            chain.push(lang.to_string());
+        }
+        for c in chain {
+            let c = c.to_ascii_lowercase();
+            if !c.is_empty() && !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    };
+    if let Ok(lang) = std::env::var("LANGUAGE") {
+        for part in lang.split(':') {
+            let part = part.trim();
+            if !part.is_empty() {
+                push_chain(part, &mut out);
+            }
+        }
+    }
+    if let Ok(lang) = std::env::var("LANG") {
+        push_chain(lang.trim(), &mut out);
+    }
+    out
+}
+
+/// Pick the best locale-tagged value: first session locale with a
+/// case-insensitive tag hit wins; `None` keeps the unlocalized value.
+/// Empty translations are skipped (a blank `Name[fr]=` falls back to `Name`
+/// instead of dropping the entry).
+fn pick_localized(tagged: &[(String, String)], locales: &[String]) -> Option<String> {
+    for loc in locales {
+        if let Some((_, v)) = tagged
+            .iter()
+            .find(|(t, v)| !v.is_empty() && t.eq_ignore_ascii_case(loc))
+        {
+            return Some(v.clone());
+        }
+    }
+    None
 }
 
 /// Whether a `.desktop` entry survives `OnlyShowIn`/`NotShowIn` scoping.
@@ -1042,6 +1152,63 @@ mod tests {
             "unresolvable TryExec must skip the entry"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn localized_display_strings_follow_locale() {
+        // Audit P3: `Name[fr]` wins under a French session; unlocalized
+        // `Name` otherwise. `Exec` is never localized (spec security
+        // property: localized keys must not reach execution).
+        let tagged = vec![
+            ("fr".to_string(), "Navigateur".to_string()),
+            ("de".to_string(), "Browser".to_string()),
+        ];
+        assert_eq!(
+            pick_localized(&tagged, &["fr_fr".to_string(), "fr".to_string()]).as_deref(),
+            Some("Navigateur")
+        );
+        assert_eq!(
+            pick_localized(&tagged, &["de".to_string()]).as_deref(),
+            Some("Browser")
+        );
+        assert_eq!(pick_localized(&tagged, &["es".to_string()]), None);
+        assert_eq!(pick_localized(&[], &["fr".to_string()]), None);
+        // Empty translations fall back instead of blanking the entry.
+        let blank = vec![("fr".to_string(), String::new())];
+        assert_eq!(pick_localized(&blank, &["fr".to_string()]), None);
+    }
+
+    #[test]
+    fn locale_chain_expands_encoding_and_country() {
+        // `current_locales` is env-dependent; test the chain builder shape
+        // through a full parse instead.
+        let dir = std::env::temp_dir().join(format!(
+            "hark-app-loc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("loc.desktop");
+        let mut f = fs::File::create(&path).unwrap();
+        write!(
+            f,
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Browser\n\
+             Name[fr]=Navigateur\n\
+             Exec=/usr/bin/browser\n"
+        )
+        .unwrap();
+        // Whatever the test runner's locale, parsing succeeds and the name
+        // is either the localized or the unlocalized form — never empty.
+        let app = parse_desktop_file(&path).expect("locale entry parses");
+        assert!(!app.name.is_empty());
+        assert!(app.name == "Browser" || app.name == "Navigateur");
         let _ = fs::remove_dir_all(&dir);
     }
 

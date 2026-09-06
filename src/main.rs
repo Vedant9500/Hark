@@ -10,8 +10,30 @@ use std::sync::Arc;
 
 const APP_ID: &str = "dev.hark.launcher";
 
+/// hark-specific CLI surface (parsed manually before GTK sees argv).
+const HARK_HELP: &str = "\
+hark options (parsed before GTK; `--help` also shows GTK options below):
+  --daemon              run resident in background (hotkey toggles window)
+  --search QUERY        one-shot headless search, print results, exit
+  --bench               run the benchmark suite (bench builds only)
+  update [--no-restart] rebuild + reinstall from the source checkout
+";
+
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
+
+    // Document hark's own flags alongside GTK's `--help` (audit P3): GTK
+    // parses its options itself, so ours are consumed manually above — but
+    // `--help` must still advertise them instead of listing GTK only.
+    // Skipped for `--search` invocations: a help-looking query operand is
+    // consumed as the query by design (see tension table).
+    if !args.iter().any(|a| a == "--search")
+        && args
+            .iter()
+            .any(|a| a == "--help" || a == "-h" || a == "--help-all")
+    {
+        print!("{HARK_HELP}");
+    }
 
     // `hark update` / `hark --update`: rebuild + reinstall from the source
     // checkout. Runs before the IPC toggle path and before GTK arg parsing.
@@ -132,6 +154,30 @@ fn main() {
                 }
             }
         });
+    }
+
+    // Graceful SIGTERM/SIGINT (audit P2 lifecycle): flush learned state,
+    // stop the refresh thread, and remove the socket so the next start
+    // skips stale-reclaim. Previously termination lost up to a debounce
+    // window of usage/typo learning and left hark.sock behind. Zero cost
+    // until a signal arrives; signal(7) numbers, Linux-only daemon.
+    #[cfg(unix)]
+    {
+        for signum in [15 /* SIGTERM */, 2 /* SIGINT */] {
+            let engine = engine.clone();
+            glib::unix_signal_add(signum, move || {
+                engine.shutdown_graceful();
+                let _ = std::fs::remove_file(ipc::socket_path());
+                // `WeakRef<Application>` is !Send, so re-resolve the running
+                // app here (same pattern as the drag-end settle handler).
+                if let Some(app) =
+                    gtk::gio::Application::default().and_then(|a| a.downcast::<Application>().ok())
+                {
+                    app.quit();
+                }
+                glib::ControlFlow::Break
+            });
+        }
     }
 
     app.run_with_args(&args);
@@ -361,5 +407,14 @@ mod tests {
         let mut args = argv(&["hark", "gimp"]);
         strip_search_args(&mut args);
         assert_eq!(args, argv(&["hark", "gimp"]));
+    }
+
+    #[test]
+    fn help_section_documents_own_flags() {
+        // Audit P3: `--help` must advertise hark's manually-parsed flags,
+        // not GTK options alone.
+        for flag in ["--daemon", "--search", "--bench", "update"] {
+            assert!(HARK_HELP.contains(flag), "help section missing {flag}");
+        }
     }
 }

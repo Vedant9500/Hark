@@ -438,7 +438,10 @@ pub(crate) fn index_results_are_strong(results: &[SearchResult]) -> bool {
 
 pub(super) fn looks_specific_for_deep(q: &str) -> bool {
     let q = q.trim();
-    if q.len() < 3 {
+    // Character count, not bytes (audit P3): five CJK characters are 15
+    // bytes but name a specific file; two Latin chars are not specific.
+    let qlen = q.chars().count();
+    if qlen < 3 {
         return false;
     }
     // Bare extension shorthand is too broad for a whole-tree walk.
@@ -452,7 +455,8 @@ pub(super) fn looks_specific_for_deep(q: &str) -> bool {
     }
     if let Some(rest) = q.strip_prefix("*.") {
         // `*.md` alone: skip deep (millions of hits possible). Need segments.
-        return rest.contains('*') || rest.len() > 4;
+        // Character count (see above).
+        return rest.contains('*') || rest.chars().count() > 4;
     }
     if q.contains('*') || q.contains('?') {
         // Glob with some literal chars.
@@ -470,7 +474,7 @@ pub(super) fn looks_specific_for_deep(q: &str) -> bool {
         }
     }
     // Long-ish plain name (likely intentional file/folder, not 2-letter noise).
-    q.len() >= 5 && !q.contains(char::is_whitespace)
+    qlen >= 5 && !q.contains(char::is_whitespace)
 }
 
 pub(super) fn index_is_strong(results: &[SearchResult]) -> bool {

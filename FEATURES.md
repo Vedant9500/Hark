@@ -83,6 +83,7 @@
 ### Actions
 
 - Open with system handler (`xdg-open`) or a Hark per-category default app from Settings
+- One-shot “Open with…” picker on any result (action panel)
 - Open a terminal at the path
 - Drag file/folder (and apps) into other apps (Telegram, Nautilus, browsers, etc.)
 - Actions panel: Copy path, reveal in file manager, move to trash
@@ -200,7 +201,7 @@ Also:
 - Default Tokyo Night–style palette
 - Live theme from **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`)
 - **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
-- Hot-reloads on file change (or 2s poll fallback)
+- Hot-reloads on file change via FileMonitor (applies once immediately if monitoring is unavailable)
 - Custom GTK CSS for launcher chrome
 
 ---
@@ -283,7 +284,6 @@ Tracked in [todo.md](todo.md). Not fully shipped yet:
 
 - Multi-select drag-and-drop
 - Per-extension open overrides (beyond coarse categories)
-- One-shot “Open with…” on results (vs Settings defaults)
 - Reverse scoped search form (`glassbox/docs optimization.md` without `in`)
 
 Shipped recently:

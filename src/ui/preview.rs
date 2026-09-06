@@ -1256,6 +1256,13 @@ struct AudioMeta {
 /// Best-effort audio tag probe. Never fails the preview path — returns `None`
 /// only for genuinely unreadable/empty files.
 fn read_audio_meta(path: &Path) -> Option<AudioMeta> {
+    // Size cap (audit P2): tag readers walk the file; a multi-hundred-MB
+    // selection should not stall the worker. Stale generations are already
+    // discarded by the caller, so this bounds the remaining cost.
+    const AUDIO_META_MAX_BYTES: u64 = 100 * 1024 * 1024;
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > AUDIO_META_MAX_BYTES {
+        return None;
+    }
     let file = lofty::read_from_path(path).ok()?;
     let properties = file.properties().clone();
     let duration = properties.duration();
@@ -1984,6 +1991,36 @@ mod code_preview_tests {
         assert!(!p.truncated);
         assert!(!p.highlight_off);
         assert!(p.display.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod audio_cap_tests {
+    use super::read_audio_meta;
+
+    #[test]
+    fn oversized_audio_skips_tag_read() {
+        // Audit P2: tag readers walk the file — cap the probe. A sparse
+        // file costs no disk while tripping the size gate.
+        let dir = std::env::temp_dir().join(format!(
+            "hark-audio-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("huge.mp3");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(101 * 1024 * 1024).unwrap();
+        drop(f);
+        assert!(
+            read_audio_meta(&big).is_none(),
+            "over-cap audio must skip the tag read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

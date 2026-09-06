@@ -317,6 +317,11 @@ pub fn show_open_with_picker(
                 return;
             }
             let mut resolved: Vec<gio::AppInfo> = Vec::with_capacity(apps.len());
+            // Insert app rows at their apps_rc position (audit P3): the
+            // "System default" row already occupies the list, so appending
+            // would shift every `row.index()` by one and activate_row would
+            // launch the neighbor (or nothing, on the last row).
+            let mut pos = 0i32;
             for (id, name) in &apps {
                 let app = match id.as_deref().and_then(gio::DesktopAppInfo::new) {
                     Some(d) => d.upcast::<gio::AppInfo>(),
@@ -403,7 +408,8 @@ pub fn show_open_with_picker(
                     row.add_controller(click);
                 }
 
-                list.insert(&row, -1);
+                list.insert(&row, pos);
+                pos += 1;
             }
             *apps_rc.borrow_mut() = resolved;
             if let Some(row) = list.row_at_index(0) {

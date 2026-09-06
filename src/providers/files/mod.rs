@@ -116,12 +116,16 @@ impl FileProvider {
     pub fn rebuild_index(&self) {
         self.state.ensure_fresh();
         self.clear_scoped_memo();
+        // Fresh index, fresh live answers (audit P3): cached deep hits were
+        // scored against the old index/roots and would otherwise linger to TTL.
+        self.live_cache.clear();
         self.refresh_hot();
     }
 
     pub fn force_rebuild(&self) {
         self.state.force_rebuild();
         self.clear_scoped_memo();
+        self.live_cache.clear();
         self.refresh_hot();
     }
 
@@ -253,17 +257,32 @@ impl FileProvider {
         }; // index RwLock released before any live walk
 
         // Phase 2: live deep walks without holding the index lock.
+        // Single-flight (audit P3): a sibling walk already in flight for
+        // this key means this caller serves index-only results instead of
+        // duplicating the filesystem walk; the owner's `put` fills the
+        // cache for the next lookup.
+        let mut skipped_walk = false;
         if !deep_jobs.is_empty() {
-            search::run_deep_jobs(
-                deep_jobs,
-                &cfg.index.path_style,
-                &mounts,
-                &excludes,
-                &mut results,
-            );
+            if self.live_cache.claim(&cache_key) {
+                search::run_deep_jobs(
+                    deep_jobs,
+                    &cfg.index.path_style,
+                    &mounts,
+                    &excludes,
+                    &mut results,
+                );
+            } else {
+                skipped_walk = true;
+            }
         }
 
         if deep != DeepMode::Skip {
+            if skipped_walk {
+                if let Some(cached) = self.live_cache.get_by_key(&cache_key) {
+                    merge_cached(&mut results, cached.as_ref());
+                }
+                return results;
+            }
             // Move into Arc cache once; return a Vec clone of the shared slice
             // (avoids holding two full owned Vecs like `put(results.clone())`).
             return self.live_cache.put_with_key(&cache_key, results);

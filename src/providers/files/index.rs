@@ -13,8 +13,10 @@ use walkdir::WalkDir;
 pub const MAX_INDEX: usize = 100_000;
 /// Re-walk roots at most this often when fingerprint is unchanged.
 pub const INDEX_TTL_SECS: u64 = 30 * 60;
-/// Bump when on-disk cache layout changes.
-pub(crate) const CACHE_VERSION: u32 = 8;
+/// Bump when on-disk cache layout changes (v9: fixed round-robin
+/// root/walker desync that truncated regular roots after the first
+/// exhausted root — old caches are missing top-level entries).
+pub(crate) const CACHE_VERSION: u32 = 9;
 
 /// In-memory search entry (derived fields filled on load/build).
 #[derive(Debug, Clone)]
@@ -360,27 +362,41 @@ impl IndexState {
         // large home directory starved mounts and extra_roots entirely.
         // Round-robin across roots — each advances in bounded batches, so no
         // root is shut out while another still has unscanned entries.
+        //
+        // Root and walker live in ONE vec: removing an exhausted walker must
+        // also remove its root. Two parallel vecs desync on the first
+        // non-trailing removal, after which every later walker is
+        // depth-checked against the wrong root — `strip_prefix` fails and
+        // `index_entry` silently drops every remaining entry of those roots
+        // (e.g. top-level `/mnt/windows_d/Glassbox` missing while its
+        // deep-root backfilled children still show up).
         const RR_BATCH: usize = 64;
-        let live_roots: Vec<&PathBuf> = roots.iter().filter(|r| r.exists()).collect();
-        let mut walkers: Vec<_> = live_roots
+        let mut walkers: Vec<(PathBuf, _)> = roots
             .iter()
+            .filter(|r| r.exists())
             .map(|r| {
-                WalkDir::new(r)
+                let root = (*r).clone();
+                let rc = root.clone();
+                let ex = excludes.clone();
+                let walker = WalkDir::new(root.clone())
                     .follow_links(false)
                     .max_depth(max_depth)
                     .into_iter()
-                    .filter_entry(|e| should_descend(e.path(), r, &excludes))
+                    .filter_entry(move |e| should_descend(e.path(), &rc, &ex));
+                (root, walker)
             })
             .collect();
         let mut capped = false;
         while !capped && !walkers.is_empty() {
             let mut i = 0;
             while i < walkers.len() {
-                let root = live_roots[i];
+                // Clone per batch (one alloc per 64 entries): keeps the loop
+                // free of simultaneous shared/mut borrows into `walkers[i]`.
+                let root = walkers[i].0.clone();
                 let mut advanced = false;
-                for entry in walkers[i].by_ref().take(RR_BATCH).flatten() {
+                for entry in walkers[i].1.by_ref().take(RR_BATCH).flatten() {
                     advanced = true;
-                    if record(entry.path(), root, &mut items, &mut seen) {
+                    if record(entry.path(), &root, &mut items, &mut seen) {
                         capped = true;
                         break;
                     }
@@ -1127,6 +1143,66 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         assert!(Arc::ptr_eq(&a, &b));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn round_robin_keeps_late_roots_after_early_exhaustion() {
+        // A small root exhausting early must not truncate a larger sibling:
+        // the old parallel `live_roots`/`walkers` vecs desynced on the first
+        // non-trailing removal, so every later walker was depth-checked
+        // against the wrong root and `strip_prefix` dropped all its entries
+        // (top-level `/mnt/windows_d/Glassbox` missing while deep-root
+        // backfilled children still showed up).
+        let dir = std::env::temp_dir().join(format!(
+            "hark-rr-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let small = dir.join("small");
+        let big = dir.join("big");
+        std::fs::create_dir_all(&small).unwrap();
+        std::fs::create_dir_all(&big).unwrap();
+        std::fs::write(small.join("only.txt"), "s").unwrap();
+        // > RR_BATCH(64) * 2 so the big root still has unscanned batches
+        // long after the small root's walker is removed.
+        for i in 0..200 {
+            std::fs::write(big.join(format!("note_{i:03}.txt")), "b").unwrap();
+        }
+
+        let mut cfg = crate::config::HarkConfig::default();
+        cfg.index.include_home = false;
+        cfg.index.extra_roots = [
+            small.to_string_lossy().to_string(),
+            big.to_string_lossy().to_string(),
+        ]
+        .into_iter()
+        .collect();
+        cfg.index.deep_roots = Vec::new();
+        for m in crate::config::discover_mounts() {
+            cfg.index
+                .include_mounts
+                .insert(m.target.to_string_lossy().to_string(), false);
+        }
+        let store = std::sync::Arc::new(ConfigStore::with_path(cfg, dir.join("config.json")));
+        let state = IndexState::new(store);
+        let items = state.build_index();
+        let paths: std::collections::HashSet<PathBuf> =
+            items.iter().map(|it| it.path.clone()).collect();
+        assert!(
+            paths.contains(&small.join("only.txt")),
+            "small root entry missing"
+        );
+        for i in 0..200 {
+            assert!(
+                paths.contains(&big.join(format!("note_{i:03}.txt"))),
+                "big root entry note_{i:03}.txt dropped after small root exhausted"
+            );
+        }
+        assert_eq!(items.len(), 201, "unexpected extra entries: {items:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

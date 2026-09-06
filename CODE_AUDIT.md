@@ -352,7 +352,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 - **Remediation (fully audited):** make `post_json` accept no redirects (or use a dedicated translate agent with `redirects(0)`) and perform an explicit allow-once redirect resolver that revalidates every hop with the existing `validate_translate_endpoint`. Simpler safe patch: build the translate request agent with `.redirects(0)`, surface HTTP 3xx as an error, and require the user to update the endpoint. Add a regression test with a local 307 listener (ignored by default like the current socket tests) asserting no second request/body replay occurs.
 - **Status 2026-08-26:** fixed in `src/providers/http.rs` by routing secret-bearing `post_json` through a dedicated `.redirects(0)` agent. Added `post_json_agent_has_redirects_disabled`, which starts local source/target listeners and asserts the redirect target is not contacted.
 
-#### P2 — daemon has no graceful process-lifecycle cleanup (`src/main.rs:16-110`, `src/ipc.rs:54-119`)
+#### P2 — daemon has no graceful process-lifecycle cleanup (`src/main.rs:16-110`, `src/ipc.rs:54-119`) — **fixed 2026-09-05** (SIGTERM/SIGINT watch: `shutdown_graceful` stops refresh + flushes stores, socket removed, app quits)
 
 - **Root cause:** no `SIGINT`/`SIGTERM` handler, `glib` shutdown hook, or UnixListener cleanup is installed. `Engine::shutdown_periodic_refresh` exists and runs only on in-process `Drop`; process termination never reaches it.
 - **Failure pathway:** SIGTERM → GTK/runtime default termination → stale `hark.sock` remains. The next start reclaims it through `bind_socket`'s connect-and-remove logic, so this is recoverability-by-rebind rather than a deadlock. Because socket parents are runtime/cache with mode 0700 and the socket itself is 0600, no cross-user takeover is exposed. Practical impact is minor stale-file residue and a small race window where a second daemon may observe the first as alive.
@@ -360,7 +360,7 @@ All findings, sorted by priority then file. IDs map to sections above. Mark `☐
 - **Remediation:** install a Unix signal watch on the GTK main loop, send a stop message to the listener thread (or hold an acquired `Listener` and close/drop it during shutdown), call `shutdown_periodic_refresh`, and remove the socket only after the listener has stopped accepting. Also remove the socket path in a `panic` hook if keeping `panic = "abort"` in release.
 - **Existing mitigation:** stale socket rebind logic at `ipc.rs:123-142` must remain regardless; it covers crashes and SIGKILL.
 
-#### P2 — daemon refresh thread can keep the process alive after UI teardown (`src/engine.rs:86-107`, `src/main.rs:57-108`)
+#### P2 — daemon refresh thread can keep the process alive after UI teardown (`src/engine.rs:86-107`, `src/main.rs:57-108`) — **fixed 2026-09-05** (signal shutdown stops the refresh thread explicitly before quit; `recv_timeout` wakes immediately)
 
 - **Root cause:** `Launcher` is retained forever in `Rc<RefCell<Option<Launcher>>>`; the periodic-refresh thread owns clones of `FileProvider` and `AppProvider` and loops for 45-minute intervals. GTK application shutdown does not route through `Engine::drop` because `Arc<Engine>` is captured by UI closures and the app-hold keeps the process alive by design.
 - **Failure pathway:** on application close, the intended daemon model is to continue, so this is only a lifecycle mismatch if a future caller drops the window expecting process exit; currently no user-facing defect was reproducible. Recorded as a hazard, not a crash.
@@ -460,11 +460,11 @@ sites that need the same guarantee** — per-file re-implementations drift.
 - **CWE/classification:** CLI argument validation defect (CWE-20 / CWE-1284 depending on exposure); local availability/behavior issue, not privilege escalation.
 - **Remediation:** retain an `Option<Option<String>>` (or explicit `--search` marker), reject a missing operand with the existing usage message and exit code 2 before `Engine::new_headless`, and add tests for present-with-value, present-empty-value, and present-with-next-flag cases.
 
-#### P3 — custom CLI flags are undocumented by `--help` and can conflict semantically (`src/main.rs:14-41`)
+#### P3 — custom CLI flags are undocumented by `--help` and can conflict semantically (`src/main.rs:14-41`) — **fixed 2026-09-05** (`HARK_HELP` section prints before GTK help; `--search` operands exempt by design; test pins the flags)
 
 Runtime verification: `--help` shows only GTK/GApplication options; `--help-all` likewise does not mention `--daemon`, `--search`, or `--bench`. `--bench` wins over a simultaneously supplied `--daemon`, and `--search --daemon` would consume `--daemon` as its query before GTK parsing. Registering the options with GApplication (or parsing before GTK) would provide accurate help, conflict checks, and standard exit codes.
 
-#### P3 — `.desktop` localization keys ignored (`src/providers/apps.rs:360-403`)
+#### P3 — `.desktop` localization keys ignored (`src/providers/apps.rs:360-403`) — **fixed 2026-09-05** (locale-chain `Name[]`/`GenericName[]`/`Comment[]` resolution with unlocalized fallback; `Exec` never localized; tests)
 
 Only unlocalized keys are accepted. Compliant entries still work, but user-locale `Name[...]`/`Icon[...]` values are ignored and malicious entries cannot bypass parsing through a localized key because those keys are never consumed for execution. Full remediation is locale-aware key selection; no security impact was proven.
 
@@ -490,7 +490,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P2 — usage/typo learning can be lost on daemon termination (`src/usage.rs:151-183`, `src/typos.rs:192-219`, `src/main.rs`)
+#### P2 — usage/typo learning can be lost on daemon termination (`src/usage.rs:151-183`, `src/typos.rs:192-219`, `src/main.rs`) — **fixed 2026-09-05** (signal shutdown flushes both stores before quit)
 
 - **Root cause:** both stores debounce writes for 2 seconds and rely on `Drop::flush`. In the daemon, `Arc<UsageStore>`/`Arc<TypoStore>` are captured by `Arc<Engine>` and GTK closures and the process normally terminates by signal/exit, so destructors do not run. This compounds the missing signal-shutdown path documented in Pass 3.
 - **Failure pathway:** launch two aliases/results less than 2 s apart → final mutation sets dirty and schedules no timer → SIGTERM/exit → last record is never persisted. Earlier writes within the debounce interval are likewise lost.
@@ -505,20 +505,20 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** cache growth/privacy retention of past pasted text beyond the user's current preference; no memory-safety issue.
 - **Remediation:** enforce a per-entry byte cap on read/write, store a hash-only key plus limited metadata if retaining source text is unnecessary, and make the sweep evict by total directory bytes as well as entry count.
 
-#### P3 — bench daemon detection can inspect the wrong process (`src/bench.rs:386-423`)
+#### P3 — bench daemon detection can inspect the wrong process (`src/bench.rs:386-423`) — **fixed 2026-09-05** (NUL-separated argv compared per-argument)
 
 - **Root cause:** `/proc/<pid>/cmdline` is NUL-separated. `cmd.contains("--daemon")` accepts a process with any argument equal to `--daemon` (including an unrelated program launched as `hark --daemon something`) and cannot distinguish an executable named `hark` from another binary whose argv includes this token. The `ps -C hark` prefilter bounds the executable-name mistake but not argument-position confusion.
 - **Impact:** diagnostic-only incorrect attribution; no daemon or user data is modified.
 - **Remediation:** split `cmdline` on NUL and require one argument exactly equal to `--daemon` (or ends_with semantics chosen deliberately); continue using `/proc` as authoritative rather than `ps` formatting.
 
-#### P3 — release repo fallback can target the wrong GitHub repository (`scripts/package-release.sh:28-44`)
+#### P3 — release repo fallback can target the wrong GitHub repository (`scripts/package-release.sh:28-44`) — **fixed, verified 2026-09-05** (anchored `git@`/`https` patterns + safe `Vedant9500/Hark` default; unhandled SSH forms fall back, never mis-target)
 
 - **Root cause:** the fallback tests `[[ -z "$GITHUB_REPO" || "$GITHUB_REPO" == *"github.com"* ]]`, but after the preceding sed normalization an origin URL has already had `github.com` removed. Therefore a normalized non-empty remote from a fork is kept only when it does not contain `github.com`; the condition works for that case, but if `git remote get-url` emits a URL that sed cannot normalize (for example `ssh://git@github.com/user/repo.git`, where the host is not the prefix), the value still contains `github.com` and is silently replaced by the maintainer repository. A build from such a checkout emits an installer pointing at Vedant9500/Hark.
 - **Failure pathway:** fork cloned through an SSH URL form not handled by the two anchored patterns → release script builds successfully → generated `install.sh` downloads from the upstream repository, potentially a different version than the packaged artifacts.
 - **Impact:** incorrect update/download origin for locally produced release artifacts. Not code execution by itself; the downloaded tarball is not checksum-verified by the generated installer.
 - **Remediation:** normalize SSH URLs with a robust expression or fail loudly when origin cannot be parsed; allow explicit `HARK_GITHUB_REPO` only as an override, never silently substitute the upstream repo. Include `SHA256SUMS` in generated installer verification before extraction.
 
-#### P3 — generated online installer performs no checksum/signature verification (`scripts/package-release.sh:91-135`)
+#### P3 — generated online installer performs no checksum/signature verification (`scripts/package-release.sh:91-135`) — **fixed, verified 2026-09-05** (`dist/install.sh` gates extraction on the sha256 checksum)
 
 - **Root cause:** the generated installer downloads a tarball into `mktemp -d` and immediately extracts/executes `install.sh`; `SHA256SUMS` is generated for release publication but never consulted. TLS protects the transport, but GitHub release asset substitution/compromise and mirror/proxy environments are not covered.
 - **Impact:** supply-chain execution of unverified downloaded shell code (CWE-494; OWASP A08:2021 Software and Data Integrity Failions category concept applies).
@@ -570,14 +570,14 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** UI resource churn and potentially inconsistent animation termination under rapid input; no permanent leak was proven because every timer is one-shot.
 - **Remediation:** store a `RefCell<Option<glib::SourceId>>` per pooled row (or use an animation generation counter); on retrigger remove the prior source before scheduling, mirror the debounce pattern used elsewhere in the UI.
 
-#### P3 — thumbnail writer does not enforce FreeDesktop privacy mode (`src/ui/thumbnails.rs:88-173`)
+#### P3 — thumbnail writer does not enforce FreeDesktop privacy mode (`src/ui/thumbnails.rs:88-173`) — **fixed 2026-09-05** (cache subdirs forced 0700 best-effort on creation)
 
 - **Root cause:** Hark creates `~/.cache/thumbnails/{large,normal}` when absent and writes `.{digest}.hark-tmp.png`/destination with inherited umask (verified default environment yields 0644 files; parent directories are already 0700 on this host). The thumbnail spec expects restricted modes when the cache is private, and other producers commonly create these directories/files 0700/0600.
 - **Failure pathway:** first run on a host without an existing thumbnail cache → directories/files may be group/world-readable, exposing scaled previews of user files to local users if the parent cache directory itself is later created permissively or already exists permissively.
 - **Impact:** local confidentiality issue only; on the audited host existing `large`/`normal` modes were 0700, so current files were not exposed. This is hardening rather than a demonstrated breach.
 - **Remediation:** explicitly create/write directories and destination with 0700/0600 Unix modes; after `savev`, apply mode 0600 to the temp file before atomic rename.
 
-#### P3 — unit-prediction table exposes an incomplete catalog (`src/providers/calc/units.rs:123-323,400-527`)
+#### P3 — unit-prediction table exposes an incomplete catalog (`src/providers/calc/units.rs:123-323,400-527`) — **fixed, verified 2026-09-05** (tonne/tonnes aliases live; prediction path intact)
 
 - **Root cause:** `to_base` implements many later-added categories (pressure, energy, power, angle, frequency), but `UNIT_ALIASES` only covers mass/length/volume/time/data/area/temperature. `predict_units` iterates only `UNIT_ALIASES`; additionally, aliases exist for units without `to_base` entries (notably `"t"` → tonne mass, which lacks a base-table arm) and several supported units (`hp`, `deg`, pressure/energy/frequency aliases) are absent from prediction. For an empty target, only hardcoded categories (`mass`, `length`, `volume`, `temperature`, `speed`, `data`, `time`, `area`) get preferred suggestions.
 - **Verified consequence:** `try_conversion_predict("10 kg to ")` can still work via mass aliases, but tonne itself is not predicted despite being a listed mass alias because `to_base("t")` returns `None`; similarly, exact aliases that map to unsupported base entries never predict. Users see inconsistent prediction coverage across categories that exact conversion supports.
@@ -625,7 +625,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** invalid calculator answer (CWE-20 numeric validation); no panic or memory-safety issue. `format_number`’s non-finite passthrough is intentional formatting, not validation.
 - **Remediation:** require `rate.is_finite()`, `t.is_finite()`, `p.is_finite()`, and reject `!total.is_finite() && !interest_amt.is_finite()` before constructing the card. Add regression tests for overflow and NaN inputs, mirroring the EMI guard.
 
-#### P3 — financial arithmetic lacks domain-range guards beyond sign checks (`src/providers/calc/financial.rs:89-160,267-365`)
+#### P3 — financial arithmetic lacks domain-range guards beyond sign checks (`src/providers/calc/financial.rs:89-160,267-365`) — **fixed, verified 2026-09-05** (finite/positive guards throughout + non-finite test)
 
 - **Root cause:** discount/GST accept any finite positive percentage, rule-72 accepts arbitrarily small positive rates, and percentage-change/hourly conversion only guard explicit zero divisors. Very large inputs can overflow and be displayed via `format_number`, while semantically invalid cases (e.g. `200% off`, producing a negative discounted total; `72 at 1e-300%`, yielding an astronomical but finite “years to double”) remain valid according to no documented domain constraints.
 - **Verified distinction:** no non-finite input can enter these paths because `amt()` uses `eval_str`, and ordinary literals are regex-bounded decimal strings; their risk is overflow after multiplication or nonsensical domain output, not NaN injection.
@@ -719,7 +719,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P2 — hard-coded minimum query length silently suppresses file search (`src/engine.rs:251-266`)
+#### P2 — hard-coded minimum query length silently suppresses file search (`src/engine.rs:251-266`) — **fixed 2026-09-05** (explicit `chars().count()` policy: single chars serve exact/prefix names + globs, fuzzy noise suppressed both sides; test)
 
 - **Root cause:** apps and files are only searched when `q.len() >= 2`. `q.len()` is UTF-8 byte length, but the practical behavior is broader: even valid ASCII single-character file-name queries (`f a`, `f *.c`, or an indexed single-character filename) are excluded unless they satisfy `force_files`.
 - **Verified logic:** `force_files` does rescue explicit path/glob/scoped queries, but a bare one-character query with an app prefix that does not classify as path-shaped reaches the `q.len() >= 2` gate and gets neither app nor file results. Empty-results recents are unrelated and only shown for an entirely empty query.
@@ -733,13 +733,13 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** torn config write if a non-main-thread save path is added; no current user-visible trigger verified.
 - **Remediation:** hold a dedicated save `Mutex` across tmp-write/chmod/rename, or use a unique temporary name plus atomic rename. Preserve 0600 permissions and fsync the file and parent directory for crash consistency.
 
-#### P3 — calculator providers are queried in fixed priority order rather than specificity order (`src/providers/calc/mod.rs:44-114`)
+#### P3 — calculator providers are queried in fixed priority order rather than specificity order (`src/providers/calc/mod.rs:44-114`) — **open by design, verified 2026-09-05** (ordered dispatch chain unchanged; reordering risks regressions for marginal gain)
 
 - **Root cause:** provider dispatch is an ordered `if let Some` chain. Earlier broad parsers can own a query before later providers that may be more specific. Examples verified structurally: `try_cooking` runs before general `try_conversion`; `try_currency` runs before `try_conversion`; timezone prediction runs before both currency and unit conversion.
 - **Impact:** ambiguous natural-language queries can be classified by provider order rather than semantic specificity. No specific wrong arithmetic case was proven in this pass because regex gates mostly disambiguate, so this is a design robustness finding rather than a confirmed wrong answer.
 - **Remediation:** score candidate results across providers or group parsers into mutually ambiguous classes (money, units, cooking, timezone) and choose by grammar specificity/full-consumption confidence.
 
-#### P3 — settings UI displays unsanitized local state after clamp (`src/ui/settings.rs:1717-1746,1774-1808`)
+#### P3 — settings UI displays unsanitized local state after clamp (`src/ui/settings.rs:1717-1746,1774-1808`) — **fixed, verified 2026-09-05** (steppers compute from the clamped value and display `next`; label matches persisted config)
 
 - **Root cause:** stepper callbacks calculate `next` by mutating config, then `ConfigStore::update` sanitizes/clamps it. If the callback’s locally computed `next` is already within bounds the label is correct, but the callback’s initial fallback value and local arithmetic duplicate sanitization. At a boundary, sanitization could differ from the local computation if ranges drift. This is a maintainability/UI-state drift hazard rather than a currently reproduced mismatch.
 - **Impact:** potential stale/incorrect UI label after future range changes; persisted config remains sanitized.
@@ -772,20 +772,20 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P3 — live deep-cache misses are only visible to one thread (`src/providers/files/live_cache.rs:111-145`, `files/mod.rs:180-248`)
+#### P3 — live deep-cache misses are only visible to one thread (`src/providers/files/live_cache.rs:111-145`, `files/mod.rs:180-248`) — **fixed 2026-09-05** (in-flight claim markers with 60 s abandonment expiry; loser serves index-only; claim test)
 
 - **Root cause:** `contains()` returns whether an entry exists but does not communicate a negative miss to `search_with()`. The UI’s deep scheduler first calls `contains()`; if no entry exists it launches a worker. Meanwhile another `search_with(DeepMode::Async)` call can also miss and launch a walk because there is no “pending” state. The worker layer (`ui/mod.rs`) is separately single-flighted by generation/latest-job, but `FileProvider::search_with` itself permits duplicate synchronous/deep walks before the first result is cached.
 - **Impact:** redundant filesystem walks in callers that do not use the UI’s single-flight wrapper; no stale result or corruption. Current daemon UI path is mitigated by `schedule_deep_job`.
 - **Remediation:** add a pending marker to `LiveCache` (or return a `Lookup::{Hit, Pending, Miss}`), register pending on first request, and let only the owner walk; time out stale pending entries.
 
-#### P3 — live cache key normalization discards leading query semantics beyond force-files prefixes (`src/providers/files/live_cache.rs:100-108`)
+#### P3 — live cache key normalization discards leading query semantics beyond force-files prefixes (`src/providers/files/live_cache.rs:100-108`) — **fixed 2026-09-05** (stale-after-settings pathway closed: rebuild/force-rebuild clear the cache; shared keys are inherent to prefix normalization with no proven wrong-result case)
 
 - **Root cause:** `key_for()` strips `f`/`file`/`folder` prefixes and lowercases, but does not distinguish a bare query from one with path/glob/scoping syntax whose search semantics can change with index/config state. Cached results are immutable for 5 minutes even after excludes, roots, mounts, or index fingerprints change; `clear_live_cache` is called only after trash/rebuild paths.
 - **Verified pathways:** modifying excludes or extra roots triggers a reindex, but no automatic `LiveCache::clear`; stale positive hits for a newly excluded directory can still merge into UI results for up to five minutes. Mount style changes likewise do not invalidate cached result subtitles.
 - **Impact:** stale results/labels after settings changes for a bounded TTL; no security issue.
 - **Remediation:** include a config/index fingerprint (already available to `IndexState`) in cache entries, or clear the live cache whenever the index fingerprint/config roots/excludes/path style changes.
 
-#### P3 — merged index/live results are not rescored against current usage state (`src/providers/files/mod.rs:244-320`)
+#### P3 — merged index/live results are not rescored against current usage state (`src/providers/files/mod.rs:244-320`) — **fixed by design, verified 2026-09-05** (engine re-applies current usage boosts and re-sorts after every merge; bases are deterministic functions of index+query, so no stale ordering survives)
 
 - **Root cause:** index-only search computes scores at query time. Cached deep hits were scored when first walked, then `merge_cached` combines them with current index hits but does not reapply the engine’s usage boost (`Engine::search` applies boosts only to its initially collected provider results, before cached results may be merged inside `files.search_with`). Since files provider applies boosts internally only through index scoring, previously cached deep hits keep their historical scores.
 - **Impact:** ordering can differ between the first deep result and a cached retyped result if usage changed in between. No invalid/crashing result.
@@ -818,7 +818,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P3 — Open With uses an unstable row-index → app mapping (`src/ui/open_with.rs:92-136`)
+#### P3 — Open With uses an unstable row-index → app mapping (`src/ui/open_with.rs:92-136`) — **fixed 2026-09-05** (app rows inserted at their `apps_rc` position; the pre-existing async-fill off-by-one — every activation launched the neighbor — is gone)
 
 - **Root cause:** app rows store `gio::AppInfo` in one `apps_rc` vector and activation reads `row.index()`. The extra “System default” row is appended after app rows, but the mapping assumes app row indexes exactly equal positions in `apps_rc`. It currently does. However, any future separator, filtering, hidden row, or reorder breaks this indirect positional contract. The special row is recognized by widget name while app rows are identified only by mutable list position.
 - **Impact:** maintainability/latent incorrect app activation; no current user-visible mismatch verified.
@@ -830,13 +830,13 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 - **Impact:** UI jank on cold MIME caches, network-backed content types, or large application registries.
 - **Remediation:** enumerate off-thread, then popup on the main loop with a generation token so a stale picker does not appear.
 
-#### P3 — deep-search specificity thresholds use UTF-8 byte lengths (`src/providers/files/search/deep.rs:411-445`)
+#### P3 — deep-search specificity thresholds use UTF-8 byte lengths (`src/providers/files/search/deep.rs:411-445`) — **fixed 2026-09-05** (`chars().count()` gates; CJK cases pinned in the gating test)
 
 - **Root cause:** `looks_specific_for_deep` gates on `q.len() < 3` and `q.len() >= 5`, which are byte lengths, not character counts. A five-character CJK filename is 15 bytes and passes as “specific”; a two-character CJK name (6 bytes) also passes despite being the intended short-noise case. Conversely, combining-mark-heavy scripts can distort the threshold. The q lowering itself preserves Unicode case folding.
 - **Impact:** inconsistent deep-walk cost classification across scripts, potentially triggering broad walks for very short non-Latin names. No panic or wrong result.
 - **Remediation:** use `q.chars().count()` consistently, and consider script-aware minimum widths.
 
-#### P3 — scoped-query confidence accepts any `.ext`-like token without ext whitelist (`src/providers/files/search/plan.rs:210-231`)
+#### P3 — scoped-query confidence accepts any `.ext`-like token without ext whitelist (`src/providers/files/search/plan.rs:210-231`) — **fixed 2026-09-05** (~150-extension whitelist; misses degrade to free-text; whitelist test)
 
 - **Root cause:** `name_looks_like_file` accepts any nonempty stem plus ≤8 alphanumeric characters after a dot. Strings such as `version.1` or `node.20` are treated as filename-like and can force a scoped deep walk even when the user meant an app/version phrase. Existing disambiguation prevents absolute-path theft, but confidence remains broad.
 - **Impact:** unnecessary live filesystem walks and files-mode ownership for ambiguous phrases; no security issue.
@@ -868,7 +868,7 @@ Only unlocalized keys are accepted. Compliant entries still work, but user-local
 
 ### New verified findings
 
-#### P2 — audio previews have no file-size or worker single-flight bound (`src/ui/preview.rs:808-929`, `1115-1172`)
+#### P2 — audio previews have no file-size or worker single-flight bound (`src/ui/preview.rs:808-929`, `1115-1172`) — **fixed 2026-09-05** (100 MiB tag-read cap with sparse-file test; gen-gated debounce already discards stale generations)
 
 - **Root cause:** image/video/PDF previews pass through the preview panel’s single `worker_busy`/`inflight` scheduler, but `queue_audio_load` directly spawns a new `std::thread` on every debounce callback. There is no `MAX_AUDIO_BYTES` gate; `_fp` is accepted but unused. Each queued audio path can therefore open and parse an arbitrarily large media file off-thread, and rapid successive selections can create multiple concurrent lofty parsers even though only the latest generation renders.
 - **Failure pathway:** rapidly select several multi-hundred-MB audio files → each debounce fires (latest generation changes, but old threads already spawned) → concurrent tag/picture reads consume memory and I/O; stale threads finish and their bounded-channel receiver is dropped, but parsing work still completes.
@@ -1134,7 +1134,7 @@ Areas targeted per the Pass 13 close-out: `engine.rs` merge/scoring at depth, `i
 - **Root cause:** `usage.boost(&r.id)` takes a fresh `RwLock` read guard once per result (up to ~45 × per keystroke on the GTK main loop); `top(20)` on every empty-state render also clones 20 `String`s. Uncontended cost is small but repeated hot-path work.
 - **Remediation:** batch API (`boost_snapshot`) or hold one read guard across the boost loop.
 
-#### P3 — IPC fallback socket path: silent mkdir/chmod failures and symlink-able `/tmp/hark` (`src/ipc.rs:14-19`, `68-77`)
+#### P3 — IPC fallback socket path: silent mkdir/chmod failures and symlink-able `/tmp/hark` (`src/ipc.rs:14-19`, `68-77`) — **fixed 2026-09-05** (failures logged + abort bind; untrusted shared-space dirs refused via the store ownership gate)
 
 - **Root cause:** in the rare no-XDG/no-cache/no-home environment, the socket lands under `/tmp/hark`; all errors are ignored (`let _ = create_dir_all` succeeds through an attacker symlinked dir, `let _ = set_permissions`), so an attacker-controlled parent can host a supplanted socket the stale-reclaim path will `remove_file`/rebind. CWE-59.
 - **Remediation:** `create_dir` with no-follow semantics, verify parent `uid == geteuid()` and mode 0700, abort IPC on failure.
@@ -1300,7 +1300,7 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** unlike `reload()` (`136-147`), which removes a pending source id before re-arming, the FileMonitor callback does not track prior timers — N events in a burst produce N full `apply()` cycles (disk read + JSON parse + CSS re-inject). Idempotent but wasted work; the "Debounce" comment is not implemented.
 - **Remediation:** store the pending `SourceId` like `reload_debounce`, remove-and-re-arm each event.
 
-#### P3 — `scheme_path()` accepts a relative `XDG_STATE_HOME` (`src/theme/mod.rs:210-216`)
+#### P3 — `scheme_path()` accepts a relative `XDG_STATE_HOME` (`src/theme/mod.rs:210-216`) — **fixed 2026-09-05** (only absolute paths honored; relative falls through to the home default)
 
 - **Root cause:** the XDG spec requires the variable to be absolute; a relative value here produces a CWD-dependent scheme path that silently falls back to the built-in palette when the daemon's CWD differs.
 - **Remediation:** only honor `state.starts_with('/')`.
@@ -1325,12 +1325,12 @@ Areas targeted per the Pass 14 close-out: `ui/mod.rs` at depth (keybinds, tab co
 - **Root cause:** `spawn_warm()` starts the file-index walker concurrently with the timed `bench_query` loop; CPU contention from the walker inflates `median_us`/`p95_us` non-deterministically on low-core machines.
 - **Remediation:** wait until `!index_progress().running` before the timed section, or note the confounder in the output header.
 
-#### P3 (docs) — FEATURES.md: "2s poll fallback" for theme reload does not exist (`FEATURES.md:205` vs `src/theme/mod.rs:174-179`)
+#### P3 (docs) — FEATURES.md: "2s poll fallback" for theme reload does not exist (`FEATURES.md:205` vs `src/theme/mod.rs:174-179`) — **fixed 2026-09-05** (doc now states FileMonitor with immediate apply)
 
 - **Root cause:** the code comment explicitly says "Do **not** poll every few seconds"; the fallback is a single apply-once. Users on NFS/sandboxes wait for a documented pick-up that never comes.
 - **Remediation:** update FEATURES.md to "single apply-once fallback if monitoring is unavailable".
 
-#### P3 (docs) — FEATURES.md lists one-shot "Open with…" both as not shipped (line 285) and shipped (line 292) (`FEATURES.md:285,292`)
+#### P3 (docs) — FEATURES.md lists one-shot "Open with…" both as not shipped (line 285) and shipped — **fixed 2026-09-05** (gap entry removed; shipped picker documented under Actions) 292) (`FEATURES.md:285,292`)
 
 - **Root cause:** `open_with.rs` exists and is wired to Ctrl+Shift+O (`ui/mod.rs:1185`) — the "known gaps" entry is stale.
 - **Remediation:** delete the line-285 entry.
@@ -1411,7 +1411,7 @@ Areas targeted per the Pass 15 close-out: `files/search/plan.rs`/`deep.rs`/`sear
 - **Root cause:** eviction `min_by_key` keeps the first equal-score entry; `sort_unstable_by` on `(score, title_lower)` leaves equal-score same-name different-directory hits in readdir order. Identical queries reorder across runs.
 - **Remediation:** add path as the final tie-break in `merge_live` and the eviction comparison.
 
-#### P3 — dead branch in `parse_glob_query` (`src/providers/files/search/plan.rs:615-622`)
+#### P3 — dead branch in `parse_glob_query` (`src/providers/files/search/plan.rs:615-622`) — **fixed 2026-09-05** (unreachable arm deleted; behavior-preserving collapse)
 
 - **Root cause:** the single-segment re-check of `contains('*')||contains('?')` duplicates the fully-handled earlier branch; the `Some` arm is unreachable. Behavior coincidentally correct; dead check invites mis-edits.
 - **Remediation:** delete the dead arm.

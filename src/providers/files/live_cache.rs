@@ -12,6 +12,11 @@ const MAX_ENTRIES: usize = 64;
 const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
 /// Empty deep results (walked, no hits) — short TTL so typos don't re-walk every keystroke.
 const NEGATIVE_TTL: Duration = Duration::from_secs(90);
+/// In-flight walk claims older than this are treated as abandoned (audit P3):
+/// a panicking walk never reaches `put`, so without expiry one stuck claim
+/// would suppress re-walks for the key indefinitely. Far above any walk
+/// budget (200 ms async), far below any cache TTL.
+const CLAIM_TTL: Duration = Duration::from_secs(60);
 
 struct Entry {
     hits: Arc<[SearchResult]>,
@@ -26,6 +31,10 @@ struct Inner {
     /// entry (O(log n) insert/remove, O(1) eviction — no full scans).
     recency: BTreeMap<u64, String>,
     seq: u64,
+    /// Queries with a walk currently running (audit P3 single-flight).
+    /// A second concurrent request for a claimed key skips its own walk and
+    /// serves index-only results; the owner's `put` releases the claim.
+    inflight: HashMap<String, Instant>,
 }
 
 impl Inner {
@@ -93,6 +102,7 @@ impl LiveCache {
                 map: HashMap::new(),
                 recency: BTreeMap::new(),
                 seq: 0,
+                inflight: HashMap::new(),
             }),
         }
     }
@@ -194,8 +204,30 @@ impl LiveCache {
                 last_used: stamp,
             },
         );
+        // The walk finished — release any in-flight claim for the key.
+        inner.inflight.remove(key);
         inner.evict_to_cap();
         out
+    }
+
+    /// Claim the key for a deep walk (audit P3 single-flight): true when
+    /// this caller owns the walk, false when a sibling walk is already in
+    /// flight — the loser serves index-only results instead of duplicating
+    /// the filesystem walk. Stale claims (older than `CLAIM_TTL`) are
+    /// treated as abandoned and re-claimable.
+    pub fn claim(&self, key: &str) -> bool {
+        if key.is_empty() {
+            return true;
+        }
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let now = Instant::now();
+        if let Some(started) = inner.inflight.get(key) {
+            if now.duration_since(*started) < CLAIM_TTL {
+                return false;
+            }
+        }
+        inner.inflight.insert(key.to_owned(), now);
+        true
     }
 
     /// Drop all cached deep-search hits (e.g. after trash / external delete).
@@ -203,6 +235,7 @@ impl LiveCache {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner.map.clear();
         inner.recency.clear();
+        inner.inflight.clear();
     }
 
     #[cfg(test)]
@@ -299,6 +332,22 @@ mod tests {
         let _ = c.put("x", vec![hit("a")]);
         assert!(c.contains("x"));
         assert!(c.contains("f x"));
+    }
+
+    #[test]
+    fn walk_claim_single_flights_siblings() {
+        // Audit P3: the first claimant owns the walk; a sibling request for
+        // the same key loses and must skip its walk. `put` releases so the
+        // next generation can walk again; `clear` releases everything.
+        let c = LiveCache::new();
+        assert!(c.claim("q"));
+        assert!(!c.claim("q"), "second claimant must lose");
+        let _ = c.put_with_key("q", vec![hit("a")]);
+        assert!(c.claim("q"), "put releases the claim");
+        assert!(!c.claim("q"));
+        c.clear();
+        assert!(c.claim("q"), "clear releases claims");
+        assert!(c.claim(""), "empty keys are untracked");
     }
 
     #[test]

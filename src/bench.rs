@@ -407,9 +407,11 @@ fn daemon_stats() -> Option<DaemonSnap> {
         if pid as u32 == self_pid {
             continue;
         }
-        // check cmdline is --daemon
+        // check cmdline is --daemon (audit P3): NUL-separated argv compared
+        // per-argument — a substring match would attribute any hark process
+        // whose query merely contains the flag (e.g. `--search --daemon`).
         let cmd = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if !cmd.contains("--daemon") {
+        if !cmd.split('\0').any(|a| a == "--daemon") {
             continue;
         }
         let mem = proc_mem_pid(&pid.to_string());

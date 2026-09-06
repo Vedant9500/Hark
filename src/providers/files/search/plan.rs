@@ -218,18 +218,67 @@ fn name_looks_like_file(name: &str) -> bool {
     if is_extension_shorthand(n) {
         return true;
     }
-    // `foo.md`, `main.rs` — stem + short alphanumeric ext.
+    // `foo.md`, `main.rs` — stem + known extension (audit P3). A bare
+    // structural check (`version.1`, `meeting.notes`) routes too many
+    // phrases into files-mode ownership; misses degrade gracefully to
+    // free-text index search, which still matches odd extensions by name.
     if let Some((stem, ext)) = n.rsplit_once('.') {
         if !stem.is_empty()
             && !ext.is_empty()
             && ext.len() <= 8
             && !ext.contains('/')
             && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            && is_known_file_ext(ext)
         {
             return true;
         }
     }
     false
+}
+
+/// Common file extensions for scoped-query confidence. Deliberately broad;
+/// anything missing degrades to free-text search (still name-matched),
+/// while anything listed lets files-mode own `name in scope` queries.
+fn is_known_file_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        // text / docs
+        "txt" | "md" | "markdown" | "rst" | "org" | "tex" | "pdf" | "doc" | "docx"
+            | "odt" | "rtf" | "epub" | "mobi" | "azw" | "xls" | "xlsx" | "ods"
+            | "csv" | "tsv" | "ppt" | "pptx" | "odp" | "log" | "ini" | "cfg"
+            | "conf" | "config" | "toml" | "yaml" | "yml" | "json" | "json5"
+            | "xml" | "html" | "htm" | "css" | "scss" | "less" | "edn"
+        // source
+            | "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "go"
+            | "java" | "c" | "h" | "cpp" | "hpp" | "cc" | "hh" | "cs" | "rb"
+            | "php" | "swift" | "kt" | "kts" | "scala" | "hs" | "ml" | "mli"
+            | "ex" | "exs" | "erl" | "hrl" | "clj" | "cljs" | "lua" | "pl"
+            | "pm" | "tcl" | "r" | "jl" | "nim" | "zig" | "dart" | "groovy"
+            | "v" | "sv" | "vhd" | "elm" | "purs" | "vue" | "svelte" | "astro"
+            | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "awk"
+            | "sed" | "vim" | "el" | "lisp" | "scm" | "rkt" | "sol"
+        // build / package
+            | "lock" | "mod" | "sum" | "gem" | "nix" | "mk" | "cmake" | "gradle"
+            | "jar" | "war" | "apk" | "ipa" | "exe" | "msi" | "dll" | "so"
+            | "dylib" | "a" | "o" | "ko" | "class" | "pyc" | "pyo" | "deb"
+            | "rpm" | "pkg" | "dmg" | "iso" | "img" | "bin" | "appimage"
+        // archives / backups
+            | "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar"
+            | "zst" | "lz4" | "bak" | "orig" | "rej" | "swp" | "tmp" | "temp"
+            | "old" | "new"
+        // media
+            | "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "avif"
+            | "heic" | "heif" | "bmp" | "ico" | "tiff" | "tif" | "psd"
+            | "xcf" | "kra" | "mp4" | "mkv" | "webm" | "mov" | "avi"
+            | "mp3" | "wav" | "flac" | "ogg" | "opus" | "m4a" | "aac"
+            | "wma" | "mid" | "midi" | "srt" | "vtt" | "ass"
+        // fonts / data / misc
+            | "ttf" | "otf" | "woff" | "woff2" | "eot" | "db" | "sqlite"
+            | "sqlite3" | "parquet" | "feather" | "orc" | "avro" | "h5"
+            | "hdf5" | "npy" | "npz" | "mat" | "rdata" | "dta" | "sav"
+            | "ipynb" | "dwg" | "dxf" | "stl" | "obj" | "fbx" | "gltf"
+            | "pcap" | "ics" | "vcf" | "eml" | "mbox" | "patch" | "diff"
+    )
 }
 
 pub(super) fn scoped_to_glob(sq: &ScopedQuery) -> GlobQuery {
@@ -612,15 +661,9 @@ pub(super) fn parse_glob_query(q: &str) -> Option<GlobQuery> {
     }
 
     if parts.len() == 1 {
-        // Single segment with glob already handled; plain name is not a glob query.
-        if last.contains('*') || last.contains('?') {
-            return Some(GlobQuery {
-                segments: Vec::new(),
-                name_pat: Some(last),
-                dir_scope: false,
-                recursive,
-            });
-        }
+        // Single segment with a glob was fully handled above; a plain name
+        // is not a glob query (audit P3: the duplicated meta re-check made
+        // this arm look reachable — it never is).
         return None;
     }
 
@@ -632,4 +675,23 @@ pub(super) fn parse_glob_query(q: &str) -> Option<GlobQuery> {
         dir_scope: false,
         recursive,
     })
+}
+
+#[cfg(test)]
+mod plan_ext_tests {
+    use super::name_looks_like_file;
+
+    #[test]
+    fn file_shape_requires_known_extension() {
+        // Audit P3: `version.1` / `meeting.notes` must not claim files-mode
+        // ownership; misses degrade to free-text search.
+        assert!(name_looks_like_file("main.rs"));
+        assert!(name_looks_like_file("notes.TXT"));
+        assert!(name_looks_like_file("archive.tar.gz"));
+        assert!(name_looks_like_file("*.md"));
+        assert!(!name_looks_like_file("version.1"));
+        assert!(!name_looks_like_file("meeting.notes"));
+        assert!(!name_looks_like_file("python 3.10"));
+        assert!(!name_looks_like_file("report"));
+    }
 }

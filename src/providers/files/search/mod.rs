@@ -419,7 +419,11 @@ mod tests {
         assert!(looks_specific_for_deep("main.rs"));
         assert!(looks_specific_for_deep("opt*.md"));
         assert!(looks_specific_for_deep("readme")); // len >= 5
-                                                    // Too broad / short
+                                                    // Audit P3: character count, not bytes — 2 CJK chars (6 bytes)
+                                                    // are not specific; 6 CJK chars are.
+        assert!(!looks_specific_for_deep("文档"));
+        assert!(looks_specific_for_deep("文档文档文档"));
+        // Too broad / short
         assert!(!looks_specific_for_deep("ab"));
         assert!(!looks_specific_for_deep(".md"));
         assert!(!looks_specific_for_deep("*.md"));

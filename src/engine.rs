@@ -116,6 +116,15 @@ impl Engine {
         }
     }
 
+    /// Graceful shutdown for signal handling (audit P2 lifecycle): stop the
+    /// background refresh and flush learned state so SIGTERM/SIGINT lose
+    /// nothing and leave no stale socket behind (the caller removes it).
+    pub fn shutdown_graceful(&self) {
+        self.shutdown_periodic_refresh();
+        self.usage.flush();
+        self.typos.flush();
+    }
+
     pub fn config(&self) -> Arc<ConfigStore> {
         self.config.clone()
     }
@@ -253,12 +262,19 @@ impl Engine {
         } else if force_translate {
             // Strong translation hit — do not mix in apps/files noise.
         } else if !calc_hit {
-            let apps = self.apps.search(q);
+            let mut apps = self.apps.search(q);
             // App score bands: exact 50k, prefix 30k+, contains 15k+, fuzzy often <1k.
             let app_prefix = apps.iter().any(|r| r.score >= 30_000);
+            // Query length policy (audit P3): character count, stated once.
+            // Single characters skip fuzzy noise on both sides but still
+            // serve exact/prefix indexed names and globs.
+            let qlen = q.chars().count();
+            if qlen < 2 {
+                apps.retain(|r| r.score >= 30_000);
+            }
             let any_apps = !apps.is_empty();
             results.extend(apps);
-            if q.len() >= 2 {
+            if qlen >= 2 {
                 if app_prefix {
                     // Strong prefix (e.g. "firef" → Firefox) — apps only.
                 } else if any_apps {
@@ -268,6 +284,9 @@ impl Engine {
                     // No apps — full file search including fuzzy.
                     results.extend(self.files.search_with(q, true, DeepMode::Skip));
                 }
+            } else if !force_translate {
+                // Single char: exact/prefix file names only, no path fuzzy.
+                results.extend(self.files.search_with(q, false, DeepMode::Skip));
             }
         }
 
@@ -1117,6 +1136,23 @@ mod engine_search_tests {
 
     fn find<'a>(results: &'a [SearchResult], title: &str) -> Option<&'a SearchResult> {
         results.iter().find(|r| r.title == title)
+    }
+
+    #[test]
+    fn single_char_query_serves_exact_only() {
+        // Audit P3: single characters skip fuzzy noise on both sides but
+        // still serve exact/prefix indexed names.
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[("a", false)]);
+        let results = te.engine.search("a");
+        assert!(
+            results.iter().any(|r| r.title == "a"),
+            "exact one-char file must surface: {:?}",
+            results.iter().map(|r| &r.title).collect::<Vec<_>>()
+        );
+        assert!(
+            !has_app(&results, "Firefox"),
+            "single char must not fuzzy-match apps"
+        );
     }
 
     #[test]
