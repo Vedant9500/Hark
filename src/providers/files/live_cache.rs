@@ -78,12 +78,16 @@ impl Inner {
     /// Drop the least-recently-used entry until under the cap.
     fn evict_to_cap(&mut self) {
         while self.map.len() > MAX_ENTRIES {
-            let (stamp, victim) = self
+            // Graceful on invariant drift (never panic in prod): a missing
+            // recency head just ends eviction instead of wedging the cache.
+            let Some((stamp, victim)) = self
                 .recency
                 .iter()
                 .next()
                 .map(|(s, k)| (*s, k.clone()))
-                .expect("recency non-empty while map over cap");
+            else {
+                break;
+            };
             self.recency.remove(&stamp);
             self.map.remove(&victim);
         }

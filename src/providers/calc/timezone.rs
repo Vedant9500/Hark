@@ -13,12 +13,14 @@ use regex::Regex;
 /// - `15:00 in london to here`, `3pm tokyo to here` (city → local)
 /// - `16:00 cet to ist`, `4pm est to pst`
 pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
-    let lower = q.to_lowercase().trim().to_string();
+    // Zero-alloc gate: regexes are `(?i)`, place resolution normalizes case
+    // internally. No `to_lowercase` per keystroke; display keeps user case.
+    let trimmed = q.trim();
 
     // now in <place> / time in <place>
     static RE_NOW_TZ: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^\s*(?:now|time)\s+(?:in|at)\s+(.+?)\s*$").unwrap());
-    if let Some(c) = RE_NOW_TZ.captures(&lower) {
+    if let Some(c) = RE_NOW_TZ.captures(trimmed) {
         let place = c.get(1)?.as_str().trim();
         let (tz, label) = resolve_place(place)?;
         let local = Local::now();
@@ -78,7 +80,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         .unwrap()
     });
 
-    if let Some(c) = RE_HERE.captures(&lower) {
+    if let Some(c) = RE_HERE.captures(trimmed) {
         let (hour, minute, second) = parse_clock(
             c.get(1)?.as_str(),
             c.get(2).map(|m| m.as_str()),
@@ -91,7 +93,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
 
-    if let Some(c) = RE_IN_FROM_TO.captures(&lower) {
+    if let Some(c) = RE_IN_FROM_TO.captures(trimmed) {
         let (hour, minute, second) = parse_clock(
             c.get(1)?.as_str(),
             c.get(2).map(|m| m.as_str()),
@@ -109,7 +111,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
 
-    if let Some(c) = RE_IN_CITY.captures(&lower) {
+    if let Some(c) = RE_IN_CITY.captures(trimmed) {
         let ampm = c.get(4).map(|m| m.as_str());
         let has_minutes = c.get(2).is_some();
         // Need am/pm or :mm so we don't treat random "3 in foo" text as a clock.
@@ -127,7 +129,10 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
                 return None;
             }
             // "15:00 in here" is a no-op — skip
-            if matches!(to_token, "here" | "local" | "system") {
+            if to_token.eq_ignore_ascii_case("here")
+                || to_token.eq_ignore_ascii_case("local")
+                || to_token.eq_ignore_ascii_case("system")
+            {
                 // fall through
             } else {
                 let (from_tz, from_label) = local_as_tz()?;
@@ -145,7 +150,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         }
     }
 
-    if let Some(c) = RE_TZ_COMPACT.captures(&lower) {
+    if let Some(c) = RE_TZ_COMPACT.captures(trimmed) {
         let (hour, minute, second) = parse_clock(
             c.get(1)?.as_str(),
             c.get(2).map(|m| m.as_str()),
@@ -155,7 +160,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         let from_token = c.get(4)?.as_str().trim();
         let to_token = c.get(5)?.as_str().trim();
         // Avoid re-matching "3pm here to london" (handled by RE_HERE)
-        if matches!(from_token, "here" | "local") {
+        if from_token.eq_ignore_ascii_case("here") || from_token.eq_ignore_ascii_case("local") {
             // fall through to RE_TZ or fail
         } else {
             let (from_tz, from_label) = resolve_place(from_token)?;
@@ -172,7 +177,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
         }
     }
 
-    let caps = RE_TZ.captures(&lower)?;
+    let caps = RE_TZ.captures(trimmed)?;
     let (hour, minute, second) = parse_clock(
         caps.get(1)?.as_str(),
         Some(caps.get(2)?.as_str()),
@@ -189,7 +194,7 @@ pub(crate) fn try_timezone(q: &str) -> Option<SearchResult> {
 
 /// Prefix match for incomplete city/zone: `lon` → London, `new yo` → New York
 pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
-    let lower = q.to_lowercase();
+    let trimmed = q.trim();
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(concat!(
             r"(?i)^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+",
@@ -212,7 +217,7 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         .unwrap()
     });
 
-    if let Some(c) = RE.captures(&lower) {
+    if let Some(c) = RE.captures(trimmed) {
         let prefix = c.get(5)?.as_str().trim();
         if prefix.len() < 2 {
             return None;
@@ -230,7 +235,7 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         let (to_tz, to_label) = predict_tz(prefix)?;
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
-    if let Some(c) = RE3.captures(&lower) {
+    if let Some(c) = RE3.captures(trimmed) {
         let from_prefix = c.get(5)?.as_str().trim();
         let to_prefix = c.get(6)?.as_str().trim();
         if from_prefix.len() < 2 {
@@ -255,7 +260,7 @@ pub(crate) fn try_timezone_predict(q: &str) -> Option<SearchResult> {
         };
         return build_tz_conversion(hour, minute, second, from_tz, &from_label, to_tz, &to_label);
     }
-    if let Some(c) = RE2.captures(&lower) {
+    if let Some(c) = RE2.captures(trimmed) {
         let prefix = c.get(5)?.as_str().trim();
         if prefix.len() < 2 {
             return None;
@@ -303,29 +308,37 @@ pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
             return None;
         }
     }
-    let mut hits: Vec<(&str, &str, &str, i32)> = CITY_ALIASES
+    // Compact keys precomputed once: avoids 2×`replace('_',"")` allocs per
+    // alias per lookup (~300 allocs per conversion before).
+    static COMPACT_ALIASES: Lazy<Vec<(&'static str, &'static str, &'static str, String)>> =
+        Lazy::new(|| {
+            CITY_ALIASES
+                .iter()
+                .map(|(a, iana, label)| (*a, *iana, *label, a.replace('_', "")))
+                .collect()
+        });
+    let compact_p = p.replace('_', "");
+    let fuzzy_ok = p.chars().count() >= 3;
+    let mut hits: Vec<(&str, &str, &str, i32)> = COMPACT_ALIASES
         .iter()
-        .filter(|(alias, _, _)| {
-            let a = *alias;
-            if *a == p || a.replace('_', "") == p.replace('_', "") {
+        .filter(|(alias, _, _, compact_a)| {
+            if *alias == p || *compact_a == compact_p {
                 return true;
             }
             // Fuzzy prefix matching needs at least 3 chars: 1-char inputs
             // otherwise misroute (`s` → SF, `b` → BST) instead of failing
             // (audit P3). Exact short aliases (`ny`, `la`, `sf`) still work.
-            if p.chars().count() < 3 {
+            if !fuzzy_ok {
                 return false;
             }
-            a.starts_with(&p)
-                || p.starts_with(a)
-                || a.replace('_', "").starts_with(&p.replace('_', ""))
+            alias.starts_with(&*p)
+                || p.starts_with(*alias)
+                || compact_a.starts_with(&compact_p)
         })
-        .map(|(a, iana, label)| {
-            let compact_a = a.replace('_', "");
-            let compact_p = p.replace('_', "");
-            let score = if *a == p || compact_a == compact_p {
+        .map(|(a, iana, label, compact_a)| {
+            let score = if *a == p || *compact_a == compact_p {
                 1000
-            } else if a.starts_with(&p) || compact_a.starts_with(&compact_p) {
+            } else if a.starts_with(&*p) || compact_a.starts_with(&compact_p) {
                 500 - a.len() as i32
             } else {
                 100
@@ -432,7 +445,6 @@ const CITY_ALIASES: &[(&str, &str, &str)] = &[
     // F1 2026 venues: track + host city resolve to the circuit zone
     ("monza", "Europe/Rome", "MONZA"),
     ("imola", "Europe/Rome", "IMOLA"),
-    ("madrid", "Europe/Madrid", "MADRID"),
     ("madring", "Europe/Madrid", "MADRING"),
     ("barcelona", "Europe/Madrid", "BARCELONA"),
     ("catalunya", "Europe/Madrid", "BARCELONA"),
@@ -544,14 +556,13 @@ pub(crate) fn parse_clock(
         return None;
     }
     if let Some(ap) = ampm {
-        let ap = ap.to_lowercase();
         if hour == 0 || hour > 12 {
             return None;
         }
-        if ap == "pm" && hour < 12 {
+        if ap.eq_ignore_ascii_case("pm") && hour < 12 {
             hour += 12;
         }
-        if ap == "am" && hour == 12 {
+        if ap.eq_ignore_ascii_case("am") && hour == 12 {
             hour = 0;
         }
     } else if hour > 23 {
@@ -654,7 +665,11 @@ fn build_tz_conversion_on(
     // Prefer 24h on right like Raycast screenshot, badge shows zone abbr
     let right_badge = format!("{},{}", to_label, to_dt.format("%Z"));
 
-    let copy = format!("{} {}", to_dt.format("%H:%M"), to_label);
+    let copy = if second > 0 {
+        format!("{} {}", to_dt.format("%H:%M:%S"), to_label)
+    } else {
+        format!("{} {}", to_dt.format("%H:%M"), to_label)
+    };
     // Left panel title like Raycast query echo when from local
     let left_display =
         if from_label.eq_ignore_ascii_case("LOCAL") || from_label.eq_ignore_ascii_case("HERE") {
@@ -664,7 +679,7 @@ fn build_tz_conversion_on(
         };
 
     Some(tz_result(
-        &format!("{from_label}→{to_label}:{hour}:{minute}"),
+        &format!("{from_label}→{to_label}:{hour}:{minute}:{second}"),
         left_display,
         left_badge,
         right_title,
@@ -700,13 +715,25 @@ pub(crate) fn tz_result(
 }
 
 pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Full IANA name case-sensitive first ("Europe/London"): the normalized
+    // key lowercases, which breaks chrono-tz parsing. Also accept the space
+    // variant ("America/New York" → "America/New_York").
+    if let Ok(tz) = trimmed.parse::<Tz>() {
+        return Some((tz, display_tz_label(trimmed)));
+    }
+    if trimmed.contains(' ') {
+        let underscored = trimmed.replace(' ', "_");
+        if let Ok(tz) = underscored.parse::<Tz>() {
+            return Some((tz, display_tz_label(&underscored)));
+        }
+    }
     let t = normalize_place_key(token);
     if t.is_empty() {
         return None;
-    }
-    // Full IANA name (Europe/London, Asia/Kolkata, …)
-    if let Ok(tz) = t.parse::<Tz>() {
-        return Some((tz, display_tz_label(&t)));
     }
     // Numeric offset tokens (utc+05:30, gmt-8, utc_8 — normalize maps '-'→'_')
     if let Some(off) = parse_utc_offset_token(&t) {
@@ -718,12 +745,16 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
         let tz: Tz = iana.parse().ok()?;
         return Some((tz, (*label).to_string()));
     }
-    // Compact form: "newyork" → "new_york"
+    // Compact form: "newyork" → "new_york" (table side underscore-stripped
+    // without allocating per alias).
     let compact = t.replace('_', "");
-    if let Some((_, iana, label)) = CITY_ALIASES
-        .iter()
-        .find(|(a, _, _)| a.replace('_', "") == compact)
-    {
+    if let Some((_, iana, label)) = CITY_ALIASES.iter().find(|(a, _, _)| {
+        a.as_bytes()
+            .iter()
+            .filter(|b| **b != b'_')
+            .copied()
+            .eq(compact.as_bytes().iter().copied())
+    }) {
         let tz: Tz = iana.parse().ok()?;
         return Some((tz, (*label).to_string()));
     }
@@ -797,7 +828,6 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
         "sao_paulo" | "saopaulo" => "America/Sao_Paulo",
         "mexico" | "mexico_city" => "America/Mexico_City",
         other => {
-            // try parse as IANA with common capitalisation Asia/Kolkata style
             if other.contains('/') {
                 other
             } else {
@@ -805,8 +835,34 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
             }
         }
     };
-    let tz: Tz = iana.parse().ok()?;
-    Some((tz, display_tz_label(token)))
+    if let Ok(tz) = iana.parse() {
+        return Some((tz, display_tz_label(token)));
+    }
+    // Case-insensitive IANA ("america/new_york" → "America/New_York"):
+    // Title-Case each `_`-separated word per `/` segment.
+    if iana.contains('/') {
+        let fixed = iana
+            .split('/')
+            .map(|seg| {
+                seg.split('_')
+                    .map(|w| {
+                        let mut chars = w.chars();
+                        match chars.next() {
+                            Some(first) => {
+                                first.to_ascii_uppercase().to_string() + chars.as_str()
+                            }
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_")
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let tz: Tz = fixed.parse().ok()?;
+        return Some((tz, display_tz_label(token)));
+    }
+    None
 }
 
 pub(crate) fn display_tz_label(token: &str) -> String {
@@ -817,17 +873,20 @@ pub(crate) fn display_tz_label(token: &str) -> String {
 /// DST-observing entries only resolve while their current offset matches —
 /// verified at lookup time in `tz_for_offset`.
 const HALF_HOUR_ZONES: &[(i32, &str)] = &[
-    (19800, "Asia/Kolkata"),        // +5:30
-    (20700, "Asia/Kathmandu"),      // +5:45
-    (12600, "Asia/Tehran"),         // +3:30
-    (16200, "Asia/Kabul"),          // +4:30
-    (23400, "Asia/Yangon"),         // +6:30
-    (-9000, "America/St_Johns"),    // -2:30 NDT (DST); std NST is -3:30 and fails check then
-    (-34200, "Pacific/Marquesas"),  // -9:30 fixed
-    (34200, "Australia/Darwin"),    // +9:30 fixed
-    (31500, "Australia/Eucla"),     // +8:45
-    (37800, "Australia/Lord_Howe"), // +10:30 (+11 DST — fails check then)
-    (45900, "Pacific/Chatham"),     // +12:45 (+13:45 DST)
+    (19800, "Asia/Kolkata"),       // +5:30
+    (20700, "Asia/Kathmandu"),     // +5:45
+    (12600, "Asia/Tehran"),        // +3:30
+    (16200, "Asia/Kabul"),         // +4:30 (also Tehran DST)
+    (23400, "Asia/Yangon"),        // +6:30
+    (-12600, "America/St_Johns"),  // -3:30 NST (std)
+    (-9000, "America/St_Johns"),   // -2:30 NDT (DST)
+    (-34200, "Pacific/Marquesas"), // -9:30 fixed
+    (34200, "Australia/Darwin"),   // +9:30 fixed
+    (31500, "Australia/Eucla"),    // +8:45
+    (37800, "Australia/Lord_Howe"), // +10:30 std
+    (39600, "Australia/Lord_Howe"), // +11:00 DST
+    (45900, "Pacific/Chatham"),    // +12:45 std
+    (49500, "Pacific/Chatham"),    // +13:45 DST
 ];
 
 /// Map exact UTC offset seconds to a resolvable zone. Whole hours use

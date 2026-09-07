@@ -119,7 +119,14 @@ pub(crate) fn search_index(
         return results;
     }
 
-    let q_lower = q.to_lowercase();
+    let q_lower: std::borrow::Cow<'_, str> = if q.chars().any(|c| c.is_uppercase()) {
+        // Uppercase present: Unicode-fold once (must match `make_indexed`
+        // `to_lowercase` semantics for CJK/Turkish queries).
+        std::borrow::Cow::Owned(q.to_lowercase())
+    } else {
+        // Already folded (99% of keystrokes): borrow, no heap alloc.
+        std::borrow::Cow::Borrowed(q)
+    };
     if index.is_empty() {
         return Vec::new();
     }

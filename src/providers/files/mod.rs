@@ -84,9 +84,8 @@ impl FileProvider {
         for (path, is_dir) in paths {
             let name = path
                 .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "?".into());
             index.push(index::make_indexed(path.clone(), name, *is_dir, 2, false));
         }
         index.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
@@ -170,9 +169,8 @@ impl FileProvider {
         let is_dir = meta.is_dir();
         let name = path
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("?")
-            .to_string();
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "?".into());
         let path_style = self.state.config.with(|c| c.index.path_style);
         // Cheap `Arc` snapshot; guard dropped before `pretty_path` work.
         let mounts: std::sync::Arc<[crate::config::MountInfo]> = self
@@ -361,9 +359,31 @@ fn merge_cached(base: &mut Vec<SearchResult>, cached: &[SearchResult]) {
     base.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
-            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            .then_with(|| cmp_title_fold(&a.title, &b.title))
     });
     base.truncate(FILE_RESULT_LIMIT);
+}
+
+/// Case-insensitive title order without per-comparison heap allocs (the old
+/// `to_lowercase().cmp()` allocated two Strings per comparison — ~100 allocs
+/// per keystroke merge at the 25-result cap). `char::to_lowercase` streams
+/// compare directly; raw `cmp` breaks remaining ties deterministically.
+fn cmp_title_fold(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut ac = a.chars().flat_map(|c| c.to_lowercase());
+    let mut bc = b.chars().flat_map(|c| c.to_lowercase());
+    loop {
+        match (ac.next(), bc.next()) {
+            (Some(x), Some(y)) => {
+                let ord = x.cmp(&y);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+        }
+    }
 }
 
 /// Expand `~` for settings / promote UI.
@@ -378,12 +398,17 @@ pub fn icon_for_path(path: &Path, is_dir: bool) -> &'static str {
     if is_dir {
         return "folder";
     }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
+    // Borrow the extension when already lowercase (the common case); heap
+    // alloc only for uppercase extensions. Per result per keystroke.
+    let ext_borrowed = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext_owned;
+    let ext = if ext_borrowed.bytes().any(|b| b.is_ascii_uppercase()) {
+        ext_owned = ext_borrowed.to_ascii_lowercase();
+        ext_owned.as_str()
+    } else {
+        ext_borrowed
+    };
+    match ext {
         // Images — specific mimetypes resolve better in Papirus
         "png" => "image-png",
         "jpg" | "jpeg" => "image-jpeg",

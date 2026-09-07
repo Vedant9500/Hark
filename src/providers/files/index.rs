@@ -1,5 +1,6 @@
 use crate::config::{discover_mounts, ConfigStore, ExcludeSet, MountInfo};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -293,7 +294,7 @@ impl IndexState {
         }
 
         let mut items = Vec::with_capacity(4096);
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::with_capacity(4096);
 
         // Enabled mount roots, used to tag entries as mounted (ranking + pretty
         // display), derived from discovery — not a hardcoded `/mnt/` prefix.
@@ -439,7 +440,9 @@ fn index_entry(path: &Path, root: &Path, mnt: bool) -> Option<IndexedPath> {
     } else {
         meta.is_dir()
     };
-    let name = path.file_name()?.to_str()?.to_string();
+    // Non-UTF8 names use lossy conversion instead of vanishing from the
+    // launcher (`to_str` returns None on non-UTF8 paths).
+    let name = path.file_name()?.to_string_lossy().into_owned();
     if name.is_empty() {
         return None;
     }
@@ -476,7 +479,7 @@ pub(crate) fn make_indexed(
 
 fn from_cache_entry(e: CacheEntry) -> Option<IndexedPath> {
     let path = PathBuf::from(e.path);
-    let name = path.file_name()?.to_str()?.to_string();
+    let name = path.file_name()?.to_string_lossy().into_owned();
     if name.is_empty() {
         return None;
     }
@@ -597,9 +600,14 @@ pub(crate) fn should_skip_entry(path: &Path, excludes: &ExcludeSet) -> bool {
 }
 
 fn should_always_skip(path: &Path) -> bool {
+    // Zero-alloc component compare: `to_string_lossy` per component cost
+    // ~500k heap allocs per 100k-entry build. `to_str` is borrow-only for
+    // UTF-8 names (the near-universal case); non-UTF8 components can't match
+    // the ASCII skip list, so they safely fall through.
     path.components().any(|c| {
-        let s = c.as_os_str().to_string_lossy();
-        let name = s.as_ref();
+        let Some(name) = c.as_os_str().to_str() else {
+            return false;
+        };
         matches!(
             name,
             ".git"
@@ -729,19 +737,40 @@ fn has_datestamp(s: &str) -> bool {
         }
     }
     // Separated groups: `2026_08_13` / `13-08-2026` (year + month + day).
-    let groups: Vec<&str> = s
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|g| !g.is_empty())
-        .collect();
-    for w in groups.windows(3) {
-        let (a, b, c) = (w[0].len(), w[1].len(), w[2].len());
-        if (a == 4 && (b == 1 || b == 2) && (c == 1 || c == 2))
-            || ((a == 1 || a == 2) && (b == 1 || b == 2) && c == 4)
-        {
+    // Streaming 3-window over digit-run lengths — no `Vec` alloc per name
+    // (the old `split().filter().collect()` allocated on every non-stamped
+    // filename, i.e. the majority of the walk).
+    let mut window = [0usize; 3];
+    let mut filled = 0usize;
+    let mut run = 0usize;
+    let flush = |run: usize, window: &mut [usize; 3], filled: &mut usize| {
+        if run == 0 {
+            return false;
+        }
+        window[0] = window[1];
+        window[1] = window[2];
+        window[2] = run;
+        *filled = (*filled + 1).min(3);
+        if *filled == 3 {
+            let (a, b, c) = (window[0], window[1], window[2]);
+            if (a == 4 && (b == 1 || b == 2) && (c == 1 || c == 2))
+                || ((a == 1 || a == 2) && (b == 1 || b == 2) && c == 4)
+            {
+                return true;
+            }
+        }
+        false
+    };
+    for &b in bytes {
+        if b.is_ascii_digit() {
+            run += 1;
+        } else if flush(run, &mut window, &mut filled) {
             return true;
+        } else {
+            run = 0;
         }
     }
-    false
+    flush(run, &mut window, &mut filled)
 }
 
 /// Whole-word `kw` presence in `s` (ASCII separators on both sides).
@@ -761,8 +790,19 @@ fn stem_has_keyword(s: &str, kw: &str) -> bool {
     false
 }
 
+/// Borrowed lowercase for the common all-lowercase name; allocates only when
+/// an ASCII uppercase byte is actually present (99%+ of walk names are
+/// already lowercase, per the B02 `ExcludeSet` finding).
+fn lower_if_needed(name: &str) -> Cow<'_, str> {
+    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
 fn is_generated_filename(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
+    let lower = lower_if_needed(name);
     // Camera / phone dumps are always timestamped.
     if CAMERA_PREFIXES.iter().any(|p| lower.starts_with(p)) {
         return true;
@@ -802,8 +842,9 @@ fn is_generated_dirname(name: &str) -> bool {
     if name.contains('.') {
         return false;
     }
-    let lower = name.to_ascii_lowercase();
-    if GENERATED_DIR_NAMES.contains(&lower.as_str()) {
+    let lower = lower_if_needed(name);
+    let lower_str: &str = &lower;
+    if GENERATED_DIR_NAMES.contains(&lower_str) {
         return true;
     }
     // Date-named dump dirs: `20260403_112819_46d7d6_eye_crops`, `runs_2026_08_13`.

@@ -8,7 +8,7 @@
 
 use super::index::IndexedPath;
 use crate::usage::UsageStore;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -41,26 +41,37 @@ impl HotPaths {
     }
 
     pub fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Relaxed);
+        // Release: usage-store writes sequenced before this must be visible
+        // to the thread that claims dirty and rebuilds.
+        self.dirty.store(true, Ordering::Release);
     }
 
     /// Rebuild from usage ∩ `index` when dirty.
     pub fn ensure_fresh(&self, index: &[IndexedPath]) {
-        if !self.dirty.load(Ordering::Relaxed) {
+        // Swap-claim: a `mark_dirty` racing the rebuild stays true for the
+        // next call instead of being overwritten by a trailing store(false)
+        // (lost-dirty → stale hot set until the next usage change).
+        if !self.dirty.swap(false, Ordering::AcqRel) {
             return;
         }
-        self.rebuild(index);
+        self.build_and_swap(index);
     }
 
     /// Force rebuild (after index swap).
     pub fn rebuild(&self, index: &[IndexedPath]) {
+        // Clear-before-build: a concurrent usage change during the build
+        // survives for the next `ensure_fresh` instead of being cleared after.
+        self.dirty.store(false, Ordering::Relaxed);
+        self.build_and_swap(index);
+    }
+
+    fn build_and_swap(&self, index: &[IndexedPath]) {
         // Oversample: some usage paths may not be in the (shallow) index.
         let wanted = self
             .usage
             .top_path_ids(HOT_CAP.saturating_mul(2).max(HOT_CAP));
         let set = build_hot_set(index, &wanted, HOT_CAP);
         *self.set.write().unwrap_or_else(|p| p.into_inner()) = Arc::from(set.indices);
-        self.dirty.store(false, Ordering::Relaxed);
     }
 
     /// #24: cheap refcount clone — no Vec copy under nested locks.
@@ -74,33 +85,51 @@ impl HotPaths {
     }
 }
 
-/// Map absolute paths → first index position (`path_lower` key).
+/// Map wanted paths → first index position, in frecency (`wanted_paths`) order.
 ///
-/// Keys borrow from `index` — no per-entry `path_lower` clone (hot cap is tiny;
-/// the expensive part was cloning up to `MAX_INDEX` strings into the map).
+/// Wanted-keyed (≤2×`HOT_CAP` entries): the old index-keyed map hashed up to
+/// `MAX_INDEX` (100k) strings per rebuild. Single index scan, first occurrence
+/// wins per wanted key.
 pub(crate) fn build_hot_set(index: &[IndexedPath], wanted_paths: &[String], cap: usize) -> HotSet {
     if index.is_empty() || wanted_paths.is_empty() || cap == 0 {
         return HotSet::default();
     }
 
-    let mut by_path: HashMap<&str, usize> = HashMap::with_capacity(index.len());
-    for (idx, item) in index.iter().enumerate() {
-        by_path.entry(item.path_lower.as_str()).or_insert(idx);
+    // Normalize wanted keys, deduping while preserving frecency order.
+    let mut keys: Vec<String> = Vec::with_capacity(wanted_paths.len());
+    for p in wanted_paths {
+        // Wanted list is small (≤ ~2× HOT_CAP); lowercasing here is fine.
+        let key = PathBuf::from(p).to_string_lossy().to_lowercase();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    let mut order: HashMap<&str, usize> = HashMap::with_capacity(keys.len());
+    for (i, k) in keys.iter().enumerate() {
+        order.insert(k.as_str(), i);
     }
 
-    let mut indices = Vec::with_capacity(cap.min(wanted_paths.len()));
-    let mut seen_idx = HashSet::with_capacity(cap.min(wanted_paths.len()));
+    // Single scan: first index position per wanted key.
+    let mut first_idx: Vec<Option<usize>> = vec![None; keys.len()];
+    let mut found = 0usize;
+    for (idx, item) in index.iter().enumerate() {
+        if let Some(&ord) = order.get(item.path_lower.as_str()) {
+            if first_idx[ord].is_none() {
+                first_idx[ord] = Some(idx);
+                found += 1;
+                if found == keys.len() {
+                    break;
+                }
+            }
+        }
+    }
 
-    for p in wanted_paths {
+    let mut indices = Vec::with_capacity(cap.min(keys.len()));
+    for opt in first_idx {
         if indices.len() >= cap {
             break;
         }
-        // Wanted list is small (≤ ~2× HOT_CAP); lowercasing here is fine.
-        let key = PathBuf::from(p).to_string_lossy().to_lowercase();
-        let Some(&idx) = by_path.get(key.as_str()) else {
-            continue;
-        };
-        if seen_idx.insert(idx) {
+        if let Some(idx) = opt {
             indices.push(idx);
         }
     }

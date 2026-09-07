@@ -34,6 +34,7 @@ pub(super) fn heap_to_results(
         .into_iter()
         .map(|(score, idx)| {
             let item = &index[idx];
+            let title = display_name(&item.name);
             // Fuzzy spans are char indices into name_lower; they map onto the
             // displayed title only when case folding kept the char count and
             // display_name didn't transform the name.
@@ -42,8 +43,8 @@ pub(super) fn heap_to_results(
             } else {
                 None
             }
-            .or_else(|| title_match_indices(&display_name(&item.name), q_lower));
-            indexed_to_result(item, score, matched, path_style, mounts)
+            .or_else(|| title_match_indices(&title, q_lower));
+            indexed_to_result_with_title(item, score, matched, title, path_style, mounts)
         })
         .collect()
 }
@@ -55,9 +56,27 @@ pub(super) fn indexed_to_result(
     path_style: &PathStyle,
     mounts: &[MountInfo],
 ) -> SearchResult {
+    indexed_to_result_with_title(
+        item,
+        score,
+        matched,
+        display_name(&item.name),
+        path_style,
+        mounts,
+    )
+}
+
+pub(super) fn indexed_to_result_with_title(
+    item: &IndexedPath,
+    score: i64,
+    matched: Option<Vec<usize>>,
+    title: String,
+    path_style: &PathStyle,
+    mounts: &[MountInfo],
+) -> SearchResult {
     SearchResult {
         id: format!("path:{}", item.path.display()),
-        title: display_name(&item.name),
+        title,
         subtitle: pretty_path(&item.path, path_style, mounts),
         kind: if item.is_dir {
             ResultKind::Folder
