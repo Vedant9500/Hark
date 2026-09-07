@@ -411,7 +411,9 @@ fn daemon_stats() -> Option<DaemonSnap> {
         let Some(rss_str) = cols.next() else { continue };
         let Some(cpu_str) = cols.next() else { continue };
         let Some(mem_str) = cols.next() else { continue };
-        let Some(etime_str) = cols.next() else { continue };
+        let Some(etime_str) = cols.next() else {
+            continue;
+        };
 
         // check cmdline is --daemon (audit P3): NUL-separated argv compared
         // per-argument — a substring match would attribute any hark process

@@ -331,9 +331,7 @@ pub(crate) fn predict_tz(prefix: &str) -> Option<(Tz, String)> {
             if !fuzzy_ok {
                 return false;
             }
-            alias.starts_with(&*p)
-                || p.starts_with(*alias)
-                || compact_a.starts_with(&compact_p)
+            alias.starts_with(&*p) || p.starts_with(*alias) || compact_a.starts_with(&compact_p)
         })
         .map(|(a, iana, label, compact_a)| {
             let score = if *a == p || *compact_a == compact_p {
@@ -848,9 +846,7 @@ pub(crate) fn resolve_tz(token: &str) -> Option<(Tz, String)> {
                     .map(|w| {
                         let mut chars = w.chars();
                         match chars.next() {
-                            Some(first) => {
-                                first.to_ascii_uppercase().to_string() + chars.as_str()
-                            }
+                            Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
                             None => String::new(),
                         }
                     })
@@ -873,20 +869,20 @@ pub(crate) fn display_tz_label(token: &str) -> String {
 /// DST-observing entries only resolve while their current offset matches —
 /// verified at lookup time in `tz_for_offset`.
 const HALF_HOUR_ZONES: &[(i32, &str)] = &[
-    (19800, "Asia/Kolkata"),       // +5:30
-    (20700, "Asia/Kathmandu"),     // +5:45
-    (12600, "Asia/Tehran"),        // +3:30
-    (16200, "Asia/Kabul"),         // +4:30 (also Tehran DST)
-    (23400, "Asia/Yangon"),        // +6:30
-    (-12600, "America/St_Johns"),  // -3:30 NST (std)
-    (-9000, "America/St_Johns"),   // -2:30 NDT (DST)
-    (-34200, "Pacific/Marquesas"), // -9:30 fixed
-    (34200, "Australia/Darwin"),   // +9:30 fixed
-    (31500, "Australia/Eucla"),    // +8:45
+    (19800, "Asia/Kolkata"),        // +5:30
+    (20700, "Asia/Kathmandu"),      // +5:45
+    (12600, "Asia/Tehran"),         // +3:30
+    (16200, "Asia/Kabul"),          // +4:30 (also Tehran DST)
+    (23400, "Asia/Yangon"),         // +6:30
+    (-12600, "America/St_Johns"),   // -3:30 NST (std)
+    (-9000, "America/St_Johns"),    // -2:30 NDT (DST)
+    (-34200, "Pacific/Marquesas"),  // -9:30 fixed
+    (34200, "Australia/Darwin"),    // +9:30 fixed
+    (31500, "Australia/Eucla"),     // +8:45
     (37800, "Australia/Lord_Howe"), // +10:30 std
     (39600, "Australia/Lord_Howe"), // +11:00 DST
-    (45900, "Pacific/Chatham"),    // +12:45 std
-    (49500, "Pacific/Chatham"),    // +13:45 DST
+    (45900, "Pacific/Chatham"),     // +12:45 std
+    (49500, "Pacific/Chatham"),     // +13:45 DST
 ];
 
 /// Map exact UTC offset seconds to a resolvable zone. Whole hours use

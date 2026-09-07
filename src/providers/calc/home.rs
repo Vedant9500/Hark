@@ -86,10 +86,7 @@ fn is_us_zone(zone: &str) -> bool {
 
 fn is_imperial_zone(zone: &str) -> bool {
     // US customary plus the only other holdouts (Liberia, Myanmar).
-    is_us_zone(zone)
-        || zone == "Africa/Monrovia"
-        || zone == "Asia/Yangon"
-        || zone == "Asia/Rangoon"
+    is_us_zone(zone) || zone == "Africa/Monrovia" || zone == "Asia/Yangon" || zone == "Asia/Rangoon"
 }
 
 fn currency_for_zone(zone: &str) -> &'static str {

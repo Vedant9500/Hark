@@ -7,8 +7,7 @@ use super::glob::{
     GlobQuery,
 };
 use super::plan::{
-    parse_glob_query, parse_scope_hint_query, parse_scoped_query, strip_file_mode_prefix,
-    ScopedQuery,
+    is_scope_hint_query, parse_glob_query, parse_scoped_query, strip_file_mode_prefix, ScopedQuery,
 };
 use super::rank::{apply_path_boosts, display_name};
 use super::DEEP_MAX_DEPTH;
@@ -101,8 +100,8 @@ pub(crate) fn plan_deep_jobs(
         return Vec::new();
     }
 
-    // Soft scope hints never deep-walk.
-    if parse_scope_hint_query(q).is_some() && parse_scoped_query(q, Some(index)).is_none() {
+    // Soft scope hints never deep-walk. Boolean check avoids parser allocs.
+    if is_scope_hint_query(q) && parse_scoped_query(q, Some(index)).is_none() {
         return Vec::new();
     }
 
@@ -404,7 +403,7 @@ pub(crate) fn should_deep_search(query: &str, index_results: &[SearchResult]) ->
         return false;
     }
     // Incomplete `file in ` folder hints — no deep walk (suggestions only).
-    if parse_scope_hint_query(q).is_some() && parse_scoped_query(q, None).is_none() {
+    if is_scope_hint_query(q) && parse_scoped_query(q, None).is_none() {
         return false;
     }
     // Scoped `in` with confident signals (no index) — scope is narrow, always walk.
@@ -570,7 +569,9 @@ pub(super) fn roots_from_segments(index: &[IndexedPath], segments: &[String]) ->
         return Vec::new();
     }
     let first = &segments[0];
-    let mut candidates: Vec<(i64, PathBuf, String)> = Vec::new();
+    // No `path_lower` clone: third tuple slot was allocated per candidate but
+    // never read (discarded on return). Saves one String alloc per match.
+    let mut candidates: Vec<(i64, PathBuf)> = Vec::new();
     for item in index {
         if !item.is_dir {
             continue;
@@ -586,7 +587,7 @@ pub(super) fn roots_from_segments(index: &[IndexedPath], segments: &[String]) ->
         } else {
             continue;
         };
-        candidates.push((score, item.path.clone(), item.path_lower.clone()));
+        candidates.push((score, item.path.clone()));
     }
     candidates.sort_by_key(|b| std::cmp::Reverse(b.0));
 
@@ -628,7 +629,7 @@ pub(super) fn roots_from_segments(index: &[IndexedPath], segments: &[String]) ->
     }
 
     candidates.truncate(DEEP_MAX_ROOTS);
-    candidates.into_iter().map(|(_, p, _)| p).collect()
+    candidates.into_iter().map(|(_, p)| p).collect()
 }
 
 fn high_value_shallow_roots(index: &[IndexedPath]) -> Vec<PathBuf> {
@@ -723,10 +724,14 @@ pub(super) fn live_deep_under_roots(
             } else {
                 ft.is_dir()
             };
-            let name = match path.file_name().and_then(|s| s.to_str()) {
-                Some(n) if !n.is_empty() => n,
-                _ => continue,
-            };
+            let name_cow = path
+                .file_name()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default();
+            if name_cow.is_empty() {
+                continue;
+            }
+            let name = name_cow.as_ref();
             let name_lower = name.to_lowercase();
             let path_lower = path.to_string_lossy().to_lowercase();
 
@@ -801,15 +806,17 @@ pub(super) fn live_deep_under_roots(
         }
     }
 
-    hit_paths.sort_by_key(|b| std::cmp::Reverse(b.0));
+    // Deterministic by (score desc, path asc): stable `sort_by_key` on score
+    // alone preserved WalkDir arrival order for equal scores (readdir varies).
+    hit_paths.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     hit_paths
         .into_iter()
         .map(|(score, path, is_dir)| {
             let name = path
                 .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
+                .map(|s| s.to_string_lossy().into_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "?".to_string());
             let title = display_name(&name);
             // Literal name patterns highlight like substring hits; glob
             // patterns ("*.md") simply won't be found in the title → None.
@@ -843,7 +850,7 @@ fn score_live_hit(
     score += segments.len() as i64 * 2_500;
 
     if let Some(pat) = name_pat {
-        if !pat.contains('*') && !pat.contains('?') {
+        if !pat.bytes().any(|b| b == b'*' || b == b'?') {
             if item.name_lower == *pat {
                 score = 50_000;
             } else if item.name_lower.starts_with(pat) {
@@ -875,7 +882,21 @@ fn score_live_hit(
     let q_hint = name_pat
         .or_else(|| segments.last().map(|s| s.as_str()))
         .unwrap_or("");
-    apply_path_boosts(item, q_hint, score).unwrap_or(0)
+    let boosted = apply_path_boosts(item, q_hint, score).unwrap_or(0);
+    // Clamp contains-band below SKIP even after boosts (glob.rs parity):
+    // depth/high-value/mnt boosts (+13k max) could otherwise push a
+    // substring-only live hit over 30k, falsely cancelling sibling deep jobs.
+    let is_contains = name_pat.is_some_and(|pat| {
+        !pat.bytes().any(|b| b == b'*' || b == b'?')
+            && item.name_lower != pat
+            && item.name_lower.contains(pat)
+            && !item.name_lower.starts_with(pat)
+    });
+    if is_contains {
+        boosted.min(DEEP_SKIP_IF_INDEX_SCORE - 1)
+    } else {
+        boosted
+    }
 }
 
 #[cfg(test)]

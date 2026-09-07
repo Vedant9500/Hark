@@ -181,17 +181,14 @@ impl ActionPanel {
 
     pub fn move_selection(&self, delta: i32) {
         let n = self.items.borrow().len();
-        if n == 0 {
+        if n == 0 || delta == 0 {
             return;
         }
+        // Euclidean wrap handles arbitrary steps (±1 today, ±k safe):
+        // the old `(cur + 1) % n` / `cur - 1` arms ignored magnitude and
+        // treated a hypothetical 0-step as "up".
         let cur = self.selected.get();
-        let next = if delta > 0 {
-            (cur + 1) % n
-        } else if cur == 0 {
-            n - 1
-        } else {
-            cur - 1
-        };
+        let next = (cur as i32 + delta).rem_euclid(n as i32) as usize;
         self.selected.set(next);
         paint_selection(&self.buttons, next);
         if let Some(btn) = self.buttons.borrow().get(next) {

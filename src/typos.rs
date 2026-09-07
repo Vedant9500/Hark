@@ -618,7 +618,11 @@ fn prune_aliases(map: &mut HashMap<String, AliasEntry>, keep: usize, now: u64) {
         .collect();
     items.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0))); // coldest first, id tie-break (deterministic)
     let drop_n = map.len().saturating_sub(keep);
-    let to_drop: Vec<String> = items.into_iter().take(drop_n).map(|(k, _)| k.to_string()).collect();
+    let to_drop: Vec<String> = items
+        .into_iter()
+        .take(drop_n)
+        .map(|(k, _)| k.to_string())
+        .collect();
     for k in to_drop {
         map.remove(&k);
     }

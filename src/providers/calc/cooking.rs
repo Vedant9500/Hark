@@ -100,15 +100,12 @@ fn contains_word(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || needle.len() > haystack.len() {
         return false;
     }
-    haystack
-        .windows(needle.len())
-        .enumerate()
-        .any(|(i, w)| {
-            w.eq_ignore_ascii_case(needle)
-                && (i == 0 || !haystack[i - 1].is_ascii_alphabetic())
-                && (i + needle.len() == haystack.len()
-                    || !haystack[i + needle.len()].is_ascii_alphabetic())
-        })
+    haystack.windows(needle.len()).enumerate().any(|(i, w)| {
+        w.eq_ignore_ascii_case(needle)
+            && (i == 0 || !haystack[i - 1].is_ascii_alphabetic())
+            && (i + needle.len() == haystack.len()
+                || !haystack[i + needle.len()].is_ascii_alphabetic())
+    })
 }
 
 /// Volume units → ml. `fl oz` handled without allocating.
@@ -410,7 +407,12 @@ fn scale_prefix(s: &str) -> Option<(f64, &str)> {
 pub(crate) fn try_recipe_scale(q: &str) -> Option<SearchResult> {
     // Fast gate before lowercasing the whole query per keystroke.
     let t = q.trim_start();
-    let first = t.as_bytes().first().copied().unwrap_or(0).to_ascii_lowercase();
+    let first = t
+        .as_bytes()
+        .first()
+        .copied()
+        .unwrap_or(0)
+        .to_ascii_lowercase();
     let looks_like_scale = matches!(first, b'd' | b't' | b'q' | b'h' | b's' | b'0'..=b'9')
         && (contains_ignore_ascii_case(t, "double ")
             || contains_ignore_ascii_case(t, "triple ")

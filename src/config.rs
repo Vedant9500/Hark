@@ -1255,7 +1255,9 @@ fn is_system_target(p: &Path) -> bool {
         "/boot/efi",
     ];
     SYSTEM_PREFIXES.iter().any(|prefix| {
-        t == *prefix || t.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+        t == *prefix
+            || t.strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
     })
 }
 
@@ -1549,10 +1551,11 @@ impl ExcludeSet {
                 })
                 .collect();
             for pattern in &self.patterns {
-                if comps
-                    .windows(pattern.len())
-                    .any(|w| w.iter().map(|c| c.as_ref()).eq(pattern.iter().map(|p| p.as_str())))
-                {
+                if comps.windows(pattern.len()).any(|w| {
+                    w.iter()
+                        .map(|c| c.as_ref())
+                        .eq(pattern.iter().map(|p| p.as_str()))
+                }) {
                     return true;
                 }
             }

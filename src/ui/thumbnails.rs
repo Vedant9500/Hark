@@ -116,16 +116,27 @@ pub(crate) fn store_freedesktop_thumbnail(
         return false;
     }
     // Same key computation as thumbnail_digest (symlink-spelled final
-    // component) so store and read slots always agree.
-    let Some(digest) = thumbnail_digest(source) else {
-        return false;
+    // component) so store and read slots always agree. Resolve the parent
+    // once and derive BOTH digest and Thumb::URI from it: `file_uri(source)`
+    // on the unresolved path disagrees with the digest key whenever any
+    // parent component is a symlink, so the stored URI chunk would never
+    // match what readers (nautilus, our own probe) expect.
+    let resolved: PathBuf = match (source.parent(), source.file_name()) {
+        (Some(parent), Some(name)) => match parent.canonicalize() {
+            Ok(p) => p.join(name),
+            Err(_) => return false,
+        },
+        _ => match source.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return false,
+        },
     };
+    let uri = file_uri(&resolved);
+    let digest = md5_hex(uri.as_bytes());
     // MTime check stats the resolved file — canonical path is correct there.
     let Ok(canon) = source.canonicalize() else {
         return false;
     };
-    // Thumb::URI must match the digest key (symlink-spelled path).
-    let uri = file_uri(source);
     let Some(home) = dirs::home_dir() else {
         return false;
     };
@@ -155,13 +166,17 @@ pub(crate) fn store_freedesktop_thumbnail(
     }
 
     // th-bytes guard: reject rowstride/size combinations that would make
-    // Pixbuf::from_bytes read past the end of the pixel buffer.
-    let n_channels: i32 = if has_alpha { 4 } else { 3 };
-    if rowstride < width * n_channels
-        || (pixels.len() as i64)
-            < (height as i64).saturating_mul(rowstride as i64)
-                - (rowstride - width * n_channels) as i64
-    {
+    // Pixbuf::from_bytes read past the end of the pixel buffer. All math in
+    // i64: `width * n_channels` overflows i32 for corrupt dimensions
+    // (e.g. width 600M × 4 → 2.4G), panicking debug builds. Minimum valid
+    // bytes = (h-1)*stride + w*ch.
+    let n_channels: i64 = if has_alpha { 4 } else { 3 };
+    let w = width as i64;
+    let h = height as i64;
+    let stride = rowstride as i64;
+    let row_bytes = w.saturating_mul(n_channels);
+    let min_bytes = (h - 1).saturating_mul(stride).saturating_add(row_bytes);
+    if stride < row_bytes || (pixels.len() as i64) < min_bytes {
         return false;
     }
     let bytes = glib::Bytes::from_owned(pixels.to_vec());
@@ -220,10 +235,14 @@ pub(crate) fn store_freedesktop_thumbnail(
 }
 
 fn md5_hex(message: &[u8]) -> String {
+    // Lookup table instead of `format!("{b:02x}")` per byte (16 tiny allocs
+    // per digest; digests compute per image probe while scrolling previews).
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let d = md5_bytes(message);
     let mut s = String::with_capacity(32);
     for b in d {
-        s.push_str(&format!("{b:02x}"));
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
 }
@@ -318,7 +337,7 @@ fn md5_bytes(message: &[u8]) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use super::store_freedesktop_thumbnail;
+    use super::{md5_hex, store_freedesktop_thumbnail};
 
     #[test]
     fn rejects_short_pixel_buffer() {
@@ -329,5 +348,41 @@ mod tests {
             &src, 2, 2, 8, true, &[0u8; 12]
         ));
         let _ = std::fs::remove_file(&src);
+    }
+
+    #[test]
+    fn corrupt_dimensions_reject_without_overflow_panic() {
+        // width 600M × 4 channels overflows i32 (2.4G): the old
+        // `width * n_channels` guard panicked debug builds instead of
+        // returning false. i64 math must reject cleanly.
+        let src = std::env::temp_dir().join("hark-th-overflow-guard-test.png");
+        std::fs::write(&src, b"x").unwrap();
+        assert!(!store_freedesktop_thumbnail(
+            &src,
+            600_000_000,
+            2,
+            i32::MAX,
+            true,
+            &[0u8; 16]
+        ));
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[test]
+    fn md5_matches_rfc1321_vectors() {
+        // Hand-rolled MD5 has no crate cross-check: a wrong implementation
+        // stays self-consistent (store/read agree) while silently breaking
+        // interop with nautilus caches. Pin against RFC 1321 A.5.
+        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5_hex(b"a"), "0cc175b9c0f1b6a831c399e269772661");
+        assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            md5_hex(b"message digest"),
+            "f96b697d7cb7938d525a2f31aaf161d0"
+        );
+        assert_eq!(
+            md5_hex(b"abcdefghijklmnopqrstuvwxyz"),
+            "c3fcd3d76192e4007dfb496cca67e13b"
+        );
     }
 }

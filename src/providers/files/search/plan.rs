@@ -43,7 +43,8 @@ pub fn is_path_glob_query(query: &str) -> bool {
         return true;
     }
     // Incomplete `file.md in …` folder hints — also files-only.
-    if parse_scope_hint_query(q).is_some() {
+    // Boolean check avoids the 3-String alloc of the full parser.
+    if is_scope_hint_query(q) {
         return true;
     }
     if q.starts_with('/') || q.starts_with('~') || q.starts_with("./") {
@@ -72,7 +73,7 @@ pub fn is_path_glob_query(query: &str) -> bool {
 pub fn is_scoped_file_query(query: &str) -> bool {
     let raw = query.trim();
     let q = strip_file_mode_prefix(raw).trim();
-    parse_scoped_query(q, None).is_some() || parse_scope_hint_query(q).is_some()
+    parse_scoped_query(q, None).is_some() || is_scope_hint_query(q)
 }
 
 const SCOPE_KEYWORDS: &[&str] = &[" in ", " within ", " under ", " inside "];
@@ -292,17 +293,11 @@ pub(super) fn scoped_to_glob(sq: &ScopedQuery) -> GlobQuery {
 
 const SCOPE_HINT_LIMIT: usize = 12;
 
-/// Detect incomplete / partial scoped queries for folder completions.
-///
-/// Matches: `foo.md in`, `foo.md in `, `foo.md in gla`, `*.rs under docs/`
-/// Does not match completed scopes that already parse as confident searches
-/// with a full non-prefix-only intent — those go through normal scoped search.
-pub(super) fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)> {
-    let q = q.trim_end();
-    if q.is_empty() {
-        return None;
-    }
-    let lower = q.to_ascii_lowercase();
+/// Shared keyword search for scoped `in/within/under/inside` queries.
+/// Returns (byte_start, byte_len, display_form). `lower` must be the
+/// `to_ascii_lowercase` of the trimmed query (same byte length, so indices
+/// slice the original safely).
+fn find_scope_keyword(lower: &str) -> Option<(usize, usize, &'static str)> {
     let mut best: Option<(usize, usize, &'static str)> = None;
     for kw in SCOPE_KEYWORDS {
         if let Some(pos) = lower.find(kw) {
@@ -330,7 +325,43 @@ pub(super) fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)
             }
         }
     }
-    let (kw_start, kw_len, kw_display) = best?;
+    best
+}
+
+/// Boolean-only scope-hint check without the 3-String allocation of
+/// `parse_scope_hint_query`. Use in hot boolean gates (`is_path_glob_query`,
+/// `should_deep_search`, deep planning) that only need existence.
+pub(super) fn is_scope_hint_query(q: &str) -> bool {
+    let q = q.trim_end();
+    if q.is_empty() {
+        return false;
+    }
+    let lower = q.to_ascii_lowercase();
+    let Some((kw_start, _, _)) = find_scope_keyword(&lower) else {
+        return false;
+    };
+    let name = q[..kw_start].trim();
+    if name.is_empty() || !name_looks_like_file(name) {
+        return false;
+    }
+    if name.starts_with('/') || name.starts_with('~') || name.starts_with("./") {
+        return false;
+    }
+    true
+}
+
+/// Detect incomplete / partial scoped queries for folder completions.
+///
+/// Matches: `foo.md in`, `foo.md in `, `foo.md in gla`, `*.rs under docs/`
+/// Does not match completed scopes that already parse as confident searches
+/// with a full non-prefix-only intent — those go through normal scoped search.
+pub(super) fn parse_scope_hint_query(q: &str) -> Option<(String, String, String)> {
+    let q = q.trim_end();
+    if q.is_empty() {
+        return None;
+    }
+    let lower = q.to_ascii_lowercase();
+    let (kw_start, kw_len, kw_display) = find_scope_keyword(&lower)?;
     let name = q[..kw_start].trim();
     if name.is_empty() || !name_looks_like_file(name) {
         // Only offer scope hints when left side already looks like a file/glob —
@@ -375,14 +406,24 @@ pub(super) fn scope_folder_suggestions(
             // Heuristic: if scope ends with `/` or last segment matches a dir
             // exactly AND there are name matches, skip hints.
             let last = sq.segments.last().map(|s| s.as_str()).unwrap_or("");
-            let exact_dir =
-                !last.is_empty() && index.iter().any(|it| it.is_dir && it.name_lower == last);
+            // Single index pass for exact + prefix-partial (was 2 full scans).
+            let mut exact_dir = false;
+            let mut has_longer = false;
+            if !last.is_empty() {
+                for it in index.iter() {
+                    if !it.is_dir {
+                        continue;
+                    }
+                    if it.name_lower == last {
+                        exact_dir = true;
+                        break; // exact wins; partial forced false below
+                    } else if it.name_lower.starts_with(last) {
+                        has_longer = true;
+                    }
+                }
+            }
             // Partial last segment: "gla" matches glassbox → keep hints.
-            let last_is_partial = !last.is_empty()
-                && index.iter().any(|it| {
-                    it.is_dir && it.name_lower.starts_with(last) && it.name_lower != last
-                })
-                && !exact_dir;
+            let last_is_partial = !last.is_empty() && has_longer && !exact_dir;
             if exact_dir && !last_is_partial && !q.trim_end().ends_with('/') {
                 // Could still be typing a deeper segment; only skip when
                 // normal search would return something useful.
@@ -401,7 +442,7 @@ pub(super) fn scope_folder_suggestions(
     }
 
     let mut scored: Vec<(i64, &IndexedPath, String)> = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
+    let mut seen_paths = std::collections::HashSet::with_capacity(256);
 
     for item in index {
         if !item.is_dir || item.low_value {

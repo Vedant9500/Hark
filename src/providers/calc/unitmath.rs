@@ -93,7 +93,10 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
 /// (meters vs minutes/million, bytes vs billion, tonne vs trillion).
 fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
     let unit = qty.unit.as_deref()?;
-    if unit.eq_ignore_ascii_case("m") || unit.eq_ignore_ascii_case("b") || unit.eq_ignore_ascii_case("t") {
+    if unit.eq_ignore_ascii_case("m")
+        || unit.eq_ignore_ascii_case("b")
+        || unit.eq_ignore_ascii_case("t")
+    {
         return None;
     }
     if !qty.base.is_finite() {
@@ -143,14 +146,10 @@ fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
                 super::duration::format_duration(qty.base)
             }
         }
-        Some("data")
-        | Some("area")
-        | Some("speed")
-        | Some("pressure")
-        | Some("energy")
-        | Some("power")
-        | Some("angle")
-        | Some("frequency") => smart_prefix(qty.base, qty.cat.unwrap_or("data")),
+        Some("data") | Some("area") | Some("speed") | Some("pressure") | Some("energy")
+        | Some("power") | Some("angle") | Some("frequency") => {
+            smart_prefix(qty.base, qty.cat.unwrap_or("data"))
+        }
         _ => {
             let (df, _) = to_base(display_unit)?;
             let v = qty.base / df;

@@ -429,7 +429,11 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     parse_desktop_file_with(path, &current_locales(), &current_desktops())
 }
 
-fn parse_desktop_file_with(path: &Path, locales: &[String], desktops: &[String]) -> Option<DesktopApp> {
+fn parse_desktop_file_with(
+    path: &Path,
+    locales: &[String],
+    desktops: &[String],
+) -> Option<DesktopApp> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_desktop = false;
     let mut name = String::new();
@@ -565,11 +569,7 @@ fn parse_desktop_file_with(path: &Path, locales: &[String], desktops: &[String])
     // matched against `XDG_CURRENT_DESKTOP` (itself `:`-separated). No known
     // desktop → show (conservative). `TryExec` with an unresolvable binary
     // would fail on launch — skip the entry.
-    if !desktop_allowed_for(
-        only_show_in.as_deref(),
-        not_show_in.as_deref(),
-        desktops,
-    ) {
+    if !desktop_allowed_for(only_show_in.as_deref(), not_show_in.as_deref(), desktops) {
         return None;
     }
     if let Some(probe) = try_exec.as_deref() {

@@ -443,8 +443,7 @@ pub fn strip_translate_prefix(query: &str) -> (bool, &str) {
     // this panic-free on multi-byte queries (`get` returns None when the
     // split lands inside a char).
     for prefix in ["translate ", "tr "] {
-        if q
-            .get(..prefix.len())
+        if q.get(..prefix.len())
             .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
         {
             return (true, q[prefix.len()..].trim());
@@ -1123,10 +1122,15 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
         // Bound process-local success cache (disk remains durable).
         const MAX_MEM: usize = 256;
         if g.len() > MAX_MEM {
-            let mut keys: Vec<(&str, u64)> = g.iter().map(|(k, v)| (k.as_str(), v.fetched_at)).collect();
+            let mut keys: Vec<(&str, u64)> =
+                g.iter().map(|(k, v)| (k.as_str(), v.fetched_at)).collect();
             keys.sort_unstable_by_key(|(_, ts)| *ts);
             let remove_n = g.len() - MAX_MEM;
-            let to_remove: Vec<String> = keys.into_iter().take(remove_n).map(|(k, _)| k.to_string()).collect();
+            let to_remove: Vec<String> = keys
+                .into_iter()
+                .take(remove_n)
+                .map(|(k, _)| k.to_string())
+                .collect();
             for k in to_remove {
                 g.remove(&k);
             }

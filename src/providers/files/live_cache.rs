@@ -80,11 +80,7 @@ impl Inner {
         while self.map.len() > MAX_ENTRIES {
             // Graceful on invariant drift (never panic in prod): a missing
             // recency head just ends eviction instead of wedging the cache.
-            let Some((stamp, victim)) = self
-                .recency
-                .iter()
-                .next()
-                .map(|(s, k)| (*s, k.clone()))
+            let Some((stamp, victim)) = self.recency.iter().next().map(|(s, k)| (*s, k.clone()))
             else {
                 break;
             };

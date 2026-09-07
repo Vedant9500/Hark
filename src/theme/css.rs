@@ -9,22 +9,33 @@ use super::{sanitize_hex, Theme};
 fn rgb_bytes(hex: &str) -> (u8, u8, u8) {
     let h = sanitize_hex(hex);
     let h = h.trim_start_matches('#');
-    let expanded = match h.len() {
+    // Sanitized output is ASCII hex, so byte indexing is always at a char
+    // boundary. Previous version collected `Vec<char>` + `format!` per call
+    // (~15 allocs per `render`); this parses in place with zero allocation.
+    let b = h.as_bytes();
+    match b.len() {
         3 | 4 => {
             // Shorthand: duplicate each nibble (`#fff` → `ffffff`).
-            let c: Vec<char> = h.chars().take(3).collect();
-            if c.len() < 3 {
-                return (26, 27, 38);
-            }
-            format!("{}{}{}{}{}{}", c[0], c[0], c[1], c[1], c[2], c[2])
+            // `d * 17` == `0xdd` for a hex nibble d (0xF → 255).
+            (
+                hex_nibble(b[0]) * 17,
+                hex_nibble(b[1]) * 17,
+                hex_nibble(b[2]) * 17,
+            )
         }
-        6 | 8 => h[..6].to_string(),
-        _ => return (26, 27, 38),
-    };
-    let r = u8::from_str_radix(&expanded[0..2], 16).unwrap_or(26);
-    let g = u8::from_str_radix(&expanded[2..4], 16).unwrap_or(27);
-    let b = u8::from_str_radix(&expanded[4..6], 16).unwrap_or(38);
-    (r, g, b)
+        6 | 8 => {
+            let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(26);
+            let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(27);
+            let bl = u8::from_str_radix(&h[4..6], 16).unwrap_or(38);
+            (r, g, bl)
+        }
+        _ => (26, 27, 38),
+    }
+}
+
+#[inline]
+fn hex_nibble(b: u8) -> u8 {
+    (b as char).to_digit(16).unwrap_or(0) as u8
 }
 
 pub fn is_light_theme(hex: &str) -> bool {
@@ -41,13 +52,32 @@ fn rgba(hex: &str, alpha: f32) -> String {
 }
 
 pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
-    let base = ui.opacity.clamp(0.40, 1.0);
-    let primary = ui
+    // `clamp` passes NaN through (all comparisons false), which would emit
+    // `NaNpx` / `rgba(..., NaN)` — invalid CSS that GTK drops. JSON cannot
+    // express NaN, but guard anyway so a corrupt in-memory value degrades to
+    // defaults instead of an unstyled panel.
+    let base = if ui.opacity.is_finite() {
+        ui.opacity.clamp(0.40, 1.0)
+    } else {
+        0.85
+    };
+    // `ui.accent` is external input (config file / settings): sanitize on the
+    // render path too, not just in `UiThemeConfig::sanitize`. The raw value
+    // is interpolated directly into `caret-color` / badge rules, so an
+    // unsanitized override would be a CSS-injection sink if any caller ever
+    // skips the store sanitize step. Store path already restricts to
+    // `#rrggbb|None`; this keeps the `pub` API safe by construction.
+    let primary_raw = ui
         .accent
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or(theme.primary.as_str());
-    let scale = ui.font_scale.clamp(0.85, 1.30);
+    let primary = sanitize_hex(primary_raw);
+    let scale = if ui.font_scale.is_finite() {
+        ui.font_scale.clamp(0.85, 1.30)
+    } else {
+        1.0
+    };
     let radius = ui.radius.clamp(8, 24);
     // Optical concentricity: R_inner = max(4, R_outer - padding_h)
     let row_radius = radius.saturating_sub(6).clamp(4, 18);
@@ -79,7 +109,7 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let popover_bg_solid = rgba(&theme.surface_container_high, (base + 0.42).min(0.97));
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.08);
-    let selected_bg = rgba(primary, 0.18);
+    let selected_bg = rgba(&primary, 0.18);
     // Selected row: a translucent wash just a step above hover so the active
     // item reads without shouting. Same visual language as hover (an
     // `on_surface` alpha fill), but stronger — hover @0.08, selection @0.12.
@@ -1242,5 +1272,49 @@ mod tests {
             "rgba(255, 255, 255, 0.5)"
         );
         let _ = render(&theme, &ui); // must not panic
+    }
+
+    #[test]
+    fn test_malicious_accent_override_is_sanitized() {
+        // `ui.accent` interpolates directly into caret-color / badge rules —
+        // a raw override would be a CSS-injection sink if any caller skips
+        // `UiThemeConfig::sanitize`. Render must sanitize by construction.
+        let theme = Theme::fallback();
+        let evil = "red; } .pwned { color: black";
+        let ui = UiThemeConfig {
+            accent: Some(evil.into()),
+            ..Default::default()
+        };
+        let css = render(&theme, &ui);
+        assert!(!css.contains(evil), "raw accent leaked into CSS");
+        // Malformed accent falls back to sanitized white, never empty.
+        assert!(css.contains("caret-color: #ffffff;"), "{css}");
+    }
+
+    #[test]
+    fn test_non_finite_opacity_and_scale_fall_back() {
+        // `f32::clamp` passes NaN through; render must not emit `NaNpx` or
+        // `rgba(..., NaN)` (GTK drops the whole declaration → unstyled panel).
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig {
+            opacity: f32::NAN,
+            font_scale: f32::INFINITY,
+            ..Default::default()
+        };
+        let css = render(&theme, &ui);
+        assert!(!css.contains("NaN"), "{css}");
+        // `infinite` (spinner keyframes) legitimately contains "inf" — only
+        // reject non-finite *values* leaking into numeric declarations.
+        assert!(!css.contains(", inf)"), "{css}");
+        assert!(!css.contains("infpx"), "{css}");
+        // Finite fallbacks still produce a usable shell rule.
+        assert!(css.contains("window.hark-window .hark-shell"));
+    }
+
+    #[test]
+    fn test_shorthand_nibble_expansion_matches_longhand() {
+        // `#abc` == `#aabbcc` == (170, 187, 204); guards the `* 17` rewrite.
+        assert_eq!(rgba("#abc", 1.0), rgba("#aabbcc", 1.0));
+        assert_eq!(rgba("#abc", 1.0), "rgba(170, 187, 204, 1)");
     }
 }

@@ -98,7 +98,9 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
     }
 
     if let Some(pat) = &gq.name_pat {
-        if !pat.contains('*') && !pat.contains('?') {
+        // Single metachar scan per item (pat short); reused below.
+        let is_glob = pat.bytes().any(|b| b == b'*' || b == b'?');
+        if !is_glob {
             if item.name_lower == *pat {
                 score = 50_000;
             } else if item.name_lower.starts_with(pat.as_str()) {
@@ -143,8 +145,7 @@ fn score_glob_item(item: &IndexedPath, gq: &GlobQuery) -> Option<i64> {
     // remaining deep jobs (audit P3).
     if let Some(s) = boosted {
         let contains_class = gq.name_pat.as_deref().is_some_and(|pat| {
-            !pat.contains('*')
-                && !pat.contains('?')
+            !pat.bytes().any(|b| b == b'*' || b == b'?')
                 && item.name_lower != pat
                 && item.name_lower.contains(pat)
                 && !item.name_lower.starts_with(pat)
@@ -193,7 +194,8 @@ fn pat_names_file_with_ext(pat: &str) -> bool {
 }
 
 pub(super) fn name_matches_pat(name_lower: &str, pat: &str) -> bool {
-    if pat.contains('*') || pat.contains('?') {
+    // Single byte scan for metachars (pat is short); avoids two `contains` passes.
+    if pat.bytes().any(|b| b == b'*' || b == b'?') {
         return glob_match(pat, name_lower);
     }
     // A literal `main.rs` pattern must not serve `main.rs.bak` / `xmain.rsy`
@@ -206,35 +208,47 @@ pub(super) fn name_matches_pat(name_lower: &str, pat: &str) -> bool {
 }
 
 pub(super) fn glob_match(pat: &str, name: &str) -> bool {
-    let pat: Vec<char> = pat.chars().collect();
-    let name: Vec<char> = name.chars().collect();
-    glob_match_chars(&pat, &name)
-}
-
-/// `?` consumes exactly one Unicode character (never a lone byte of a
-/// multi-byte char), so `a?` matches `aé`. `*` spans any number of chars.
-fn glob_match_chars(pat: &[char], name: &[char]) -> bool {
+    // Zero-alloc wildcard match on byte indices kept at char boundaries.
+    // `?` consumes exactly one Unicode char, `*` spans any number of chars.
+    // Previous version collected `Vec<char>` for pat+name per item (2 allocs
+    // x 100k index entries per keystroke). This streams `chars()` via
+    // `str` slicing — no heap allocation, same semantics.
     let (mut pi, mut ni) = (0usize, 0usize);
-    let mut star_pi = None;
+    let mut star_pi: Option<usize> = None;
     let mut star_ni = 0usize;
 
     while ni < name.len() {
-        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == name[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < pat.len() && pat[pi] == '*' {
+        let pat_c = if pi < pat.len() {
+            // `pi` always at char boundary by construction below.
+            pat[pi..].chars().next()
+        } else {
+            None
+        };
+        // `ni` always at char boundary; `chars().next()` cannot fail here.
+        let name_c = name[ni..].chars().next();
+        let Some(nc) = name_c else {
+            break;
+        };
+        if pat_c == Some('?') || pat_c == Some(nc) {
+            // `?` is 1 byte, literal char len equals `nc` len for equality
+            // case; for `?` use `nc` len to consume one full Unicode char.
+            pi += pat_c.unwrap().len_utf8();
+            ni += nc.len_utf8();
+        } else if pat_c == Some('*') {
             star_pi = Some(pi);
             star_ni = ni;
-            pi += 1;
+            pi += 1; // `*` is ASCII, 1 byte
         } else if let Some(sp) = star_pi {
-            pi = sp + 1;
-            star_ni += 1;
+            // Backtrack: advance star match by one Unicode char.
+            let adv = name[star_ni..].chars().next().map_or(1, |c| c.len_utf8());
+            star_ni += adv;
             ni = star_ni;
+            pi = sp + 1;
         } else {
             return false;
         }
     }
-    while pi < pat.len() && pat[pi] == '*' {
+    while pi < pat.len() && pat.as_bytes().get(pi) == Some(&b'*') {
         pi += 1;
     }
     pi == pat.len()
@@ -281,7 +295,7 @@ fn match_mid_glob(base: &Path, segments: &[String], excludes: &ExcludeSet) -> Ve
             return;
         }
         let (head, tail) = (&segs[0], &segs[1..]);
-        if !head.contains('*') && !head.contains('?') {
+        if !head.bytes().any(|b| b == b'*' || b == b'?') {
             let next = dir.join(head);
             if tail.is_empty() {
                 if next.exists() && !should_skip_entry(&next, excludes) {
@@ -292,6 +306,8 @@ fn match_mid_glob(base: &Path, segments: &[String], excludes: &ExcludeSet) -> Ve
             }
             return;
         }
+        // Hoist lowercase once per level (was recomputed per directory entry).
+        let head_lower = head.to_lowercase();
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
@@ -301,10 +317,16 @@ fn match_mid_glob(base: &Path, segments: &[String], excludes: &ExcludeSet) -> Ve
             if out.len() >= FILE_RESULT_LIMIT {
                 break;
             }
-            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            // `to_string_lossy` keeps non-UTF8 names visible (B12/B13 pattern);
+            // `to_str` silently dropped them from mid-glob results.
+            let name_cow = path
+                .file_name()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default();
+            if name_cow.is_empty() {
                 continue;
-            };
-            if !glob_match(&head.to_lowercase(), &name.to_lowercase()) {
+            }
+            if !glob_match(&head_lower, &name_cow.to_lowercase()) {
                 continue;
             }
             if tail.is_empty() {
@@ -351,8 +373,7 @@ pub(super) fn search_absolute_glob(
     // Both branches stay lazy and stop at the cap: a huge directory must not
     // be fully collected into a `Vec` per keystroke.
     let mid = mid_glob_segments(&expanded);
-    if mid.is_some()
-        || (!pat_lower.is_empty() && (pat_lower.contains('*') || pat_lower.contains('?')))
+    if mid.is_some() || (!pat_lower.is_empty() && pat_lower.bytes().any(|b| b == b'*' || b == b'?'))
     {
         // Shared push step; true once the cap is reached.
         let push_live = |path: PathBuf,
@@ -399,11 +420,18 @@ pub(super) fn search_absolute_glob(
             }
             None => {
                 if let Ok(entries) = fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
+                    // Collect + sort for deterministic capped subsets: readdir
+                    // order varies across runs, so breaking at LIMIT in arrival
+                    // order reshuffles huge directories per keystroke.
+                    let mut live_paths: Vec<PathBuf> =
+                        entries.flatten().map(|e| e.path()).collect();
+                    live_paths.sort();
+                    for path in live_paths {
+                        // Lossy keeps non-UTF8 names visible (was `to_str`
+                        // skip → invisible in absolute-glob live results).
                         let matches = path
                             .file_name()
-                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string_lossy())
                             .is_some_and(|n| glob_match(&pat_lower, &n.to_lowercase()));
                         if !matches {
                             continue;
@@ -514,13 +542,15 @@ pub(super) fn is_drive_path_query(q: &str) -> bool {
             return matches!(bytes.get(2), None | Some(b'/') | Some(b'\\'));
         }
     }
-    let lower = q.to_ascii_lowercase();
-    lower.starts_with("windows ")
-        && lower
-            .chars()
-            .nth(8)
-            .map(|c| c.is_ascii_alphabetic())
-            .unwrap_or(false)
+    // Zero-alloc `windows D` check: `windows ` is ASCII (8 bytes) so byte 8
+    // is a char boundary when the prefix matches case-insensitively.
+    if q.len() >= 9 {
+        let b = q.as_bytes();
+        if b[..8].eq_ignore_ascii_case(b"windows ") && b[8].is_ascii_alphabetic() {
+            return true;
+        }
+    }
+    false
 }
 
 pub(super) fn expand_path_query(query: &str, mounts: &[MountInfo]) -> PathBuf {
@@ -618,15 +648,23 @@ pub(super) fn maybe_live_relative_glob(
         let Ok(entries) = fs::read_dir(&root) else {
             continue;
         };
-        for entry in entries.flatten() {
+        // Sorted for deterministic capped subsets (readdir order varies).
+        let mut live_paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        live_paths.sort();
+        for path in live_paths {
             if results.len() >= FILE_RESULT_LIMIT {
                 break;
             }
-            let path = entry.path();
             if should_skip_entry(&path, excludes) {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
             let name_l = name.to_lowercase();
             if let Some(pat) = name_pat {
                 if !name_matches_pat(&name_l, pat) {
@@ -641,7 +679,7 @@ pub(super) fn maybe_live_relative_glob(
             let mut score: i64 = 45_000;
             score += gq.segments.len() as i64 * 500;
             if let Some(pat) = name_pat {
-                if !pat.contains('*') && !pat.contains('?') && name_l == pat {
+                if !pat.bytes().any(|b| b == b'*' || b == b'?') && name_l == pat {
                     score = 50_000;
                 }
             }
@@ -679,19 +717,22 @@ pub(super) fn path_completions(
 ) -> Vec<SearchResult> {
     let expanded = expand_path_query(query, mounts);
     let query_ends_sep = query.ends_with('/') || query == "~";
-    let (dir, prefix) = if query_ends_sep || expanded.is_dir() {
-        (expanded.clone(), String::new())
+    let (dir, prefix, prefix_is_ascii) = if query_ends_sep || expanded.is_dir() {
+        (expanded.clone(), String::new(), true)
     } else {
         let parent = expanded
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("/"));
-        let prefix = expanded
+        // Lossy keeps non-UTF8 prefixes completable (was `to_str` → "" prefix
+        // → over-broad listing for non-UTF8 names).
+        let raw = expanded
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        (parent, prefix)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let prefix = raw.to_lowercase();
+        let is_ascii = prefix.is_ascii();
+        (parent, prefix, is_ascii)
     };
 
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -704,8 +745,21 @@ pub(super) fn path_completions(
         if name.starts_with('.') && !prefix.starts_with('.') {
             continue;
         }
-        if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix) {
-            continue;
+        if !prefix.is_empty() {
+            // Fast ASCII prefix without per-entry `to_lowercase` alloc
+            // (99% of completions); Unicode fallback preserves semantics.
+            let ok = if prefix_is_ascii {
+                name.len() >= prefix.len()
+                    && name
+                        .as_bytes()
+                        .get(..prefix.len())
+                        .is_some_and(|b| b.eq_ignore_ascii_case(prefix.as_bytes()))
+            } else {
+                name.to_lowercase().starts_with(&prefix)
+            };
+            if !ok {
+                continue;
+            }
         }
         let path = entry.path();
         // Same confidentiality filter as every other live-listing path —

@@ -37,8 +37,7 @@ fn base_keyword(s: &str) -> Option<u32> {
 /// lowercased copy (`from_str_radix` accepts both cases).
 fn infer_base(s: &str) -> Option<(u32, i128)> {
     let t = s.trim();
-    let (digits, base) = if t.len() >= 2
-        && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x"))
+    let (digits, base) = if t.len() >= 2 && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x"))
     {
         (t.get(2..)?, 16)
     } else if t.len() >= 2 && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0b")) {
@@ -127,12 +126,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
             return None;
         }
         let v = i128::from_str_radix(digits, src_base).ok()?;
-        return Some(base_card(
-            v,
-            qt,
-            dst_base,
-            base_badge(c.get(3)?.as_str()),
-        ));
+        return Some(base_card(v, qt, dst_base, base_badge(c.get(3)?.as_str())));
     }
 
     if let Some(c) = RE_DIRECT.captures(qt) {
@@ -141,12 +135,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
         if src_base == dst_base {
             return None;
         }
-        return Some(base_card(
-            v,
-            qt,
-            dst_base,
-            base_badge(c.get(2)?.as_str()),
-        ));
+        return Some(base_card(v, qt, dst_base, base_badge(c.get(2)?.as_str())));
     }
     None
 }
@@ -210,13 +199,21 @@ fn from_roman(s: &str) -> Option<u64> {
             prev = v;
         }
     }
-    if total == 0 { None } else { Some(total) }
+    if total == 0 {
+        None
+    } else {
+        Some(total)
+    }
 }
 
 fn try_roman(q: &str) -> Option<SearchResult> {
     let qt = q.trim();
     // Fast gate before regex/`to_string` allocs (runs per keystroke).
-    if qt.len() < 7 || !qt.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("roman ")) {
+    if qt.len() < 7
+        || !qt
+            .get(..6)
+            .is_some_and(|s| s.eq_ignore_ascii_case("roman "))
+    {
         return None;
     }
     static RE_FWD: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^roman\s+(\d{1,4})\s*$").unwrap());
@@ -419,20 +416,20 @@ fn try_height(q: &str) -> Option<SearchResult> {
         || target.eq_ignore_ascii_case("feet")
         || target.eq_ignore_ascii_case("foot")
     {
-            let r_in = inch.round();
-            let (f2, i2) = if r_in >= 12.0 {
-                (ft + 1.0, 0.0)
-            } else {
-                (ft, r_in)
-            };
-            if i2 == 0.0 {
-                (format!("{} ft", format_number(f2)), "ft")
-            } else {
-                (
-                    format!("{} ft {} in", format_number(f2), format_number(i2)),
-                    "ft",
-                )
-            }
+        let r_in = inch.round();
+        let (f2, i2) = if r_in >= 12.0 {
+            (ft + 1.0, 0.0)
+        } else {
+            (ft, r_in)
+        };
+        if i2 == 0.0 {
+            (format!("{} ft", format_number(f2)), "ft")
+        } else {
+            (
+                format!("{} ft {} in", format_number(f2), format_number(i2)),
+                "ft",
+            )
+        }
     } else if target.eq_ignore_ascii_case("in")
         || target.eq_ignore_ascii_case("inch")
         || target.eq_ignore_ascii_case("inches")
@@ -558,9 +555,8 @@ fn try_steps(q: &str) -> Option<SearchResult> {
 /// Split `55GB`, `5.5 GB`, `150mbps`, `150MB/s` → (number, unit-token).
 /// Single regex allows inner spaces (`5.5 GB`); no pre-filter alloc.
 fn split_num_unit(s: &str) -> Option<(f64, String)> {
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+(?:/[a-zA-Z]+)?)\s*$").unwrap()
-    });
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+(?:/[a-zA-Z]+)?)\s*$").unwrap());
     let c = RE.captures(s)?;
     let v: f64 = c.get(1)?.as_str().parse().ok()?;
     if !v.is_finite() {
@@ -951,7 +947,11 @@ fn try_password(q: &str) -> Option<SearchResult> {
         Lazy::new(|| Regex::new(r"(?i)^password(?:\s+(\d{1,3}))?\s*$").unwrap());
     let qt = q.trim();
     // Fast gate before regex (runs per keystroke, no alloc).
-    if qt.len() < 8 || !qt.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("password")) {
+    if qt.len() < 8
+        || !qt
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("password"))
+    {
         return None;
     }
     let c = RE_PW.captures(qt)?;
@@ -999,10 +999,8 @@ fn try_text(q: &str) -> Option<SearchResult> {
     let qt = q.trim();
     // Fast gate: only wc/slug/case reach regexes + allocs (per-keystroke path).
     let is_wc = qt.len() > 3 && qt.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("wc "));
-    let is_slug =
-        qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("slug "));
-    let is_case =
-        qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("case "));
+    let is_slug = qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("slug "));
+    let is_case = qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("case "));
     if !(is_wc || is_slug || is_case) {
         return None;
     }

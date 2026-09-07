@@ -193,11 +193,9 @@ fn looks_like_plain_text(q: &str) -> bool {
     // Quickwin commands that are pure letters (no digits to trigger math).
     // Boundary-safe prefix slices (`get` returns None inside multi-byte chars).
     for prefix in [
-        "dice", "coin", "roll ", "random", "uuid", "password", "wc ", "slug ", "case ",
-        "roman ",
+        "dice", "coin", "roll ", "random", "uuid", "password", "wc ", "slug ", "case ", "roman ",
     ] {
-        if q
-            .get(..prefix.len())
+        if q.get(..prefix.len())
             .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
         {
             return false;

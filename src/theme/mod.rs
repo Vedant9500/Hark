@@ -92,11 +92,16 @@ pub struct ThemeManager {
 impl ThemeManager {
     pub fn new(config: std::sync::Arc<crate::config::ConfigStore>) -> Rc<Self> {
         let provider = CssProvider::new();
-        gtk::style_context_add_provider_for_display(
-            &gtk::gdk::Display::default().expect("display"),
-            &provider,
-            STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        // Headless (tests/daemon without display) must not panic: skip the
+        // global install when no display is available. Previous code used
+        // `expect("display")`, crashing the process outside a GTK session.
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
 
         let mgr = Rc::new(Self {
             provider,
@@ -118,6 +123,7 @@ impl ThemeManager {
     /// Re-read scheme.json, update cache, inject CSS (startup + file monitor).
     pub fn apply(&self) {
         self.cancel_reload_debounce();
+        self.cancel_scheme_debounce();
         let theme = Theme::load();
         let ui = self.config.snapshot().ui.clone();
         self.provider.load_from_string(&theme.to_css(&ui));
@@ -166,6 +172,15 @@ impl ThemeManager {
         }
     }
 
+    /// Drop a pending scheme-monitor re-apply (e.g. a manual `apply()` won
+    /// the race while the 80ms monitor timer was still queued). No-op when
+    /// called from inside the scheme timer itself — it already took the id.
+    fn cancel_scheme_debounce(&self) {
+        if let Some(id) = self.scheme_debounce.borrow_mut().take() {
+            id.remove();
+        }
+    }
+
     fn watch(self: &Rc<Self>) {
         let path = scheme_path();
         // Watch parent dir so atomic renames are caught.
@@ -178,10 +193,11 @@ impl ThemeManager {
         let Ok(monitor) =
             file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
         else {
-            // Fallback when FileMonitor fails: apply once now. Do **not** poll every
-            // few seconds — that keeps the CPU awake for battery life. User can
-            // restart Hark or toggle the panel to pick up a new scheme.json.
-            self.apply();
+            // FileMonitor unavailable: theme is already applied once by `new()`
+            // before `watch()` runs, so there is nothing to re-apply here.
+            // Do **not** poll every few seconds — that keeps the CPU awake
+            // for battery life. User can restart Hark or toggle the panel
+            // to pick up a new scheme.json.
             return;
         };
 
@@ -203,9 +219,7 @@ impl ThemeManager {
                     }
                     // Debounce: caelestia may write multiple times — #29 keep
                     // ONE pending timer instead of stacking one per event.
-                    if let Some(id) = this.scheme_debounce.borrow_mut().take() {
-                        id.remove();
-                    }
+                    this.cancel_scheme_debounce();
                     let this2 = this.clone();
                     let id = glib::timeout_add_local_once(Duration::from_millis(80), move || {
                         *this2.scheme_debounce.borrow_mut() = None;

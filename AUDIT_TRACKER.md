@@ -65,9 +65,9 @@ Comprehensive line-by-line audit of all `src/` files across 51 Rust files (~38,8
 | **11** | Calc Datetime & Timezones | `src/providers/calc/datetime.rs`<br>`src/providers/calc/timezone.rs` | 1,960 | Completed |
 | **12** | File Index & Cache Layer | `src/providers/files/hot.rs`<br>`src/providers/files/live_cache.rs`<br>`src/providers/files/index.rs` | 1,781 | Completed |
 | **13** | File Provider Core & Search Types | `src/providers/files/mod.rs`<br>`src/providers/files/search/mod.rs`<br>`src/providers/files/search/rank.rs` | 2,188 | Completed |
-| **14** | File Search Engines (Plan/Glob/Deep) | `src/providers/files/search/plan.rs`<br>`src/providers/files/search/glob.rs`<br>`src/providers/files/search/deep.rs` | 2,528 | Pending |
-| **15** | Theme & Styling Engine | `src/theme/mod.rs`<br>`src/theme/css.rs` | 1,520 | Pending |
-| **16** | UI Micro-Components & Animations | `src/ui/footer.rs`<br>`src/ui/size_anim.rs`<br>`src/ui/scroll_anim.rs`<br>`src/ui/action_panel.rs`<br>`src/ui/thumbnails.rs` | 1,062 | Pending |
+| **14** | File Search Engines (Plan/Glob/Deep) | `src/providers/files/search/plan.rs`<br>`src/providers/files/search/glob.rs`<br>`src/providers/files/search/deep.rs` | 2,528 | Completed |
+| **15** | Theme & Styling Engine | `src/theme/mod.rs`<br>`src/theme/css.rs` | 1,520 | Completed |
+| **16** | UI Micro-Components & Animations | `src/ui/footer.rs`<br>`src/ui/size_anim.rs`<br>`src/ui/scroll_anim.rs`<br>`src/ui/action_panel.rs`<br>`src/ui/thumbnails.rs` | 1,062 | Completed |
 | **17** | UI Interactions & Result Rows | `src/ui/dnd.rs`<br>`src/ui/open_with.rs`<br>`src/ui/rows.rs` | 2,007 | Pending |
 | **18** | UI Preview Window | `src/ui/preview.rs` | 2,164 | Pending |
 | **19** | UI Settings Window | `src/ui/settings.rs` | 2,371 | Pending |
@@ -297,28 +297,49 @@ Comprehensive line-by-line audit of all `src/` files across 51 Rust files (~38,8
 
 ### Batch 14: File Search Engines (Plan/Glob/Deep)
 - **Files**: `src/providers/files/search/plan.rs` (697), `src/providers/files/search/glob.rs` (914), `src/providers/files/search/deep.rs` (917)
-- **Status**: `Pending`
+- **Status**: `Completed`
 - **Key Focus**: Thread pool saturation, traversal early exit, regex vs prefix matching optimizations.
 - **Notes & Fixes**:
-  - *(To be recorded during audit)*
+  - ⚡ **`glob.rs` `glob_match()` zero-alloc rewrite**: Was `Vec<char>` ×2 per item (200k allocs/keystroke over 100k index). Now byte-index streaming with `str[ch..].chars()` — no heap, same `?`=one-Unicode-char semantics. Preserves `a?`→`aé` tests.
+  - 🐛 **`glob.rs`/`deep.rs` Non-UTF8 invisible gaps**: `match_mid_glob`, `search_absolute_glob` live, `live_deep_under_roots` + final map used `file_name().and_then(|s| s.to_str())` → skipped non-UTF8 entirely. Now `to_string_lossy()` everywhere (B12/B13 parity). `path_completions` prefix also lossy.
+  - 🐛 **`deep.rs` `score_live_hit()` contains-band clamp miss**: `glob.rs` clamps boosted contains to `SKIP-1`, deep did not — depth/high/mnt boosts (+13k) could push substring-only live hit over 30k, falsely cancelling sibling deep jobs. Now same `min(SKIP-1)` clamp.
+  - 🐛 **`deep.rs` `hit_paths` final sort non-deterministic**: `sort_by_key(Reverse(score))` stable-preserved WalkDir arrival (readdir varies). Now `sort_by(score desc, path asc)`. Same fix for `maybe_live_relative_glob` + `search_absolute_glob` live: collect+sort before LIMIT cap so huge dirs yield deterministic subsets.
+  - ⚡ **`glob.rs` `match_mid_glob` hoisted `head.to_lowercase()`**: Was recomputed per directory entry. Now once per level.
+  - ⚡ **`deep.rs` `roots_from_segments()` wasted clone**: `Vec<(score, PathBuf, String)>` cloned `path_lower` per candidate but discarded on return. Now `Vec<(score, PathBuf)>`.
+  - ⚡ **`plan.rs` scope-hint alloc purge**: `parse_scope_hint_query()` allocated 3 Strings just for `.is_some()` gates in `is_path_glob_query`, `is_scoped_file_query`, `plan_deep_jobs`, `should_deep_search`. New `is_scope_hint_query()->bool` + shared `find_scope_keyword()` helper — saves 3 allocs ×4 call sites per keystroke.
+  - ⚡ **`plan.rs` `scope_folder_suggestions()` double index scan**: `exact_dir` + `last_is_partial` were 2× O(N) `.any()` scans. Now single pass with early break on exact.
+  - ⚡ **`glob.rs` `is_drive_path_query()` zero-alloc**: Was `to_ascii_lowercase()` + `chars().nth(8)` per query. Now byte `eq_ignore_ascii_case(b"windows ")` + `is_ascii_alphabetic`.
+  - ⚡ **`glob.rs`/`deep.rs` single-scan metachar checks**: `pat.contains('*') || contains('?')` → `pat.bytes().any(|b| b==b'*'||b==b'?')` in `name_matches_pat`, `score_glob_item` (×2), `score_live_hit`, `match_mid_glob`, `maybe_live_relative_glob`.
+  - ⚡ **`glob.rs` `path_completions()` per-entry `to_lowercase()` purge**: ASCII prefixes (99%) now `eq_ignore_ascii_case` byte-prefix without alloc; Unicode fallback preserves semantics.
+  - 📝 **No scoring changes**: bands/boosts/penalties/deep-gating thresholds untouched except contains-clamp parity; lock ordering N/A (index snapshot + worker, no locks held during WalkDir).
 
 ---
 
 ### Batch 15: Theme & Styling Engine
 - **Files**: `src/theme/mod.rs` (274), `src/theme/css.rs` (1,246)
-- **Status**: `Pending`
+- **Status**: `Completed`
 - **Key Focus**: CSS generation efficiency, color parsing, dynamic theme switching without memory leak.
 - **Notes & Fixes**:
-  - *(To be recorded during audit)*
+  - 🐛 **`mod.rs` `ThemeManager::new()` headless panic**: `Display::default().expect("display")` crashed daemon/tests without GTK display. Now `if let Some(display)` graceful skip — provider still renders CSS, install skipped.
+  - 🐛 **`css.rs` unsanitized `ui.accent` CSS-injection sink**: `render()` interpolated raw `ui.accent` into `caret-color`/badge/selected rules. Store `sanitize()` restricts to `#rrggbb|None`, but `render` is `pub` — any future caller skipping store sanitize injects arbitrary CSS. Now `sanitize_hex(primary_raw)` on render path by construction (+ regression test with `red; } .pwned {` payload).
+  - 🐛 **`css.rs` NaN/Inf CSS poisoning**: `f32::clamp` passes NaN through → `NaNpx`/`rgba(..., NaN)` dropped by GTK → unstyled panel. Now `is_finite()` fallbacks (opacity→0.85, scale→1.0) + regression test.
+  - ⚡ **`css.rs` `rgb_bytes()` zero-alloc rewrite**: Was `Vec<char>` + `format!` + `to_string()` per color (~15 allocs per `render`). Now byte-index `hex_nibble(b)*17` nibble doubling + in-place `from_str_radix` slices, zero heap. Shorthand/longhand equivalence pinned by test.
+  - ⚡ **`mod.rs` scheme-debounce symmetry**: `apply()` cancelled UI timer but left 80ms scheme timer queued → double disk-read + CSS inject on race. New `cancel_scheme_debounce()` called from `apply()` + reused in `watch()` debounce (no-op when invoked from inside own timer).
+  - ⚡ **`mod.rs` `watch()` fallback double-apply**: `new()` runs `apply()` then `watch()`; monitor-failure fallback called `apply()` again (2nd disk read + inject, rare path). Now early return — theme already applied.
+  - 📝 **Verified safe, no change**: `sanitize_hex` multi-`#` leniency harmless; `rgb_bytes` fallbacks unreachable post-sanitize (defensive); `is_light()`/`apply_ui_only()` RefCell borrows main-thread only (`Rc<!Send>`); `Theme::load` per-key allocs startup-only; `reload()` 12 settings call sites share 60ms debounce + `apply_gen` stale-guard; hardcoded destructive `#f7768e` noted (needs scheme error color — out of scope).
 
 ---
 
 ### Batch 16: UI Micro-Components & Animations
 - **Files**: `src/ui/footer.rs` (113), `src/ui/size_anim.rs` (188), `src/ui/scroll_anim.rs` (181), `src/ui/action_panel.rs` (247), `src/ui/thumbnails.rs` (333)
-- **Status**: `Pending`
+- **Status**: `Completed`
 - **Key Focus**: Frame interpolation math, thumbnail async decode caching, widget layout invalidation.
 - **Notes & Fixes**:
-  - *(To be recorded during audit)*
+  - 🐛 **`thumbnails.rs` `store_*` i32 overflow panic**: `rowstride < width * n_channels` overflows i32 for corrupt dims (600M×4 → 2.4G), panicking debug builds. Rewrote guard fully in i64 saturating math (`min_bytes = (h-1)*stride + w*ch`) + regression test with `width=600M, stride=i32::MAX` (returns false, no panic).
+  - 🐛 **`thumbnails.rs` Thumb::URI/digest symlink mismatch**: digest key used `parent.canonicalize()+name`, stored URI used unresolved `file_uri(source)` — disagree whenever any parent is a symlink, so stored chunk never matches readers. Now resolves parent once, derives both digest + URI from same path.
+  - ⚡ **`thumbnails.rs` `md5_hex()` per-byte `format!` purge**: 16 tiny allocs per digest (per image probe while scrolling). Now nibble lookup table, single 32-cap String. Correctness pinned by RFC 1321 vectors (`""`, `"a"`, `"abc"`, `"message digest"`, alphabet) — hand-rolled MD5 previously had zero cross-check (self-consistent store/read masked interop breakage).
+  - 🦀 **`action_panel.rs` `move_selection()` hardened**: `(cur+1)%n` / `cur-1` arms ignored magnitude + treated 0-step as up. Now `(cur+delta).rem_euclid(n)` + `delta==0` early return. Click vs Enter double-fire traced safe: single-threaded `is_open` gating serializes both orders (capture-Stop or bubble-popdown).
+  - 📝 **Verified safe, no change**: `footer.rs` single-clone per selection + exhaustive `ResultKind` match (compiler-forced); `size_anim.rs` Euclidean travel, hidden-snap covers `-1` unset requests, `dur*1000` f64 div0-safe, i64-first frame delta exact, weak-tick no leak; `scroll_anim.rs` short-content pin, page-0 guards, retarget-from-live-offset chaining; `stored_mtime` chunk parser checked-add/bounds (no panics); `pixels.to_vec()` copy kept (borrowed API, once per image).
 
 ---
 
