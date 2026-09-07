@@ -25,12 +25,12 @@ pub(crate) fn looks_like_math(q: &str) -> bool {
     }
     RE_MATHISH.is_match(q)
         || RE_MAGNITUDE.is_match(q)
-        || q.contains("sqrt")
-        || q.contains("sin")
-        || q.contains("cos")
-        || q.contains("tan")
-        || q.contains("log")
-        || q.contains("pi")
+        || super::util::contains_ignore_ascii_case(q, "sqrt")
+        || super::util::contains_ignore_ascii_case(q, "sin")
+        || super::util::contains_ignore_ascii_case(q, "cos")
+        || super::util::contains_ignore_ascii_case(q, "tan")
+        || super::util::contains_ignore_ascii_case(q, "log")
+        || super::util::contains_ignore_ascii_case(q, "pi")
         || q.starts_with('=')
 }
 

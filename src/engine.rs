@@ -217,12 +217,26 @@ impl Engine {
 
         let mut results = Vec::new();
 
-        let ql = q.to_lowercase();
-        if "settings".starts_with(&ql)
-            || "preferences".starts_with(&ql)
-            || "index".starts_with(&ql)
-            || ql == "config"
-        {
+        let q_ascii = q.is_ascii();
+        let matches_cmd = if q_ascii {
+            let mut buf = [0u8; 32];
+            let len = q.len().min(32);
+            let q_lower_bytes = &mut buf[..len];
+            q_lower_bytes.copy_from_slice(&q.as_bytes()[..len]);
+            q_lower_bytes.make_ascii_lowercase();
+            let q_lower = std::str::from_utf8(q_lower_bytes).unwrap_or("");
+            "settings".starts_with(q_lower)
+                || "preferences".starts_with(q_lower)
+                || "index".starts_with(q_lower)
+                || q_lower == "config"
+        } else {
+            let ql = q.to_lowercase();
+            "settings".starts_with(&ql)
+                || "preferences".starts_with(&ql)
+                || "index".starts_with(&ql)
+                || ql == "config"
+        };
+        if matches_cmd {
             results.push(SearchResult {
                 id: "cmd:settings".into(),
                 title: "Hark Settings".into(),
@@ -296,7 +310,7 @@ impl Engine {
             .iter()
             .any(|r| matches!(r.kind, ResultKind::Folder | ResultKind::File) && r.score >= 30_000);
         if strong_path {
-            results.retain(|r| !matches!(r.kind, ResultKind::App) || r.score >= 15_000);
+            results.retain(|r| r.kind != ResultKind::App || r.score >= 15_000);
         }
 
         // One guard for the whole boost loop (audit P3): per-result `boost()`
@@ -335,20 +349,10 @@ impl Engine {
             self.apply_typo_alias(q, &mut results);
         }
 
-        // Dedup by id without cloning id Strings (first occurrence wins).
-        {
-            let mut seen = std::collections::HashSet::with_capacity(results.len());
-            let mut keep = Vec::with_capacity(results.len());
-            for r in &results {
-                keep.push(seen.insert(r.id.as_str()));
-            }
-            let mut i = 0;
-            results.retain(|_| {
-                let k = keep[i];
-                i += 1;
-                k
-            });
-        }
+        // Dedup by id in-place (first occurrence wins). Clones ≤25 small
+        // id Strings per keystroke — unavoidable with `retain` borrow rules.
+        let mut seen = std::collections::HashSet::with_capacity(results.len());
+        results.retain(|r| seen.insert(r.id.clone()));
 
         // Score first so exact folder/file (50k+) outranks weak apps. Kind only
         // breaks ties (app named X still preferred over folder X at equal score).
@@ -396,7 +400,7 @@ impl Engine {
             };
             for (mut app, b) in apps.into_iter().zip(boosts) {
                 if seen.insert(app.id.clone()) {
-                    app.score = 1_000 + b;
+                    app.score = 1_000_i64.saturating_add(b);
                     results.push(app);
                 }
                 if results.len() >= 15 {
@@ -405,7 +409,7 @@ impl Engine {
             }
         }
 
-        results.sort_by_key(|b| std::cmp::Reverse(b.score));
+        results.sort_unstable_by_key(|b| std::cmp::Reverse(b.score));
         results.truncate(15);
         results
     }
@@ -591,8 +595,8 @@ impl Engine {
         if let Some(r) = hits.iter().find(|r| r.score >= 15_000) {
             return Ok((r.id.clone(), r.title.clone()));
         }
-        if let Some(r) = hits.first() {
-            return Ok((r.id.clone(), r.title.clone()));
+        if let Some(r) = hits.into_iter().next() {
+            return Ok((r.id, r.title));
         }
         Err(format!("No app or path matching “{t}”"))
     }
@@ -871,7 +875,7 @@ fn auto_promote_deep_root(
             break;
         }
         for m in MARKERS {
-            if cur.join(m).exists() {
+            if cur.join(m).try_exists().unwrap_or(false) {
                 promote_deep_root_arcs(config, files, apps, &cur);
                 return;
             }
@@ -1003,14 +1007,22 @@ fn kind_rank(k: ResultKind) -> u8 {
 
 fn format_int(n: usize) -> String {
     let s = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let commas = (len.saturating_sub(1)) / 3;
+    if commas == 0 {
+        return s;
     }
-    out.chars().rev().collect()
+    let mut out = Vec::with_capacity(len + commas);
+    let rem = len % 3;
+    let first_group = if rem == 0 { 3 } else { rem };
+    out.extend_from_slice(&bytes[..first_group]);
+    for chunk in bytes[first_group..].chunks_exact(3) {
+        out.push(b',');
+        out.extend_from_slice(chunk);
+    }
+    // Safety: only ASCII digits and commas are written.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
@@ -1022,11 +1034,15 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
         ("xclip", &["-selection", "clipboard"][..]),
     ] {
         if let Ok(mut child) = Command::new(prog).args(extra).stdin(Stdio::piped()).spawn() {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
+            let write_res = if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())
+            } else {
+                Ok(())
+            };
+            let status = child.wait();
+            if write_res.is_ok() && status.map(|s| s.success()).unwrap_or(false) {
+                return Ok(());
             }
-            let _ = child.wait();
-            return Ok(());
         }
     }
     Err("no clipboard tool available (wl-copy / xclip not found)".into())
@@ -1588,6 +1604,16 @@ mod engine_search_tests {
             results.len(),
             "duplicate ids in results: {results:?}"
         );
+    }
+
+    #[test]
+    fn format_int_grouping() {
+        assert_eq!(format_int(0), "0");
+        assert_eq!(format_int(999), "999");
+        assert_eq!(format_int(1000), "1,000");
+        assert_eq!(format_int(12345), "12,345");
+        assert_eq!(format_int(123456), "123,456");
+        assert_eq!(format_int(1234567), "1,234,567");
     }
 
     #[test]

@@ -244,22 +244,23 @@ fn is_lang_code(tok: &str) -> bool {
     if t.is_empty() || t.len() > 12 {
         return false;
     }
-    let lower = t.to_ascii_lowercase();
-    let parts: Vec<&str> = lower.split(['-', '_']).collect();
-    if parts.is_empty() || parts.len() > 2 {
+    let mut parts = t.split(['-', '_']);
+    let Some(primary) = parts.next() else {
         return false;
-    }
-    let primary = parts[0];
+    };
     if primary.len() < 2 || primary.len() > 3 || !primary.chars().all(|c| c.is_ascii_alphabetic()) {
         return false;
     }
-    if let Some(region) = parts.get(1) {
+    if let Some(region) = parts.next() {
         if region.is_empty()
             || region.len() > 4
             || !region.chars().all(|c| c.is_ascii_alphanumeric())
         {
             return false;
         }
+    }
+    if parts.next().is_some() {
+        return false;
     }
     // Reject common English words mistaken as codes when alone is ok;
     // "to"/"in" are 2 letters — still valid ISO, but `tr to en foo` is rare.
@@ -437,16 +438,20 @@ pub fn is_pending_result(r: &SearchResult) -> bool {
 
 pub fn strip_translate_prefix(query: &str) -> (bool, &str) {
     let q = query.trim();
-    let lower = q.to_ascii_lowercase();
-    for prefix in ["translate ", "tr ", "译 "] {
-        let plen = prefix.len();
-        if prefix.is_ascii() {
-            if lower.starts_with(prefix) {
-                return (true, q[plen..].trim());
-            }
-        } else if q.starts_with(prefix) {
-            return (true, q[plen..].trim());
+    // ASCII prefixes checked case-insensitively on the byte slice — no
+    // whole-query `to_ascii_lowercase()` alloc per keystroke. `get` keeps
+    // this panic-free on multi-byte queries (`get` returns None when the
+    // split lands inside a char).
+    for prefix in ["translate ", "tr "] {
+        if q
+            .get(..prefix.len())
+            .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+        {
+            return (true, q[prefix.len()..].trim());
         }
+    }
+    if let Some(rest) = q.strip_prefix("译 ") {
+        return (true, rest.trim());
     }
     (false, q)
 }
@@ -748,11 +753,15 @@ fn plaintext_endpoint(endpoint: &str) -> bool {
         return false; // https (or invalid; validation already ran)
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority
-        .trim_start_matches('[')
-        .split([']', ':'])
-        .next()
-        .unwrap_or("");
+    // Strip userinfo (`user@host`) before host parsing.
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    // Bracketed IPv6 (`[::1]:5000`) — host is inside brackets. Bare hosts
+    // split port on first `:`.
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
     let h = host.trim_end_matches('.');
     !(h == "localhost"
         || h == "::1"
@@ -991,9 +1000,11 @@ fn cache_dir_trusted(dir: &Path) -> bool {
 
 #[cfg(unix)]
 fn current_euid() -> Option<u32> {
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
-    line.split_whitespace().nth(2)?.parse().ok()
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid takes no args, always succeeds, no side effects.
+    Some(unsafe { geteuid() })
 }
 
 #[cfg(not(unix))]
@@ -1112,12 +1123,11 @@ fn cache_put(key: &str, q: &str, source: &str, target: &str, translated: &str) {
         // Bound process-local success cache (disk remains durable).
         const MAX_MEM: usize = 256;
         if g.len() > MAX_MEM {
-            // Drop oldest by fetched_at until under cap.
-            let mut keys: Vec<(u64, String)> =
-                g.iter().map(|(k, v)| (v.fetched_at, k.clone())).collect();
-            keys.sort_by_key(|(ts, _)| *ts);
+            let mut keys: Vec<(&str, u64)> = g.iter().map(|(k, v)| (k.as_str(), v.fetched_at)).collect();
+            keys.sort_unstable_by_key(|(_, ts)| *ts);
             let remove_n = g.len() - MAX_MEM;
-            for (_, k) in keys.into_iter().take(remove_n) {
+            let to_remove: Vec<String> = keys.into_iter().take(remove_n).map(|(k, _)| k.to_string()).collect();
+            for k in to_remove {
                 g.remove(&k);
             }
         }
@@ -1209,35 +1219,34 @@ fn maybe_sweep_cache(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<(std::path::PathBuf, u64)> = rd
+    let mut files: Vec<(std::path::PathBuf, u64, u64)> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
         .map(|p| {
-            let sz = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            (p, sz)
+            let meta = fs::metadata(&p).ok();
+            let sz = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime = meta
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (p, sz, mtime)
         })
         .collect();
     const MAX: usize = 500;
     // Byte budget bounds total disk use between sweeps (entry-count cap
     // alone lets a 500 × 5 KB backlog linger regardless of preference).
     const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
-    let total: u64 = files.iter().map(|(_, s)| *s).sum();
+    let total: u64 = files.iter().map(|(_, s, _)| *s).sum();
     if files.len() <= MAX && total <= MAX_TOTAL_BYTES {
         return;
     }
-    files.sort_by_key(|(p, _)| {
-        fs::metadata(p)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    });
+    files.sort_unstable_by_key(|(_, _, mtime)| *mtime);
     let mut remove_n = files.len().saturating_sub(MAX);
     let mut bytes_after = total;
     if total > MAX_TOTAL_BYTES {
-        for (i, (_, sz)) in files.iter().enumerate() {
+        for (i, (_, sz, _)) in files.iter().enumerate() {
             if bytes_after <= MAX_TOTAL_BYTES {
                 break;
             }
@@ -1245,15 +1254,31 @@ fn maybe_sweep_cache(dir: &Path) {
             bytes_after = bytes_after.saturating_sub(*sz);
         }
     }
-    for (p, _) in files.into_iter().take(remove_n) {
+    for (p, _, _) in files.into_iter().take(remove_n) {
         let _ = fs::remove_file(p);
     }
 }
 
+fn simple_hash_update(hash: &mut u64, s: &str) {
+    for b in s.as_bytes() {
+        *hash ^= u64::from(*b);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+}
+
 fn cache_key(source: &str, target: &str, text: &str) -> String {
-    let norm = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let payload = format!("{source}|{target}|{norm}");
-    simple_hash(&payload)
+    let mut hash: u64 = 0xcbf29ce484222325;
+    simple_hash_update(&mut hash, source);
+    simple_hash_update(&mut hash, "|");
+    simple_hash_update(&mut hash, target);
+    simple_hash_update(&mut hash, "|");
+    for (i, tok) in text.split_whitespace().enumerate() {
+        if i > 0 {
+            simple_hash_update(&mut hash, " ");
+        }
+        simple_hash_update(&mut hash, tok);
+    }
+    format!("{hash:016x}")
 }
 
 fn simple_hash(s: &str) -> String {

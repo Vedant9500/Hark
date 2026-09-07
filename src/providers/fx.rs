@@ -199,33 +199,26 @@ pub fn normalize_currency(token: &str) -> Option<&'static str> {
         "MXN" => Some("MXN"),
         "BRL" | "REAL" | "REAIS" => Some("BRL"),
         "ZAR" | "RAND" => Some("ZAR"),
-        "SEK" | "NOK" | "DKK" | "PLN" | "TRY" | "RUB" | "AED" | "SAR" | "THB" | "IDR" | "PHP"
-        | "MYR" | "NZD" | "TWD" | "ILS" | "CZK" | "HUF" | "RON" | "BGN" | "ISK" => {
-            // return leaked static via match arms for known 3-letter
-            match u.as_str() {
-                "SEK" => Some("SEK"),
-                "NOK" => Some("NOK"),
-                "DKK" => Some("DKK"),
-                "PLN" => Some("PLN"),
-                "TRY" => Some("TRY"),
-                "RUB" => Some("RUB"),
-                "AED" => Some("AED"),
-                "SAR" => Some("SAR"),
-                "THB" => Some("THB"),
-                "IDR" => Some("IDR"),
-                "PHP" => Some("PHP"),
-                "MYR" => Some("MYR"),
-                "NZD" => Some("NZD"),
-                "TWD" => Some("TWD"),
-                "ILS" => Some("ILS"),
-                "CZK" => Some("CZK"),
-                "HUF" => Some("HUF"),
-                "RON" => Some("RON"),
-                "BGN" => Some("BGN"),
-                "ISK" => Some("ISK"),
-                _ => None,
-            }
-        }
+        "SEK" => Some("SEK"),
+        "NOK" => Some("NOK"),
+        "DKK" => Some("DKK"),
+        "PLN" => Some("PLN"),
+        "TRY" => Some("TRY"),
+        "RUB" => Some("RUB"),
+        "AED" => Some("AED"),
+        "SAR" => Some("SAR"),
+        "THB" => Some("THB"),
+        "IDR" => Some("IDR"),
+        "PHP" => Some("PHP"),
+        "MYR" => Some("MYR"),
+        "NZD" => Some("NZD"),
+        "TWD" => Some("TWD"),
+        "ILS" => Some("ILS"),
+        "CZK" => Some("CZK"),
+        "HUF" => Some("HUF"),
+        "RON" => Some("RON"),
+        "BGN" => Some("BGN"),
+        "ISK" => Some("ISK"),
         _ => None,
     }
 }
@@ -358,12 +351,16 @@ const O_NOFOLLOW: i32 = 0o400;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
 const O_NOFOLLOW: i32 = 0;
 
-/// Effective UID of this process, parsed from procfs (`Uid:` line, 2nd field).
+/// Effective UID of this process via `geteuid(2)` — portable across
+/// Linux/macOS (procfs `/proc/self/status` is Linux-only and left macOS
+/// caches permanently untrusted).
 #[cfg(unix)]
 fn current_euid() -> Option<u32> {
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
-    line.split_whitespace().nth(2)?.parse().ok()
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid takes no args, always succeeds, no side effects.
+    Some(unsafe { geteuid() })
 }
 
 fn save_disk(c: &RatesCache) {

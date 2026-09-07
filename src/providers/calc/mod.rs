@@ -131,53 +131,12 @@ impl Default for CalcProvider {
 }
 
 /// True when query is almost certainly not calc/convert/timezone.
+///
+/// Allocation-free: fixed keywords use `eq_ignore_ascii_case`, prefixes use
+/// boundary-safe slices, function names use byte windows. Runs per keystroke
+/// for every query, so no `to_lowercase()` here. Fast digit/operator checks
+/// come first so math-like queries exit before any string scans.
 fn looks_like_plain_text(q: &str) -> bool {
-    let lower = q.to_ascii_lowercase();
-    // Keep natural/datetime keywords
-    if matches!(
-        lower.as_str(),
-        "now"
-            | "time"
-            | "date"
-            | "today"
-            | "tomorrow"
-            | "yesterday"
-            | "utc"
-            | "now utc"
-            | "unix"
-            | "epoch"
-            | "to unix"
-            | "unix now"
-            | "week"
-            | "week number"
-            | "iso week"
-            | "day of year"
-            | "doy"
-            | "settings"
-            | "preferences"
-            | "index"
-            | "config"
-    ) {
-        return false;
-    }
-    if battery::is_battery_keyword(&lower) {
-        return false;
-    }
-    // Quickwin commands that are pure letters (no digits to trigger math).
-    if lower.starts_with("dice")
-        || lower.starts_with("coin")
-        || lower.starts_with("roll ")
-        || lower.starts_with("random")
-        || lower.starts_with("uuid")
-        || lower.starts_with("password")
-        || lower.starts_with("wc ")
-        || lower.starts_with("slug ")
-        || lower.starts_with("case ")
-        || lower.starts_with("roman ")
-    {
-        return false;
-    }
-
     // Digits → may be math/units/currency/time
     if q.bytes().any(|b| b.is_ascii_digit()) {
         return false;
@@ -203,13 +162,55 @@ fn looks_like_plain_text(q: &str) -> bool {
     {
         return false;
     }
-    // Math function names
-    if lower.contains("sqrt")
-        || lower.contains("sin")
-        || lower.contains("cos")
-        || lower.contains("tan")
-        || lower.contains("log")
-        || lower.contains("pi")
+    // Keep natural/datetime keywords
+    if q.eq_ignore_ascii_case("now")
+        || q.eq_ignore_ascii_case("time")
+        || q.eq_ignore_ascii_case("date")
+        || q.eq_ignore_ascii_case("today")
+        || q.eq_ignore_ascii_case("tomorrow")
+        || q.eq_ignore_ascii_case("yesterday")
+        || q.eq_ignore_ascii_case("utc")
+        || q.eq_ignore_ascii_case("now utc")
+        || q.eq_ignore_ascii_case("unix")
+        || q.eq_ignore_ascii_case("epoch")
+        || q.eq_ignore_ascii_case("to unix")
+        || q.eq_ignore_ascii_case("unix now")
+        || q.eq_ignore_ascii_case("week")
+        || q.eq_ignore_ascii_case("week number")
+        || q.eq_ignore_ascii_case("iso week")
+        || q.eq_ignore_ascii_case("day of year")
+        || q.eq_ignore_ascii_case("doy")
+        || q.eq_ignore_ascii_case("settings")
+        || q.eq_ignore_ascii_case("preferences")
+        || q.eq_ignore_ascii_case("index")
+        || q.eq_ignore_ascii_case("config")
+    {
+        return false;
+    }
+    if battery::is_battery_keyword(q) {
+        return false;
+    }
+    // Quickwin commands that are pure letters (no digits to trigger math).
+    // Boundary-safe prefix slices (`get` returns None inside multi-byte chars).
+    for prefix in [
+        "dice", "coin", "roll ", "random", "uuid", "password", "wc ", "slug ", "case ",
+        "roman ",
+    ] {
+        if q
+            .get(..prefix.len())
+            .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+        {
+            return false;
+        }
+    }
+
+    // Math function names (case-insensitive, no alloc)
+    if util::contains_ignore_ascii_case(q, "sqrt")
+        || util::contains_ignore_ascii_case(q, "sin")
+        || util::contains_ignore_ascii_case(q, "cos")
+        || util::contains_ignore_ascii_case(q, "tan")
+        || util::contains_ignore_ascii_case(q, "log")
+        || util::contains_ignore_ascii_case(q, "pi")
     {
         return false;
     }

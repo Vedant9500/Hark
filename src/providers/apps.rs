@@ -59,12 +59,15 @@ fn quote_token(tok: &str) -> String {
     out
 }
 
-/// Join argv into an Exec-style string that survives a re-split unchanged.
 fn quote_join(argv: &[String]) -> String {
-    argv.iter()
-        .map(|t| quote_token(t))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+    for (i, t) in argv.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&quote_token(t));
+    }
+    out
 }
 
 pub struct AppProvider {
@@ -135,6 +138,9 @@ impl AppProvider {
 
     fn reload_from_dirs(&self, dirs: &[PathBuf], excludes: &[String]) {
         let excluded = ExcludeSet::from_list(excludes);
+        // Hoisted per-reload: env reads once, not per .desktop file (500x).
+        let locales = current_locales();
+        let desktops = current_desktops();
         let mut apps = Vec::new();
         let mut hidden = Vec::new();
         let mut seen = HashSet::new();
@@ -154,7 +160,7 @@ impl AppProvider {
                 if excluded.matches(&path) {
                     continue;
                 }
-                if let Some(app) = parse_desktop_file(&path) {
+                if let Some(app) = parse_desktop_file_with(&path, &locales, &desktops) {
                     if app.exec.is_empty() || app.name.is_empty() {
                         continue;
                     }
@@ -225,14 +231,18 @@ impl AppProvider {
         let apps = self.apps.read().unwrap_or_else(|p| p.into_inner());
         for a in apps.iter() {
             let id = desktop_file_id(&a.desktop_path, &a.id);
-            if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
+            if normalize_desktop_id(&id).eq_ignore_ascii_case(key)
+                || normalize_desktop_id(&a.id).eq_ignore_ascii_case(key)
+            {
                 return Some(a.name.clone());
             }
         }
         let hidden = self.hidden.read().unwrap_or_else(|p| p.into_inner());
         for a in hidden.iter() {
             let id = desktop_file_id(&a.desktop_path, &a.id);
-            if normalize_desktop_id(&id) == key || normalize_desktop_id(&a.id) == key {
+            if normalize_desktop_id(&id).eq_ignore_ascii_case(key)
+                || normalize_desktop_id(&a.id).eq_ignore_ascii_case(key)
+            {
                 return Some(a.name.clone());
             }
         }
@@ -257,9 +267,11 @@ fn desktop_file_id(path: &Path, stem: &str) -> String {
         .unwrap_or_else(|| format!("{stem}.desktop"))
 }
 
-fn normalize_desktop_id(id: &str) -> String {
-    let id = id.trim().to_ascii_lowercase();
-    id.strip_suffix(".desktop").unwrap_or(&id).to_string()
+fn normalize_desktop_id(id: &str) -> &str {
+    let t = id.trim();
+    t.strip_suffix(".desktop")
+        .or_else(|| t.strip_suffix(".DESKTOP"))
+        .unwrap_or(t)
 }
 
 impl AppProvider {
@@ -282,6 +294,8 @@ impl AppProvider {
         // Substring bands re-derive their spans deterministically at
         // conversion; fuzzy needs the matcher's own indices here.
         let mut fuzzy_spans: HashMap<usize, Vec<usize>> = HashMap::new();
+
+        let mut seen_heap = HashSet::new();
 
         for (idx, app) in apps.iter().enumerate() {
             // Fast path: prefix / substring on precomputed name_lower
@@ -321,13 +335,18 @@ impl AppProvider {
             let key = (score, idx);
             if heap.len() < APP_RESULT_LIMIT {
                 heap.push(Reverse(key));
+                seen_heap.insert(idx);
             } else if let Some(Reverse(worst)) = heap.peek() {
                 if key > *worst {
-                    heap.pop();
+                    let Reverse((_, evicted_idx)) = heap.pop().unwrap();
+                    seen_heap.remove(&evicted_idx);
+                    fuzzy_spans.remove(&evicted_idx);
                     heap.push(Reverse(key));
+                    seen_heap.insert(idx);
                 }
             }
         }
+        fuzzy_spans.retain(|idx, _| seen_heap.contains(idx));
 
         let mut scored: Vec<(i64, usize)> = heap
             .into_iter()
@@ -343,8 +362,7 @@ impl AppProvider {
                 // never contain the query in the name (contains would have
                 // matched first), so they correctly get no highlight.
                 let matched = fuzzy_spans
-                    .get(&idx)
-                    .cloned()
+                    .remove(&idx)
                     .or_else(|| title_match_indices(&app.name, &q_lower));
                 to_result(app, score, matched)
             })
@@ -369,9 +387,9 @@ fn to_result(app: &DesktopApp, score: i64, matched: Option<Vec<usize>>) -> Searc
             Some(app.icon.clone())
         },
         action: Action::LaunchApp {
-            // Always serialized from the parsed argv so the launch path
-            // (`split_exec_args`) reproduces it exactly.
-            exec: quote_join(&app.argv),
+            // `exec` already equals `quote_join(argv)` at parse time — clone
+            // it instead of re-joining per hit per keystroke.
+            exec: app.exec.clone(),
             terminal: app.terminal,
             desktop_path: Some(app.desktop_path.clone()),
         },
@@ -404,7 +422,14 @@ fn desktop_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Test-only single-file parse (reads env once). Prod `reload_from_dirs`
+/// uses hoisted `parse_desktop_file_with`.
+#[cfg(test)]
 fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
+    parse_desktop_file_with(path, &current_locales(), &current_desktops())
+}
+
+fn parse_desktop_file_with(path: &Path, locales: &[String], desktops: &[String]) -> Option<DesktopApp> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_desktop = false;
     let mut name = String::new();
@@ -521,14 +546,13 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     // deliberately never localized — localized keys must not reach
     // execution (spec security property, preserved).
     {
-        let locales = current_locales();
-        if let Some(v) = pick_localized(&loc_names, &locales) {
+        if let Some(v) = pick_localized(&loc_names, locales) {
             name = v;
         }
-        if let Some(v) = pick_localized(&loc_generic, &locales) {
+        if let Some(v) = pick_localized(&loc_generic, locales) {
             generic_name = v;
         }
-        if let Some(v) = pick_localized(&loc_comments, &locales) {
+        if let Some(v) = pick_localized(&loc_comments, locales) {
             comment = v;
         }
     }
@@ -541,7 +565,11 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopApp> {
     // matched against `XDG_CURRENT_DESKTOP` (itself `:`-separated). No known
     // desktop → show (conservative). `TryExec` with an unresolvable binary
     // would fail on launch — skip the entry.
-    if !desktop_allowed(only_show_in.as_deref(), not_show_in.as_deref()) {
+    if !desktop_allowed_for(
+        only_show_in.as_deref(),
+        not_show_in.as_deref(),
+        desktops,
+    ) {
         return None;
     }
     if let Some(probe) = try_exec.as_deref() {
@@ -712,21 +740,15 @@ fn pick_localized(tagged: &[(String, String)], locales: &[String]) -> Option<Str
     None
 }
 
-/// Whether a `.desktop` entry survives `OnlyShowIn`/`NotShowIn` scoping.
-/// `XDG_CURRENT_DESKTOP` is `:`-separated (`KDE:GNOME`); the keys are
-/// `;`-separated. Unknown desktop → visible (conservative: hiding everything
-/// when the variable is unset would empty the launcher).
-fn desktop_allowed(only_show_in: Option<&str>, not_show_in: Option<&str>) -> bool {
-    // Visible in tests without mutating the process environment.
-    fn current_desktops() -> Vec<String> {
-        std::env::var("XDG_CURRENT_DESKTOP")
-            .unwrap_or_default()
-            .split(':')
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect()
-    }
-    desktop_allowed_for(only_show_in, not_show_in, &current_desktops())
+/// Current desktops from `XDG_CURRENT_DESKTOP` (`:`-separated, lowercased).
+/// Hoisted per-reload via `reload_from_dirs`.
+fn current_desktops() -> Vec<String> {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn desktop_allowed_for(

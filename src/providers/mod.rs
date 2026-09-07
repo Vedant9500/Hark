@@ -53,6 +53,18 @@ pub fn title_match_indices(title: &str, needle: &str) -> Option<Vec<usize>> {
     if needle.is_empty() {
         return None;
     }
+    if title.is_ascii() && needle.is_ascii() {
+        let hay = title.as_bytes();
+        let needle_bytes = needle.as_bytes();
+        let n_len = needle_bytes.len();
+        if n_len > hay.len() {
+            return None;
+        }
+        let start = hay
+            .windows(n_len)
+            .position(|w| w.eq_ignore_ascii_case(needle_bytes))?;
+        return Some((start..start + n_len).collect());
+    }
     let needle_lower = needle.to_lowercase();
     let hay = title.to_lowercase();
     if hay.chars().count() != title.chars().count() {
@@ -127,6 +139,7 @@ pub(crate) fn formula_text(item: &SearchResult) -> Option<String> {
 }
 
 /// Value without unit suffix / decoration: `22.05 lb` → `22.05`, `1440` → `1440`.
+/// Thousands separators stripped (`1,000` → `1000`).
 /// Non-numeric right titles (e.g. hex colors) yield None.
 pub(crate) fn unformatted_value(item: &SearchResult) -> Option<String> {
     let c = item.conversion.as_ref()?;
@@ -140,7 +153,11 @@ pub(crate) fn unformatted_value(item: &SearchResult) -> Option<String> {
     {
         return None;
     }
-    Some(num.to_string())
+    let clean = num.replace(',', "");
+    if clean.is_empty() || clean == "-" || clean == "+" || clean == "." {
+        return None;
+    }
+    Some(clean)
 }
 
 /// Secondary actions for the selected result (action panel / `Ctrl+K`).

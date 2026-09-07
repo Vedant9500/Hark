@@ -4,7 +4,7 @@ use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 /// decimal. Used for fraction quantities like `1/2 cup to ml`.
 pub(crate) fn parse_qty_number(s: &str) -> Option<f64> {
     if let Some((a, b)) = s.split_once('/') {
-        let a: f64 = a.parse().ok()?;
+        let a: f64 = a.trim().parse().ok()?;
         let b: f64 = b.trim().parse().ok()?;
         if !a.is_finite() || !b.is_finite() || b == 0.0 {
             return None;
@@ -12,8 +12,25 @@ pub(crate) fn parse_qty_number(s: &str) -> Option<f64> {
         let out = a / b;
         return out.is_finite().then_some(out);
     }
-    let out: f64 = s.parse().ok()?;
+    let out: f64 = s.trim().parse().ok()?;
     out.is_finite().then_some(out)
+}
+
+/// ASCII case-insensitive substring check without allocating a lowercased
+/// copy. Byte-window based: safe on multi-byte haystacks (non-ASCII bytes
+/// are >=0x80 and never equal ASCII needle bytes).
+pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let n = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(n.len())
+        .any(|w| w.eq_ignore_ascii_case(n))
 }
 
 const MAG_SUF: &[(&str, f64)] = &[
@@ -123,16 +140,52 @@ pub(crate) fn format_number(v: f64) -> String {
 }
 
 pub(crate) fn relative_secs(n: f64, unit: &str) -> Option<f64> {
-    let u = unit.to_lowercase();
-    let mult = match u.as_str() {
-        "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
-        "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
-        "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
-        "d" | "day" | "days" => 86400.0,
-        "w" | "week" | "weeks" => 604800.0,
-        "mo" | "month" | "months" => 2_629_746.0,
-        "y" | "yr" | "yrs" | "year" | "years" => 31_556_952.0,
-        _ => return None,
+    let u = unit.trim();
+    let mult = if u.eq_ignore_ascii_case("s")
+        || u.eq_ignore_ascii_case("sec")
+        || u.eq_ignore_ascii_case("secs")
+        || u.eq_ignore_ascii_case("second")
+        || u.eq_ignore_ascii_case("seconds")
+    {
+        1.0
+    } else if u.eq_ignore_ascii_case("m")
+        || u.eq_ignore_ascii_case("min")
+        || u.eq_ignore_ascii_case("mins")
+        || u.eq_ignore_ascii_case("minute")
+        || u.eq_ignore_ascii_case("minutes")
+    {
+        60.0
+    } else if u.eq_ignore_ascii_case("h")
+        || u.eq_ignore_ascii_case("hr")
+        || u.eq_ignore_ascii_case("hrs")
+        || u.eq_ignore_ascii_case("hour")
+        || u.eq_ignore_ascii_case("hours")
+    {
+        3600.0
+    } else if u.eq_ignore_ascii_case("d")
+        || u.eq_ignore_ascii_case("day")
+        || u.eq_ignore_ascii_case("days")
+    {
+        86400.0
+    } else if u.eq_ignore_ascii_case("w")
+        || u.eq_ignore_ascii_case("week")
+        || u.eq_ignore_ascii_case("weeks")
+    {
+        604800.0
+    } else if u.eq_ignore_ascii_case("mo")
+        || u.eq_ignore_ascii_case("month")
+        || u.eq_ignore_ascii_case("months")
+    {
+        2_629_746.0
+    } else if u.eq_ignore_ascii_case("y")
+        || u.eq_ignore_ascii_case("yr")
+        || u.eq_ignore_ascii_case("yrs")
+        || u.eq_ignore_ascii_case("year")
+        || u.eq_ignore_ascii_case("years")
+    {
+        31_556_952.0
+    } else {
+        return None;
     };
     Some(n * mult)
 }

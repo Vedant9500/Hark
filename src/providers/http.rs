@@ -66,12 +66,7 @@ fn call_get_with_retry(
 /// GET body as bytes (status must be 2xx; ureq maps non-2xx to Err).
 pub fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     let resp = call_get_with_retry(|| agent().get(url).call().map_err(Box::new))?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .take(4 * 1024 * 1024)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(buf)
+    read_response_bytes(resp)
 }
 
 /// Background-fetch agent for non-UI workers (FX rates). Unlike the fast
@@ -93,12 +88,7 @@ fn background_agent() -> &'static ureq::Agent {
 /// block the UI (e.g. currency-rate refresh).
 pub fn get_bytes_background(url: &str) -> Result<Vec<u8>, String> {
     let resp = call_get_with_retry(|| background_agent().get(url).call().map_err(Box::new))?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .take(4 * 1024 * 1024)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(buf)
+    read_response_bytes(resp)
 }
 
 /// GET with simple query pairs (values are form-urlencoded by ureq).
@@ -110,12 +100,7 @@ pub fn get_bytes_query(url: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, Str
         }
         req.call().map_err(Box::new)
     })?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .take(4 * 1024 * 1024)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(buf)
+    read_response_bytes(resp)
 }
 
 /// POST JSON body; returns response bytes. Never follows redirects — callers
@@ -126,7 +111,16 @@ pub fn post_json(url: &str, body: &str) -> Result<Vec<u8>, String> {
         .set("Content-Type", "application/json")
         .send_string(body)
         .map_err(short_err)?;
-    let mut buf = Vec::new();
+    read_response_bytes(resp)
+}
+
+fn read_response_bytes(resp: ureq::Response) -> Result<Vec<u8>, String> {
+    let cap = resp
+        .header("Content-Length")
+        .and_then(|cl| cl.trim().parse::<usize>().ok())
+        .map(|len| len.min(4 * 1024 * 1024))
+        .unwrap_or(0);
+    let mut buf = Vec::with_capacity(cap);
     resp.into_reader()
         .take(4 * 1024 * 1024)
         .read_to_end(&mut buf)

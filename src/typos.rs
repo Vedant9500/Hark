@@ -542,7 +542,8 @@ fn should_learn_alias(alias: &str, title_lower: &str) -> bool {
 }
 
 fn near_title_prefix(alias: &str, title: &str) -> bool {
-    let ql = alias.chars().count();
+    let achars: Vec<char> = alias.chars().collect();
+    let ql = achars.len();
     let tchars: Vec<char> = title.chars().collect();
     if tchars.is_empty() {
         return false;
@@ -552,8 +553,8 @@ fn near_title_prefix(alias: &str, title: &str) -> bool {
     let lo = ql.saturating_sub(1).max(1);
     let hi = (ql + 2).min(tchars.len());
     for len in lo..=hi {
-        let prefix: String = tchars[..len].iter().collect();
-        if levenshtein(alias, &prefix) <= max_d {
+        let prefix = &tchars[..len];
+        if levenshtein_chars(&achars, prefix) <= max_d {
             return true;
         }
     }
@@ -561,7 +562,7 @@ fn near_title_prefix(alias: &str, title: &str) -> bool {
     // Both branches share the query-length budget: a 4-char alias gets 1
     // edit against 5–7-char titles, not a doubled budget (audit P3).
     let tl = tchars.len();
-    if ql + 3 >= tl && levenshtein(alias, title) <= max_edit_distance(ql) {
+    if ql + 3 >= tl && levenshtein_chars(&achars, &tchars) <= max_edit_distance(ql) {
         return true;
     }
     false
@@ -576,10 +577,13 @@ fn max_edit_distance(len: usize) -> usize {
     }
 }
 
-/// Classic Wagner–Fischer; aliases are short so O(n*m) is fine.
 fn levenshtein(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    levenshtein_chars(&a_chars, &b_chars)
+}
+
+fn levenshtein_chars(a: &[char], b: &[char]) -> usize {
     let n = a.len();
     let m = b.len();
     if n == 0 {
@@ -605,16 +609,17 @@ fn prune_aliases(map: &mut HashMap<String, AliasEntry>, keep: usize, now: u64) {
     if map.len() <= keep {
         return;
     }
-    let mut items: Vec<(String, i64)> = map
+    let mut items: Vec<(&str, i64)> = map
         .iter()
         // Manual pins survive pruning — evicting a user's explicit pin
         // because it hasn't fired recently is data loss.
         .filter(|(_, e)| !e.manual)
-        .map(|(k, e)| (k.clone(), alias_frecency(e.count, e.last, now)))
+        .map(|(k, e)| (k.as_str(), alias_frecency(e.count, e.last, now)))
         .collect();
-    items.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))); // coldest first, id tie-break (deterministic)
+    items.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0))); // coldest first, id tie-break (deterministic)
     let drop_n = map.len().saturating_sub(keep);
-    for (k, _) in items.into_iter().take(drop_n) {
+    let to_drop: Vec<String> = items.into_iter().take(drop_n).map(|(k, _)| k.to_string()).collect();
+    for k in to_drop {
         map.remove(&k);
     }
 }

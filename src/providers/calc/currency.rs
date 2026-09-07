@@ -27,9 +27,9 @@ pub(crate) fn normalize_money_query(q: &str) -> Cow<'_, str> {
             s = format!("{num} {code} {rest}");
         }
     }
-    // 100$ → 100 usd
+    // 100$ → 100 usd (same symbol set as the leading form above)
     static RE_SYM_AFTER: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)([+-]?\d+(?:\.\d+)?)\s*([$€£¥₹])\b").unwrap());
+        Lazy::new(|| Regex::new(r"(?i)([+-]?\d+(?:\.\d+)?)\s*([$€£¥₹₩₽])\b").unwrap());
     if let Some(c) = RE_SYM_AFTER.captures(&s) {
         let num = c.get(1).unwrap().as_str();
         let sym = c.get(2).unwrap().as_str();

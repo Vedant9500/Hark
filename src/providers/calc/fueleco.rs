@@ -51,9 +51,8 @@ fn fuel_unit(s: &str) -> Option<FuelUnit> {
 }
 
 /// `N <from-unit> to <to-unit>`. Left and right split on ` to ` (case-folded);
-/// units may be slash or word forms.
-fn convert(q: &str) -> Option<f64> {
-    let lower = q.to_ascii_lowercase();
+/// units may be slash or word forms. Takes an already-lowercased query.
+fn convert(lower: &str) -> Option<f64> {
     let (lhs, rhs) = lower.split_once(" to ")?;
     let mut parts = lhs.trim().splitn(2, char::is_whitespace);
     let value: f64 = parts.next()?.parse().ok()?;
@@ -75,12 +74,14 @@ fn convert(q: &str) -> Option<f64> {
 }
 
 pub(crate) fn try_fuel_economy(q: &str) -> Option<SearchResult> {
+    // Single lowercase for the whole call — convert + label share it instead
+    // of each allocating their own (was 3x per query).
     let lower = q.to_ascii_lowercase();
     if !lower.contains(" to ") {
         return None;
     }
-    let out = convert(q)?;
-    let to_label = out_label(q)?;
+    let out = convert(&lower)?;
+    let to_label = out_label(&lower)?;
     let title = format!("{} {}", format_number(out), to_label);
     let shown = q.trim().to_string();
     Some(card_result(
@@ -94,8 +95,7 @@ pub(crate) fn try_fuel_economy(q: &str) -> Option<SearchResult> {
     ))
 }
 
-fn out_label(q: &str) -> Option<&'static str> {
-    let lower = q.to_ascii_lowercase();
+fn out_label(lower: &str) -> Option<&'static str> {
     let (_, rhs) = lower.split_once(" to ")?;
     fuel_unit(rhs.trim()).map(FuelUnit::label)
 }
