@@ -16,54 +16,79 @@ use regex::Regex;
 // ---------------------------------------------------------------------------
 
 fn base_keyword(s: &str) -> Option<u32> {
-    match s {
-        "hex" | "hexadecimal" | "hexa" => Some(16),
-        "bin" | "binary" => Some(2),
-        "oct" | "octal" => Some(8),
-        "dec" | "decimal" => Some(10),
-        _ => None,
+    if s.eq_ignore_ascii_case("hex")
+        || s.eq_ignore_ascii_case("hexadecimal")
+        || s.eq_ignore_ascii_case("hexa")
+    {
+        Some(16)
+    } else if s.eq_ignore_ascii_case("bin") || s.eq_ignore_ascii_case("binary") {
+        Some(2)
+    } else if s.eq_ignore_ascii_case("oct") || s.eq_ignore_ascii_case("octal") {
+        Some(8)
+    } else if s.eq_ignore_ascii_case("dec") || s.eq_ignore_ascii_case("decimal") {
+        Some(10)
+    } else {
+        None
     }
 }
 
 /// Infer the source base of a bare literal: `0x`/`0b`/`0o` prefixes win;
-/// otherwise all digits → decimal, letters a–f → hex.
+/// otherwise all digits → decimal, letters a–f → hex. Zero-alloc: no
+/// lowercased copy (`from_str_radix` accepts both cases).
 fn infer_base(s: &str) -> Option<(u32, i128)> {
-    let t = s.trim().to_ascii_lowercase();
-    let (digits, base) = if let Some(h) = t.strip_prefix("0x") {
-        (h, 16)
-    } else if let Some(b) = t.strip_prefix("0b") {
-        (b, 2)
-    } else if let Some(o) = t.strip_prefix("0o") {
-        (o, 8)
-    } else if t.bytes().all(|b| b.is_ascii_digit()) {
-        (t.as_str(), 10)
-    } else if t.bytes().all(|b| b.is_ascii_hexdigit()) {
-        (t.as_str(), 16)
+    let t = s.trim();
+    let (digits, base) = if t.len() >= 2
+        && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x"))
+    {
+        (t.get(2..)?, 16)
+    } else if t.len() >= 2 && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0b")) {
+        (t.get(2..)?, 2)
+    } else if t.len() >= 2 && t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0o")) {
+        (t.get(2..)?, 8)
+    } else if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) {
+        (t, 10)
+    } else if !t.is_empty() && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        (t, 16)
     } else {
         return None;
     };
+    if digits.is_empty() {
+        return None;
+    }
     let v = i128::from_str_radix(digits, base).ok()?;
     Some((base, v))
 }
 
 fn base_badge(s: &str) -> &'static str {
-    match s {
-        "hex" | "hexadecimal" | "hexa" => "hex",
-        "bin" | "binary" => "bin",
-        "oct" | "octal" => "oct",
-        _ => "dec",
+    if s.eq_ignore_ascii_case("hex")
+        || s.eq_ignore_ascii_case("hexadecimal")
+        || s.eq_ignore_ascii_case("hexa")
+    {
+        "hex"
+    } else if s.eq_ignore_ascii_case("bin") || s.eq_ignore_ascii_case("binary") {
+        "bin"
+    } else if s.eq_ignore_ascii_case("oct") || s.eq_ignore_ascii_case("octal") {
+        "oct"
+    } else {
+        "dec"
     }
 }
 
 fn base_card(v: i128, shown: &str, dst_base: u32, right_badge: &'static str) -> SearchResult {
+    // Magnitude rendering avoids `-0x` trim bugs: sign + unsigned digits.
+    let (sign, mag) = if v < 0 {
+        ("-", v.unsigned_abs())
+    } else {
+        ("", v as u128)
+    };
     let dec = v.to_string();
-    let hex = format!("{v:#x}");
-    let bin = format!("{v:#b}");
-    let oct = format!("{v:#o}");
+    let hex = format!("{sign}{mag:x}");
+    let bin = format!("{sign}{mag:b}");
+    let oct = format!("{sign}{mag:o}");
     let out = match dst_base {
-        16 => hex.trim_start_matches("0x").to_string(),
-        2 => bin.trim_start_matches("0b").to_string(),
-        8 => oct.trim_start_matches("0o").to_string(),
+        16 => format!("{sign}{mag:x}"),
+        2 => format!("{sign}{mag:b}"),
+        8 => format!("{sign}{mag:o}"),
         _ => dec.clone(),
     };
     card_result(
@@ -78,7 +103,9 @@ fn base_card(v: i128, shown: &str, dst_base: u32, right_badge: &'static str) -> 
 }
 
 fn try_base_convert(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
+    let qt = q.trim();
+    // Fast gate: needs a conversion marker + base keyword without allocating.
+    // `(?i)` regexes below preserve case; keyword helpers are case-insensitive.
     // `255 to hex`, `0x1f to dec`, `ff to dec`
     static RE_DIRECT: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -92,7 +119,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
             .unwrap()
     });
 
-    if let Some(c) = RE_SRC_BASE.captures(&lower) {
+    if let Some(c) = RE_SRC_BASE.captures(qt) {
         let digits = c.get(1)?.as_str();
         let src_base = base_keyword(c.get(2)?.as_str())?;
         let dst_base = base_keyword(c.get(3)?.as_str())?;
@@ -102,13 +129,13 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
         let v = i128::from_str_radix(digits, src_base).ok()?;
         return Some(base_card(
             v,
-            q.trim(),
+            qt,
             dst_base,
             base_badge(c.get(3)?.as_str()),
         ));
     }
 
-    if let Some(c) = RE_DIRECT.captures(&lower) {
+    if let Some(c) = RE_DIRECT.captures(qt) {
         let dst_base = base_keyword(c.get(2)?.as_str())?;
         let (src_base, v) = infer_base(c.get(1)?.as_str())?;
         if src_base == dst_base {
@@ -116,7 +143,7 @@ fn try_base_convert(q: &str) -> Option<SearchResult> {
         }
         return Some(base_card(
             v,
-            q.trim(),
+            qt,
             dst_base,
             base_badge(c.get(2)?.as_str()),
         ));
@@ -147,7 +174,7 @@ fn to_roman(mut n: u64) -> Option<String> {
         (4, "IV"),
         (1, "I"),
     ];
-    let mut out = String::new();
+    let mut out = String::with_capacity(16);
     for (v, s) in M {
         while n >= v {
             out.push_str(s);
@@ -158,55 +185,58 @@ fn to_roman(mut n: u64) -> Option<String> {
 }
 
 fn from_roman(s: &str) -> Option<u64> {
-    let chars: Vec<char> = s.to_ascii_uppercase().chars().collect();
+    // ASCII-only numeral: byte loop, no `Vec<char>` alloc. Cap length so a
+    // pathological `roman MMM...` (unbounded `+` in regex) can't spin.
+    if s.is_empty() || s.len() > 32 {
+        return None;
+    }
     let mut total = 0u64;
     let mut prev = 0u64;
-    for &c in chars.iter().rev() {
-        let v = match c {
-            'I' => 1,
-            'V' => 5,
-            'X' => 10,
-            'L' => 50,
-            'C' => 100,
-            'D' => 500,
-            'M' => 1000,
+    for &b in s.as_bytes().iter().rev() {
+        let v = match b.to_ascii_uppercase() {
+            b'I' => 1,
+            b'V' => 5,
+            b'X' => 10,
+            b'L' => 50,
+            b'C' => 100,
+            b'D' => 500,
+            b'M' => 1000,
             _ => return None,
         };
         if v < prev {
             total = total.checked_sub(v)?;
         } else {
-            total += v;
+            total = total.checked_add(v)?;
             prev = v;
         }
     }
-    if total == 0 {
-        None
-    } else {
-        Some(total)
-    }
+    if total == 0 { None } else { Some(total) }
 }
 
 fn try_roman(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
+    let qt = q.trim();
+    // Fast gate before regex/`to_string` allocs (runs per keystroke).
+    if qt.len() < 7 || !qt.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("roman ")) {
+        return None;
+    }
     static RE_FWD: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^roman\s+(\d{1,4})\s*$").unwrap());
     static RE_REV: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^roman\s+([ivxlcdm]+)\s*$").unwrap());
-    let shown = q.trim().to_string();
 
-    if let Some(c) = RE_FWD.captures(&lower) {
+    if let Some(c) = RE_FWD.captures(qt) {
         let n: u64 = c.get(1)?.as_str().parse().ok()?;
         let r = to_roman(n)?;
         return Some(card_result(
             r.clone(),
             format!("{n} → {r}"),
             r.clone(),
-            shown,
+            qt.to_string(),
             "roman",
             r,
             "numeral",
         ));
     }
-    if let Some(c) = RE_REV.captures(&lower) {
+    if let Some(c) = RE_REV.captures(qt) {
         let r = c.get(1)?.as_str();
         let n = from_roman(r)?;
         // Reject non-canonical forms (`ic`, `VV`, `IIII`): re-render and
@@ -216,7 +246,7 @@ fn try_roman(q: &str) -> Option<SearchResult> {
                 n.to_string(),
                 format!("{r} → {n}"),
                 n.to_string(),
-                shown,
+                qt.to_string(),
                 "roman",
                 n.to_string(),
                 "number",
@@ -265,11 +295,26 @@ fn parse_height(s: &str) -> Option<f64> {
     });
     if let Some(c) = RE_MET.captures(s.trim()) {
         let v: f64 = c.get(1)?.as_str().parse().ok()?;
-        return Some(match c.get(2)?.as_str() {
-            "cm" => v / 100.0,
-            "in" | "inch" | "inches" => v * 0.0254,
-            _ => v,
-        });
+        // `(?i)` preserves case in captures — compare case-insensitively
+        // (`180CM` was misread as 180 m).
+        let unit = c.get(2)?.as_str();
+        if unit.eq_ignore_ascii_case("cm") {
+            return Some(v / 100.0);
+        } else if unit.eq_ignore_ascii_case("in")
+            || unit.eq_ignore_ascii_case("inch")
+            || unit.eq_ignore_ascii_case("inches")
+        {
+            return Some(v * 0.0254);
+        } else if unit.eq_ignore_ascii_case("m")
+            || unit.eq_ignore_ascii_case("meter")
+            || unit.eq_ignore_ascii_case("meters")
+            || unit.eq_ignore_ascii_case("metre")
+            || unit.eq_ignore_ascii_case("metres")
+        {
+            return Some(v);
+        } else {
+            return None;
+        }
     }
     None
 }
@@ -282,10 +327,22 @@ fn try_bmi(q: &str) -> Option<SearchResult> {
     let c = RE_BMI.captures(q)?;
     let h_m = parse_height(c.get(1)?.as_str())?;
     let wv: f64 = c.get(2)?.as_str().parse().ok()?;
-    let kg = match c.get(3).map(|m| m.as_str()).unwrap_or("kg") {
-        "kg" | "kilogram" | "kilograms" | "kgs" | "" => wv,
-        "lb" | "lbs" | "pound" | "pounds" => wv * 0.453_592_37,
-        _ => return None,
+    // `(?i)` preserves case — `75KG` must match (was `_ => None`).
+    let unit = c.get(3).map(|m| m.as_str()).unwrap_or("kg");
+    let kg = if unit.eq_ignore_ascii_case("kg")
+        || unit.eq_ignore_ascii_case("kilogram")
+        || unit.eq_ignore_ascii_case("kilograms")
+        || unit.eq_ignore_ascii_case("kgs")
+    {
+        wv
+    } else if unit.eq_ignore_ascii_case("lb")
+        || unit.eq_ignore_ascii_case("lbs")
+        || unit.eq_ignore_ascii_case("pound")
+        || unit.eq_ignore_ascii_case("pounds")
+    {
+        wv * 0.453_592_37
+    } else {
+        return None;
     };
     if h_m <= 0.0 || kg <= 0.0 {
         return None;
@@ -343,12 +400,25 @@ fn try_height(q: &str) -> Option<SearchResult> {
     let total_in = m / 0.0254;
     let ft = (total_in / 12.0).floor();
     let inch = total_in - ft * 12.0;
-    let (title, right_badge) = match target {
-        "cm" | "centimeter" | "centimeters" | "centimetre" | "centimetres" => {
-            (format!("{} cm", format_number(m * 100.0)), "cm")
-        }
-        "m" | "meter" | "meters" | "metre" | "metres" => (format!("{} m", format_number(m)), "m"),
-        "ft" | "feet" | "foot" => {
+    // `(?i)` preserves case — match case-insensitively (`TO CM` was None).
+    let (title, right_badge) = if target.eq_ignore_ascii_case("cm")
+        || target.eq_ignore_ascii_case("centimeter")
+        || target.eq_ignore_ascii_case("centimeters")
+        || target.eq_ignore_ascii_case("centimetre")
+        || target.eq_ignore_ascii_case("centimetres")
+    {
+        (format!("{} cm", format_number(m * 100.0)), "cm")
+    } else if target.eq_ignore_ascii_case("m")
+        || target.eq_ignore_ascii_case("meter")
+        || target.eq_ignore_ascii_case("meters")
+        || target.eq_ignore_ascii_case("metre")
+        || target.eq_ignore_ascii_case("metres")
+    {
+        (format!("{} m", format_number(m)), "m")
+    } else if target.eq_ignore_ascii_case("ft")
+        || target.eq_ignore_ascii_case("feet")
+        || target.eq_ignore_ascii_case("foot")
+    {
             let r_in = inch.round();
             let (f2, i2) = if r_in >= 12.0 {
                 (ft + 1.0, 0.0)
@@ -363,9 +433,13 @@ fn try_height(q: &str) -> Option<SearchResult> {
                     "ft",
                 )
             }
-        }
-        "in" | "inch" | "inches" => (format!("{} in", format_number(total_in)), "in"),
-        _ => return None,
+    } else if target.eq_ignore_ascii_case("in")
+        || target.eq_ignore_ascii_case("inch")
+        || target.eq_ignore_ascii_case("inches")
+    {
+        (format!("{} in", format_number(total_in)), "in")
+    } else {
+        return None;
     };
     Some(card_result(
         title.clone(),
@@ -398,17 +472,26 @@ fn try_steps(q: &str) -> Option<SearchResult> {
         )
         .unwrap()
     });
-    let shown = q.trim().to_string();
 
     if let Some(c) = RE_DIST.captures(q) {
         let n: f64 = c.get(1)?.as_str().parse().ok()?;
         let meters = n * STEP_STRIDE_M;
-        let (out, label) = match c.get(2)?.as_str() {
-            "km" | "kilometer" | "kilometers" | "kilometre" | "kilometres" => {
-                (meters / 1000.0, "km")
-            }
-            "mi" | "mile" | "miles" => (meters / 1609.344, "mi"),
-            _ => (meters, "m"),
+        // `(?i)` preserves case — `IN KM` must map to km (was `_ => m`).
+        let unit = c.get(2)?.as_str();
+        let (out, label) = if unit.eq_ignore_ascii_case("km")
+            || unit.eq_ignore_ascii_case("kilometer")
+            || unit.eq_ignore_ascii_case("kilometers")
+            || unit.eq_ignore_ascii_case("kilometre")
+            || unit.eq_ignore_ascii_case("kilometres")
+        {
+            (meters / 1000.0, "km")
+        } else if unit.eq_ignore_ascii_case("mi")
+            || unit.eq_ignore_ascii_case("mile")
+            || unit.eq_ignore_ascii_case("miles")
+        {
+            (meters / 1609.344, "mi")
+        } else {
+            (meters, "m")
         };
         let title = format!("{} {}", format_number(out), label);
         let copy = format!(
@@ -424,7 +507,7 @@ fn try_steps(q: &str) -> Option<SearchResult> {
                 format_number(STEP_STRIDE_M)
             ),
             copy,
-            shown,
+            q.trim().to_string(),
             "steps",
             title,
             label,
@@ -433,10 +516,21 @@ fn try_steps(q: &str) -> Option<SearchResult> {
 
     if let Some(c) = RE_REV.captures(q) {
         let v: f64 = c.get(1)?.as_str().parse().ok()?;
-        let meters = match c.get(2)?.as_str() {
-            "km" | "kilometer" | "kilometers" | "kilometre" | "kilometres" => v * 1000.0,
-            "mi" | "mile" | "miles" => v * 1609.344,
-            _ => v,
+        let unit = c.get(2)?.as_str();
+        let meters = if unit.eq_ignore_ascii_case("km")
+            || unit.eq_ignore_ascii_case("kilometer")
+            || unit.eq_ignore_ascii_case("kilometers")
+            || unit.eq_ignore_ascii_case("kilometre")
+            || unit.eq_ignore_ascii_case("kilometres")
+        {
+            v * 1000.0
+        } else if unit.eq_ignore_ascii_case("mi")
+            || unit.eq_ignore_ascii_case("mile")
+            || unit.eq_ignore_ascii_case("miles")
+        {
+            v * 1609.344
+        } else {
+            v
         };
         let steps = (meters / STEP_STRIDE_M).round();
         let title = format!("{} steps", format_number(steps));
@@ -448,7 +542,7 @@ fn try_steps(q: &str) -> Option<SearchResult> {
                 format_number(STEP_STRIDE_M)
             ),
             format!("{} m = {}", format_number(meters), title),
-            shown,
+            q.trim().to_string(),
             "steps",
             title,
             "steps",
@@ -462,16 +556,17 @@ fn try_steps(q: &str) -> Option<SearchResult> {
 // ---------------------------------------------------------------------------
 
 /// Split `55GB`, `5.5 GB`, `150mbps`, `150MB/s` → (number, unit-token).
-/// Spaces removed; `/s` or `/sec` stays part of the speed unit token.
+/// Single regex allows inner spaces (`5.5 GB`); no pre-filter alloc.
 fn split_num_unit(s: &str) -> Option<(f64, String)> {
-    static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^(\d+(?:\.\d+)?)([a-zA-Z]+(?:/[a-zA-Z]+)?)$").unwrap());
-    let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    let c = RE.captures(&t)?;
-    Some((
-        c.get(1)?.as_str().parse().ok()?,
-        c.get(2)?.as_str().to_string(),
-    ))
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+(?:/[a-zA-Z]+)?)\s*$").unwrap()
+    });
+    let c = RE.captures(s)?;
+    let v: f64 = c.get(1)?.as_str().parse().ok()?;
+    if !v.is_finite() {
+        return None;
+    }
+    Some((v, c.get(2)?.as_str().to_string()))
 }
 
 /// Size token → bytes. Lowercase `kb`/`mb`/`gb` are treated as *bytes* (sizes
@@ -497,7 +592,8 @@ fn parse_size_bytes(s: &str) -> Option<f64> {
         "tbit" | "terabit" | "terabits" => 1.25e11,
         _ => return None,
     };
-    Some(v * mult)
+    let out = v * mult;
+    out.is_finite().then_some(out)
 }
 
 /// Speed token → bytes per second. Uppercase `B` (`MB/s`, `MBps`, `MB`) means
@@ -533,7 +629,8 @@ fn parse_speed_bps(s: &str) -> Option<f64> {
         "terabyte" | "terabytes" | "terabyte/s" | "terabytes/s" | "tbyte" | "tbytes" => 1e12,
         _ => return None,
     };
-    Some(v * mag * if is_byte { 1.0 } else { 0.125 })
+    let out = v * mag * if is_byte { 1.0 } else { 0.125 };
+    out.is_finite().then_some(out)
 }
 
 /// Human duration from seconds: `45s`, `5m 03s`, `1h 07m`, `2d 3h`.
@@ -609,10 +706,13 @@ fn try_speed(q: &str) -> Option<SearchResult> {
             _ => return None,
         },
     };
-    if bytes <= 0.0 || speed <= 0.0 {
+    if !bytes.is_finite() || !speed.is_finite() || bytes <= 0.0 || speed <= 0.0 {
         return None;
     }
     let secs = bytes / speed;
+    if !secs.is_finite() {
+        return None;
+    }
     let dur = fmt_duration(secs);
     Some(card_result(
         dur.clone(),
@@ -710,14 +810,16 @@ fn rng_int(lo: i64, hi: i64) -> i64 {
 }
 
 fn try_random(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
+    let qt = q.trim();
+    // Fast gate: no `to_ascii_lowercase` alloc on unrelated queries.
+    // `(?i)` regexes preserve case; numeric captures are case-free.
     static RE_ROLL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^roll\s+d(\d{1,6})\s*$").unwrap());
     static RE_RAND_N: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^random\s+(\d{1,10})\s*$").unwrap());
     static RE_RAND_AB: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^random\s+(-?\d+)\s+(-?\d+)\s*$").unwrap());
 
-    if lower == "dice" {
+    if qt.eq_ignore_ascii_case("dice") {
         let v = rng_int(1, 6);
         let s = v.to_string();
         return Some(card_result(
@@ -730,7 +832,7 @@ fn try_random(q: &str) -> Option<SearchResult> {
             "d6",
         ));
     }
-    if let Some(c) = RE_ROLL.captures(&lower) {
+    if let Some(c) = RE_ROLL.captures(qt) {
         let n: i64 = c.get(1)?.as_str().parse().ok()?;
         if !(1..=1_000_000).contains(&n) {
             return None;
@@ -747,7 +849,7 @@ fn try_random(q: &str) -> Option<SearchResult> {
             "result",
         ));
     }
-    if lower == "coin" {
+    if qt.eq_ignore_ascii_case("coin") {
         let heads = rng_int(0, 1) == 0;
         return Some(card_result(
             if heads { "heads" } else { "tails" }.into(),
@@ -759,7 +861,7 @@ fn try_random(q: &str) -> Option<SearchResult> {
             "result",
         ));
     }
-    if lower == "random" {
+    if qt.eq_ignore_ascii_case("random") {
         let s = format_number(rng_f64());
         return Some(card_result(
             s.clone(),
@@ -771,7 +873,7 @@ fn try_random(q: &str) -> Option<SearchResult> {
             "result",
         ));
     }
-    if let Some(c) = RE_RAND_AB.captures(&lower) {
+    if let Some(c) = RE_RAND_AB.captures(qt) {
         let a: i64 = c.get(1)?.as_str().parse().ok()?;
         let b: i64 = c.get(2)?.as_str().parse().ok()?;
         // Reversed bounds (`random 5 3`) sample the same range the badge
@@ -789,7 +891,7 @@ fn try_random(q: &str) -> Option<SearchResult> {
             "result",
         ));
     }
-    if let Some(c) = RE_RAND_N.captures(&lower) {
+    if let Some(c) = RE_RAND_N.captures(qt) {
         let n: i64 = c.get(1)?.as_str().parse().ok()?;
         if n <= 0 {
             return None;
@@ -813,24 +915,24 @@ fn try_random(q: &str) -> Option<SearchResult> {
 // UUID v4 + password
 // ---------------------------------------------------------------------------
 
-fn uuid_v4(bytes: Vec<u8>) -> String {
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&bytes);
+fn uuid_v4(bytes: &[u8]) -> Option<String> {
+    let b: [u8; 16] = bytes.try_into().ok()?;
+    let mut b = b;
     b[6] = (b[6] & 0x0f) | 0x40; // version 4
     b[8] = (b[8] & 0x3f) | 0x80; // variant 10
-    format!(
+    Some(format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
-    )
+    ))
 }
 
 fn try_uuid(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
-    if lower != "uuid" {
+    if !q.trim().eq_ignore_ascii_case("uuid") {
         return None;
     }
-    let s = uuid_v4(csprng_bytes(16)?);
+    let entropy = csprng_bytes(16)?;
+    let s = uuid_v4(&entropy)?;
     Some(card_result(
         s.clone(),
         "UUID v4".into(),
@@ -847,8 +949,12 @@ const PASSWORD_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 fn try_password(q: &str) -> Option<SearchResult> {
     static RE_PW: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^password(?:\s+(\d{1,3}))?\s*$").unwrap());
-    let lower = q.trim().to_ascii_lowercase();
-    let c = RE_PW.captures(&lower)?;
+    let qt = q.trim();
+    // Fast gate before regex (runs per keystroke, no alloc).
+    if qt.len() < 8 || !qt.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("password")) {
+        return None;
+    }
+    let c = RE_PW.captures(qt)?;
     let mut len = c
         .get(1)
         .and_then(|m| m.as_str().parse::<usize>().ok())
@@ -890,16 +996,24 @@ fn try_password(q: &str) -> Option<SearchResult> {
 // ---------------------------------------------------------------------------
 
 fn try_text(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
+    let qt = q.trim();
+    // Fast gate: only wc/slug/case reach regexes + allocs (per-keystroke path).
+    let is_wc = qt.len() > 3 && qt.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("wc "));
+    let is_slug =
+        qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("slug "));
+    let is_case =
+        qt.len() > 5 && qt.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("case "));
+    if !(is_wc || is_slug || is_case) {
+        return None;
+    }
     static RE_WC: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^wc\s+(.+)$").unwrap());
     static RE_SLUG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^slug\s+(.+)$").unwrap());
     static RE_CASE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)^case\s+(snake|kebab|screaming|pascal|camel|upper|lower|title)\s+(.+)$")
             .unwrap()
     });
-    let shown = q.trim().to_string();
 
-    if let Some(c) = RE_WC.captures(&lower) {
+    if let Some(c) = RE_WC.captures(qt) {
         let text = c.get(1)?.as_str();
         let words = text.split_whitespace().count();
         let chars = text.chars().count();
@@ -908,30 +1022,35 @@ fn try_text(q: &str) -> Option<SearchResult> {
             title.clone(),
             format!("{chars} characters"),
             format!("{words} words · {chars} characters"),
-            shown,
+            qt.to_string(),
             "words",
             title,
             "count",
         ));
     }
 
-    if let Some(c) = RE_SLUG.captures(&lower) {
+    if let Some(c) = RE_SLUG.captures(qt) {
         let text = c.get(1)?.as_str();
-        let slug: String = text
-            .to_ascii_lowercase()
-            .chars()
-            .map(|ch| {
-                if ch.is_alphanumeric() {
-                    ch.to_ascii_lowercase()
-                } else {
-                    '-'
+        // Single pass: fold to lowercase slug without intermediate Vec.
+        let mut slug = String::with_capacity(text.len());
+        let mut need_dash = false;
+        for ch in text.chars() {
+            if ch.is_alphanumeric() {
+                if need_dash && !slug.is_empty() {
+                    slug.push('-');
                 }
-            })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
+                need_dash = false;
+                if ch.is_ascii() {
+                    slug.push(ch.to_ascii_lowercase());
+                } else {
+                    for l in ch.to_lowercase() {
+                        slug.push(l);
+                    }
+                }
+            } else if !slug.is_empty() {
+                need_dash = true;
+            }
+        }
         if slug.is_empty() {
             return None;
         }
@@ -939,20 +1058,20 @@ fn try_text(q: &str) -> Option<SearchResult> {
             slug.clone(),
             format!("slug: {text}"),
             slug.clone(),
-            shown,
+            qt.to_string(),
             "slug",
             slug,
             "result",
         ));
     }
 
-    if let Some(c) = RE_CASE.captures(&lower) {
+    if let Some(c) = RE_CASE.captures(qt) {
         let style = c.get(1)?.as_str();
         let text = c.get(2)?.as_str();
-        let words: Vec<String> = text
+        // Borrowed words: no `String` per token (was `map(str::to_string)`).
+        let words: Vec<&str> = text
             .split(|ch: char| !ch.is_alphanumeric())
             .filter(|w| !w.is_empty())
-            .map(str::to_string)
             .collect();
         if words.is_empty() {
             return None;
@@ -964,30 +1083,37 @@ fn try_text(q: &str) -> Option<SearchResult> {
                 None => String::new(),
             }
         };
-        let out: String = match style {
-            "snake" => words.join("_"),
-            "kebab" => words.join("-"),
-            "screaming" => words.join("_").to_uppercase(),
-            "pascal" => words.iter().map(|w| cap(w)).collect(),
-            "camel" => {
-                let mut it = words.iter();
-                let first = it.next()?.to_ascii_lowercase();
-                first + &it.map(|w| cap(w)).collect::<String>()
-            }
-            "upper" => words.join(" ").to_uppercase(),
-            "lower" => words.join(" ").to_lowercase(),
-            "title" => words
+        // `(?i)` preserves case — `CASE SNAKE` must match.
+        let out: String = if style.eq_ignore_ascii_case("snake") {
+            words.join("_").to_ascii_lowercase()
+        } else if style.eq_ignore_ascii_case("kebab") {
+            words.join("-").to_ascii_lowercase()
+        } else if style.eq_ignore_ascii_case("screaming") {
+            words.join("_").to_uppercase()
+        } else if style.eq_ignore_ascii_case("pascal") {
+            words.iter().map(|w| cap(&w.to_ascii_lowercase())).collect()
+        } else if style.eq_ignore_ascii_case("camel") {
+            let mut it = words.iter();
+            let first = it.next()?.to_ascii_lowercase();
+            first + &it.map(|w| cap(&w.to_ascii_lowercase())).collect::<String>()
+        } else if style.eq_ignore_ascii_case("upper") {
+            words.join(" ").to_uppercase()
+        } else if style.eq_ignore_ascii_case("lower") {
+            words.join(" ").to_lowercase()
+        } else if style.eq_ignore_ascii_case("title") {
+            words
                 .iter()
                 .map(|w| cap(&w.to_ascii_lowercase()))
                 .collect::<Vec<_>>()
-                .join(" "),
-            _ => return None,
+                .join(" ")
+        } else {
+            return None;
         };
         return Some(card_result(
             out.clone(),
             format!("case {style}: {text}"),
             out.clone(),
-            shown,
+            qt.to_string(),
             "case",
             out,
             "case",
@@ -1301,6 +1427,28 @@ mod tests {
         assert_eq!(r.title, "helloWorld");
         let r = try_quickwin("case title hello world").expect("title");
         assert_eq!(r.title, "Hello World");
+    }
+
+    #[test]
+    fn uppercase_units_match() {
+        // Audit Batch 08: `(?i)` preserves case, case-sensitive `match` dropped
+        // uppercase units (`180CM` → 180 m, `IN KM` → m, `TO CM` → None).
+        let r = try_quickwin("bmi 180CM 75KG").expect("upper bmi");
+        assert_eq!(r.title, "23.1");
+        let r = try_quickwin("bmi 70 IN 165 LB").expect("upper imperial");
+        assert_eq!(r.title, "23.7");
+        let r = try_quickwin("5'5\" TO CM").expect("upper height");
+        assert_eq!(r.title, "165.1 cm");
+        let r = try_quickwin("10000 STEPS IN KM").expect("upper steps");
+        assert_eq!(r.title, "7.62 km");
+        let r = try_quickwin("7.62 KM IN STEPS").expect("upper reverse steps");
+        assert_eq!(r.title, "10000 steps");
+        let r = try_quickwin("CASE SNAKE Hello World").expect("upper case style");
+        assert_eq!(r.title, "hello_world");
+        let r = try_quickwin("FF HEXA TO DEC").expect("upper base");
+        assert_eq!(r.title, "255");
+        // Long roman spam caps instead of spinning.
+        assert!(try_quickwin(format!("roman {}", "M".repeat(64)).as_str()).is_none());
     }
 
     #[test]

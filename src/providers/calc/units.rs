@@ -59,7 +59,11 @@ pub(crate) fn try_conversion_predict(q: &str) -> Option<Vec<SearchResult>> {
         return None;
     }
 
-    let from_cat = to_base(&from)?.1;
+    let from_cat: &'static str = match to_base(&from) {
+        Some((_, c)) => c,
+        None if matches!(from.as_str(), "c" | "f" | "k") => "temperature",
+        None => return None,
+    };
     let mut targets = predict_units(to_prefix, from_cat, &from);
     if targets.is_empty() {
         return None;
@@ -103,7 +107,10 @@ pub(crate) fn try_unit_home(q: &str) -> Option<SearchResult> {
     }
     // Bare single-letter m/b/t stay silent (meters vs minutes/million…):
     // same ambiguity rule as unitmath's bare_value_card.
-    if matches!(unit_raw.to_ascii_lowercase().as_str(), "m" | "b" | "t") {
+    if unit_raw.eq_ignore_ascii_case("m")
+        || unit_raw.eq_ignore_ascii_case("b")
+        || unit_raw.eq_ignore_ascii_case("t")
+    {
         return None;
     }
     let value = super::util::parse_qty_number(num_raw.trim())?;
@@ -126,31 +133,29 @@ pub(crate) fn try_unit_home(q: &str) -> Option<SearchResult> {
 /// Words that read as magnitudes when glued to a number (`10k`, `5cr`).
 /// Single `m`/`b`/`t` are units (meters/bytes/tonnes), never magnitudes here.
 fn is_magnitude_word(w: &str) -> bool {
-    matches!(
-        w.to_ascii_lowercase().as_str(),
-        "k" | "l"
-            | "cr"
-            | "crs"
-            | "lac"
-            | "lacs"
-            | "lakh"
-            | "lakhs"
-            | "mil"
-            | "bn"
-            | "tn"
-            | "thousand"
-            | "thousands"
-            | "million"
-            | "millions"
-            | "billion"
-            | "billions"
-            | "trillion"
-            | "trillions"
-            | "hundred"
-            | "hundreds"
-            | "crore"
-            | "crores"
-    )
+    w.eq_ignore_ascii_case("k")
+        || w.eq_ignore_ascii_case("l")
+        || w.eq_ignore_ascii_case("cr")
+        || w.eq_ignore_ascii_case("crs")
+        || w.eq_ignore_ascii_case("lac")
+        || w.eq_ignore_ascii_case("lacs")
+        || w.eq_ignore_ascii_case("lakh")
+        || w.eq_ignore_ascii_case("lakhs")
+        || w.eq_ignore_ascii_case("mil")
+        || w.eq_ignore_ascii_case("bn")
+        || w.eq_ignore_ascii_case("tn")
+        || w.eq_ignore_ascii_case("thousand")
+        || w.eq_ignore_ascii_case("thousands")
+        || w.eq_ignore_ascii_case("million")
+        || w.eq_ignore_ascii_case("millions")
+        || w.eq_ignore_ascii_case("billion")
+        || w.eq_ignore_ascii_case("billions")
+        || w.eq_ignore_ascii_case("trillion")
+        || w.eq_ignore_ascii_case("trillions")
+        || w.eq_ignore_ascii_case("hundred")
+        || w.eq_ignore_ascii_case("hundreds")
+        || w.eq_ignore_ascii_case("crore")
+        || w.eq_ignore_ascii_case("crores")
 }
 
 /// Home default target per category, never equal to `from`.
@@ -366,8 +371,8 @@ pub(crate) fn resolve_unit(raw: &str) -> Option<String> {
 
 /// Prefix / fuzzy unit prediction within a category.
 pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<String> {
-    let p = prefix.to_lowercase();
-    let mut hits: Vec<(i32, String)> = Vec::new();
+    let p = prefix.trim();
+    let mut hits: Vec<(i32, String)> = Vec::with_capacity(16);
 
     for (alias, canon) in UNIT_ALIASES {
         let cat = match to_base(canon) {
@@ -384,13 +389,21 @@ pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<Str
         let score = if p.is_empty() {
             // Empty target: suggest common defaults
             50
-        } else if *alias == p || *canon == p {
+        } else if alias.eq_ignore_ascii_case(p) || canon.eq_ignore_ascii_case(p) {
             1000
-        } else if alias.starts_with(&p) {
+        } else if alias.len() >= p.len()
+            && alias
+                .get(..p.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(p))
+        {
             500 - alias.len() as i32
-        } else if canon.starts_with(&p) {
+        } else if canon.len() >= p.len()
+            && canon
+                .get(..p.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(p))
+        {
             400 - canon.len() as i32
-        } else if p.len() >= 2 && alias.contains(&p) {
+        } else if p.len() >= 2 && super::util::contains_ignore_ascii_case(alias, p) {
             200 - alias.len() as i32
         } else {
             continue;
@@ -399,10 +412,11 @@ pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<Str
     }
 
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::with_capacity(hits.len());
+    let mut out = Vec::with_capacity(hits.len());
     for (_, u) in hits {
-        if seen.insert(u.clone()) {
+        if !seen.contains(&u) {
+            seen.insert(u.clone());
             out.push(u);
         }
     }
@@ -425,8 +439,13 @@ pub(crate) fn predict_units(prefix: &str, category: &str, from: &str) -> Vec<Str
             "speed" if metric => &["km/h", "m/s", "mph", "kn"],
             "speed" => &["mph", "km/h", "kn"],
             "data" => &["mb", "gb", "kib"],
-            "time" => &["min", "h", "d"],
-            "area" => &["ft2", "acre", "ha"],
+            "time" => &["min", "h", "d", "s", "wk"],
+            "area" => &["ft2", "acre", "ha", "m2"],
+            "pressure" => &["kpa", "pa", "bar", "psi"],
+            "energy" => &["kj", "j", "kcal", "wh", "kwh"],
+            "power" => &["kw", "w", "mw", "hp"],
+            "angle" => &["deg", "rad"],
+            "frequency" => &["mhz", "khz", "ghz", "hz"],
             _ => &[],
         };
         let mut ranked = Vec::new();
@@ -457,6 +476,9 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("mg", "mg"),
     ("milligram", "mg"),
     ("milligrams", "mg"),
+    ("ug", "ug"),
+    ("microgram", "ug"),
+    ("micrograms", "ug"),
     ("lb", "lb"),
     ("lbs", "lb"),
     ("pound", "lb"),
@@ -488,6 +510,8 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("mm", "mm"),
     ("millimeter", "mm"),
     ("millimeters", "mm"),
+    ("um", "um"),
+    ("nm", "nm"),
     ("mi", "mi"),
     ("mile", "mi"),
     ("miles", "mi"),
@@ -537,6 +561,8 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("km/s", "km/s"),
     ("kmps", "km/s"),
     ("m/s", "m/s"),
+    ("fps", "ft/s"),
+    ("ft/s", "ft/s"),
     ("kn", "kn"),
     ("knot", "kn"),
     ("knots", "kn"),
@@ -545,6 +571,8 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("sec", "s"),
     ("second", "s"),
     ("seconds", "s"),
+    ("ms", "ms"),
+    ("us", "us"),
     ("min", "min"),
     ("minute", "min"),
     ("minutes", "min"),
@@ -555,6 +583,15 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("d", "d"),
     ("day", "d"),
     ("days", "d"),
+    ("wk", "wk"),
+    ("week", "wk"),
+    ("weeks", "wk"),
+    ("mo", "mo"),
+    ("month", "mo"),
+    ("months", "mo"),
+    ("yr", "yr"),
+    ("year", "yr"),
+    ("years", "yr"),
     // data
     ("b", "b"),
     ("byte", "b"),
@@ -563,28 +600,116 @@ pub(crate) static UNIT_ALIASES: &[(&str, &str)] = &[
     ("mb", "mb"),
     ("gb", "gb"),
     ("tb", "tb"),
+    ("pb", "pb"),
     ("kib", "kib"),
     ("mib", "mib"),
     ("gib", "gib"),
+    ("tib", "tib"),
     // area
     ("m2", "m2"),
     ("km2", "km2"),
+    ("cm2", "cm2"),
     ("ft2", "ft2"),
+    ("in2", "in2"),
+    ("mi2", "mi2"),
     ("sqft", "ft2"),
     ("acre", "acre"),
     ("acres", "acre"),
     ("ha", "ha"),
     ("hectare", "ha"),
+    // volume (extra canonicals for prediction)
+    ("m3", "m3"),
+    ("cm3", "cm3"),
+    ("tbsp", "tbsp"),
+    ("tsp", "tsp"),
+    ("floz", "floz"),
+    ("ukgal", "ukgal"),
+    // pressure
+    ("pa", "pa"),
+    ("pascal", "pa"),
+    ("pascals", "pa"),
+    ("kpa", "kpa"),
+    ("kilopascal", "kpa"),
+    ("kilopascals", "kpa"),
+    ("bar", "bar"),
+    ("atm", "atm"),
+    ("atmosphere", "atm"),
+    ("atmospheres", "atm"),
+    ("psi", "psi"),
+    ("mmhg", "mmhg"),
+    // energy
+    ("j", "j"),
+    ("joule", "j"),
+    ("joules", "j"),
+    ("kj", "kj"),
+    ("kilojoule", "kj"),
+    ("kilojoules", "kj"),
+    ("cal", "cal"),
+    ("calorie", "cal"),
+    ("calories", "cal"),
+    ("kcal", "kcal"),
+    ("kilocalorie", "kcal"),
+    ("kilocalories", "kcal"),
+    ("wh", "wh"),
+    ("watthour", "wh"),
+    ("watthours", "wh"),
+    ("kwh", "kwh"),
+    ("kilowatthour", "kwh"),
+    ("kilowatthours", "kwh"),
+    ("btu", "btu"),
+    ("btus", "btu"),
+    ("ev", "ev"),
+    ("electronvolt", "ev"),
+    ("electronvolts", "ev"),
+    // power
+    ("w", "w"),
+    ("watt", "w"),
+    ("watts", "w"),
+    ("kw", "kw"),
+    ("kilowatt", "kw"),
+    ("kilowatts", "kw"),
+    ("mw", "mw"),
+    ("megawatt", "mw"),
+    ("megawatts", "mw"),
+    ("hp", "hp"),
+    ("horsepower", "hp"),
+    // angle
+    ("deg", "deg"),
+    ("degree", "deg"),
+    ("degrees", "deg"),
+    ("rad", "rad"),
+    ("radian", "rad"),
+    ("radians", "rad"),
+    // frequency
+    ("hz", "hz"),
+    ("hertz", "hz"),
+    ("khz", "khz"),
+    ("kilohertz", "khz"),
+    ("mhz", "mhz"),
+    ("megahertz", "mhz"),
+    ("ghz", "ghz"),
+    ("gigahertz", "ghz"),
 ];
 
 pub(crate) fn normalize_unit(u: &str) -> String {
-    let u = u
-        .to_lowercase()
-        .replace('°', "")
-        .replace(['µ', 'μ'], "u")
-        .replace('²', "2")
-        .replace('³', "3")
-        .replace('^', "");
+    // Single-pass lowercase + symbol fold (was 6 chained `replace` allocs).
+    let mut s = String::with_capacity(u.len());
+    for c in u.chars() {
+        match c {
+            '°' | '^' => {}
+            'µ' | 'μ' => s.push('u'),
+            '²' => s.push('2'),
+            '³' => s.push('3'),
+            _ => {
+                if c.is_ascii() {
+                    s.push(c.to_ascii_lowercase());
+                } else {
+                    s.extend(c.to_lowercase());
+                }
+            }
+        }
+    }
+    let u = s;
 
     // Prefer alias table for consistency with prediction
     for (alias, canon) in UNIT_ALIASES {
@@ -655,6 +780,9 @@ pub(crate) fn normalize_unit(u: &str) -> String {
 }
 
 pub(crate) fn convert(value: f64, from: &str, to: &str) -> Option<(f64, &'static str)> {
+    if !value.is_finite() {
+        return None;
+    }
     if matches!(from, "c" | "f" | "k") && matches!(to, "c" | "f" | "k") {
         let c = match from {
             "c" => value,
@@ -676,7 +804,8 @@ pub(crate) fn convert(value: f64, from: &str, to: &str) -> Option<(f64, &'static
     if cat != cat2 {
         return None;
     }
-    Some((value * from_base / to_base, cat))
+    let out = value * from_base / to_base;
+    out.is_finite().then_some((out, cat))
 }
 
 pub(crate) fn to_base(unit: &str) -> Option<(f64, &'static str)> {
@@ -868,5 +997,24 @@ mod tests {
         // Exact conversions keep a single result.
         let exact = try_conversion("10 kg to lb").expect("exact");
         assert!(exact.conversion.is_some());
+    }
+
+    #[test]
+    fn temperature_and_specialty_predictions() {
+        // Audit Batch 08: `to_base` gap dropped all temperature predictions.
+        let preds = try_conversion_predict("100 c to ").expect("temp predictions");
+        assert!(preds.len() >= 2, "want f + k predictions");
+        assert!(preds.iter().any(|r| r.title.ends_with(" f")));
+        assert!(preds.iter().any(|r| r.title.ends_with(" k")));
+        // Pressure/energy/power now have aliases so empty-target predicts.
+        let preds = try_conversion_predict("10 pa to ").expect("pressure predictions");
+        assert!(preds.iter().any(|r| r.title.ends_with(" kpa")));
+        let preds = try_conversion_predict("10 j to ").expect("energy predictions");
+        assert!(preds.iter().any(|r| r.title.ends_with(" kj")));
+        // Prefix match is case-insensitive without allocating.
+        let preds = try_conversion_predict("10 kg to PO").expect("case-insensitive prefix");
+        assert!(preds.iter().any(|r| r.title.ends_with(" lb")));
+        // Non-finite conversions never produce cards.
+        assert!(super::convert(f64::INFINITY, "kg", "lb").is_none());
     }
 }
