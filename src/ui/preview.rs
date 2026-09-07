@@ -313,6 +313,11 @@ impl PreviewPanel {
         image_title.set_halign(Align::Start);
         image_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         image_title.set_xalign(0.0);
+        // Bound the panel's minimum width: a long unbreakable filename
+        // (e.g. 120-char underscore Cisco cert names) is one Pango word, so
+        // without this the label's minimum blows past 280px, the window
+        // widens abnormally and the list squeezes. Mirrors icon_title(28).
+        image_title.set_max_width_chars(28);
 
         let image_dims = Label::new(None);
         image_dims.add_css_class("hark-preview-meta");
@@ -377,6 +382,9 @@ impl PreviewPanel {
         code_title.set_halign(Align::Start);
         code_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         code_title.set_xalign(0.0);
+        // Same minimum-width bound as image_title: source paths can be long
+        // single tokens and this view has no width cap otherwise.
+        code_title.set_max_width_chars(28);
 
         let code_dims = Label::new(None);
         code_dims.add_css_class("hark-preview-meta");
