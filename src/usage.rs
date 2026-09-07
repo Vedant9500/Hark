@@ -137,11 +137,16 @@ impl UsageStore {
         let now = self.now_clamped();
         {
             let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
-            let e = g.entries.entry(id.to_string()).or_default();
-            e.count = e.count.saturating_add(1);
-            e.last = now;
-            if g.entries.len() > MAX_ENTRIES {
-                prune_entries_pinning(&mut g.entries, MAX_ENTRIES, now, id);
+            if let Some(e) = g.entries.get_mut(id) {
+                e.count = e.count.saturating_add(1);
+                e.last = now;
+            } else {
+                let e = g.entries.entry(id.to_string()).or_default();
+                e.count = 1;
+                e.last = now;
+                if g.entries.len() > MAX_ENTRIES {
+                    prune_entries_pinning(&mut g.entries, MAX_ENTRIES, now, id);
+                }
             }
         }
         self.dirty.store(true, Ordering::Relaxed);
@@ -179,20 +184,20 @@ impl UsageStore {
     pub fn top(&self, n: usize) -> Vec<(String, i64)> {
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let now = self.now_clamped();
-        let mut items: Vec<(String, i64, u64)> = g
+        let mut items: Vec<(&str, i64, u64)> = g
             .entries
             .iter()
-            .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now), e.count))
+            .map(|(id, e)| (id.as_str(), frecency(e.count, e.last, now), e.count))
             .collect();
         items.sort_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| b.2.cmp(&a.2))
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.cmp(b.0))
         });
         items.truncate(n);
         items
             .into_iter()
-            .map(|(id, score, _)| (id, score))
+            .map(|(id, score, _)| (id.to_string(), score))
             .collect()
     }
 
@@ -204,7 +209,7 @@ impl UsageStore {
         }
         let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         let now = self.now_clamped();
-        let mut items: Vec<(String, i64, u64)> = g
+        let mut items: Vec<(&str, i64, u64)> = g
             .entries
             .iter()
             .filter_map(|(id, e)| {
@@ -212,7 +217,7 @@ impl UsageStore {
                 if path.is_empty() {
                     return None;
                 }
-                Some((path.to_string(), frecency(e.count, e.last, now), e.count))
+                Some((path, frecency(e.count, e.last, now), e.count))
             })
             .collect();
         // Same total order as `top` (audit P3): the hot-set 64-of-128 cut
@@ -220,10 +225,10 @@ impl UsageStore {
         items.sort_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| b.2.cmp(&a.2))
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.cmp(b.0))
         });
         items.truncate(n);
-        items.into_iter().map(|(p, _, _)| p).collect()
+        items.into_iter().map(|(p, _, _)| p.to_string()).collect()
     }
 
     /// Flush pending writes (process exit / tests).
@@ -281,14 +286,21 @@ fn prune_entries(entries: &mut HashMap<String, UsageEntry>, keep: usize, now: u6
     if entries.len() <= keep {
         return;
     }
-    let mut ranked: Vec<(String, i64)> = entries
+    let mut ranked: Vec<(&str, i64)> = entries
         .iter()
-        .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
+        .map(|(id, e)| (id.as_str(), frecency(e.count, e.last, now)))
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let retain: std::collections::HashSet<String> =
-        ranked.into_iter().take(keep).map(|(id, _)| id).collect();
-    entries.retain(|id, _| retain.contains(id));
+    // Sort ascending by score; for tied scores, drop lexicographically larger keys first.
+    ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)));
+    let drop_count = entries.len().saturating_sub(keep);
+    let to_drop: Vec<String> = ranked
+        .into_iter()
+        .take(drop_count)
+        .map(|(id, _)| id.to_string())
+        .collect();
+    for id in to_drop {
+        entries.remove(&id);
+    }
 }
 
 /// Prune variant for `record`: the just-recorded id is pinned so a first-use
@@ -303,18 +315,22 @@ fn prune_entries_pinning(
     if entries.len() <= keep {
         return;
     }
-    let mut ranked: Vec<(String, i64)> = entries
+    let mut ranked: Vec<(&str, i64)> = entries
         .iter()
         .filter(|(id, _)| id.as_str() != pin)
-        .map(|(id, e)| (id.clone(), frecency(e.count, e.last, now)))
+        .map(|(id, e)| (id.as_str(), frecency(e.count, e.last, now)))
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let retain: std::collections::HashSet<String> = ranked
+    // Sort ascending by score; for tied scores, drop lexicographically larger keys first.
+    ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)));
+    let drop_count = entries.len().saturating_sub(keep);
+    let to_drop: Vec<String> = ranked
         .into_iter()
-        .take(keep.saturating_sub(1))
-        .map(|(id, _)| id)
+        .take(drop_count)
+        .map(|(id, _)| id.to_string())
         .collect();
-    entries.retain(|id, _| id == pin || retain.contains(id));
+    for id in to_drop {
+        entries.remove(&id);
+    }
 }
 
 /// Load with backup + per-entry salvage (audit P2): mirrors the typos
@@ -351,14 +367,15 @@ fn salvage_usage_file(s: &str) -> UsageFile {
     };
     out.version = v
         .get("version")
-        .and_then(|x| serde_json::from_value(x.clone()).ok())
+        .and_then(|x| x.as_u64())
+        .map(|u| u as u32)
         .unwrap_or_else(default_version);
     if let Some(map) = v.get("entries").and_then(|a| a.as_object()) {
         for (k, ev) in map {
             if k.is_empty() {
                 continue;
             }
-            if let Ok(e) = serde_json::from_value::<UsageEntry>(ev.clone()) {
+            if let Ok(e) = UsageEntry::deserialize(ev) {
                 out.entries.insert(k.clone(), e);
             }
         }

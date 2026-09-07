@@ -623,10 +623,6 @@ fn parse_ipv4_literal(host: &str) -> Option<[u8; 4]> {
     if host.contains(':') {
         return None; // IPv6 handled separately
     }
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.is_empty() || parts.len() > 4 {
-        return None;
-    }
     // Parse one part as u32: decimal, 0x-hex, or 0-leading octal.
     let parse_part = |p: &str| -> Option<u32> {
         if p.is_empty() || p.len() > 10 {
@@ -644,21 +640,32 @@ fn parse_ipv4_literal(host: &str) -> Option<[u8; 4]> {
             p.parse::<u32>().ok()
         }
     };
-    let nums: Vec<u32> = parts.iter().map(|p| parse_part(p)).collect::<Option<_>>()?;
+
+    let mut nums = [0u32; 4];
+    let mut num_count = 0;
+    for part in host.split('.') {
+        if num_count >= 4 {
+            return None;
+        }
+        nums[num_count] = parse_part(part)?;
+        num_count += 1;
+    }
+    if num_count == 0 {
+        return None;
+    }
+
     // inet_aton semantics: intermediate parts are single bytes; the LAST part
     // occupies the remaining low bytes (one per missing part + its own).
     // Example: 1.2.3.4 → 4 single bytes; 169.254.43910 → 169.254 + low16=43910.
     let mut value: u32 = 0;
-    for (i, n) in nums.iter().enumerate() {
-        if i + 1 < nums.len() {
-            if *n > 255 {
-                return None;
-            }
-            value = (value << 8) | *n;
+    for &n in nums.iter().take(num_count - 1) {
+        if n > 255 {
+            return None;
         }
+        value = (value << 8) | n;
     }
-    let last = *nums.last()? as u64;
-    let low_bytes = (5 - nums.len()) as u32; // len=4→1 byte … len=1→4 bytes
+    let last = nums[num_count - 1] as u64;
+    let low_bytes = (5 - num_count) as u32; // num_count=4→1 byte … num_count=1→4 bytes
     let low_max = (1u64 << (8 * u64::from(low_bytes))) - 1;
     if last > low_max {
         return None;
@@ -955,10 +962,11 @@ impl ConfigStore {
         if cfg == **g {
             return;
         }
-        *g = Arc::new(cfg);
+        let arc_cfg = Arc::new(cfg);
+        *g = arc_cfg.clone();
         drop(g);
         self.pending_save.store(true, Ordering::Release);
-        let data = self.serialize_snapshot();
+        let data = serde_json::to_string_pretty(&*arc_cfg).unwrap_or_default();
         let path = self.path.clone();
         std::thread::spawn(move || write_config_disk(&path, &data));
     }
@@ -1138,7 +1146,7 @@ where
 {
     match v.get(key) {
         None => T::default(),
-        Some(sv) => match serde_json::from_value::<T>(sv.clone()) {
+        Some(sv) => match T::deserialize(sv) {
             Ok(t) => t,
             Err(_) => {
                 bad.push(key);
@@ -1229,7 +1237,7 @@ fn is_system_target(p: &Path) -> bool {
     if t == "/" {
         return true;
     }
-    [
+    const SYSTEM_PREFIXES: &[&str] = &[
         "/boot",
         "/proc",
         "/sys",
@@ -1245,9 +1253,10 @@ fn is_system_target(p: &Path) -> bool {
         "/snap",
         "/efi",
         "/boot/efi",
-    ]
-    .iter()
-    .any(|prefix| t == *prefix || t.starts_with(&format!("{prefix}/")))
+    ];
+    SYSTEM_PREFIXES.iter().any(|prefix| {
+        t == *prefix || t.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 pub fn discover_mounts() -> Vec<MountInfo> {
@@ -1266,6 +1275,7 @@ pub fn discover_mounts() -> Vec<MountInfo> {
             };
             // Mount points escape spaces/octals as \040 — restore them.
             let target = PathBuf::from(target.replace("\\040", " "));
+            let target = target.canonicalize().unwrap_or(target);
             if is_pseudo_fs(fstype)
                 || is_container_target(&target)
                 || should_skip_mount_target(&target.to_string_lossy())
@@ -1419,7 +1429,7 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
     for m in mounts {
         if path.starts_with(&m.target)
             && best
-                .map(|b| m.target.components().count() > b.target.components().count())
+                .map(|b| m.target.as_os_str().len() > b.target.as_os_str().len())
                 .unwrap_or(true)
         {
             best = Some(m);
@@ -1427,14 +1437,9 @@ pub fn pretty_path(path: &Path, style: &PathStyle, mounts: &[MountInfo]) -> Stri
     }
 
     if let Some(m) = best {
-        let rest = path
-            .strip_prefix(&m.target)
-            .map(|r| r.display().to_string())
-            .unwrap_or_default();
-        let rest = if rest.is_empty() {
-            String::new()
-        } else {
-            format!("/{rest}")
+        let rest = match path.strip_prefix(&m.target) {
+            Ok(r) if !r.as_os_str().is_empty() => format!("/{}", r.display()),
+            _ => String::new(),
         };
         return match style {
             PathStyle::Drive => {
@@ -1506,25 +1511,47 @@ impl ExcludeSet {
             return false;
         }
         // Component name checks first (common case) — O(components) set lookups.
-        // Set stores ascii-lowercase keys — lowercase the component once and
-        // do a single lookup.
+        // Set stores ascii-lowercase keys — lowercase only when uppercase exists to avoid heap allocation.
         if !self.names.is_empty() {
             for c in path.components() {
-                let name_lower = c.as_os_str().to_string_lossy().to_ascii_lowercase();
-                if self.names.contains(name_lower.as_str()) {
-                    return true;
+                let s = c.as_os_str();
+                if let Some(s_str) = s.to_str() {
+                    if s_str.bytes().any(|b| b.is_ascii_uppercase()) {
+                        let name_lower = s_str.to_ascii_lowercase();
+                        if self.names.contains(name_lower.as_str()) {
+                            return true;
+                        }
+                    } else if self.names.contains(s_str) {
+                        return true;
+                    }
+                } else {
+                    let name_lower = s.to_string_lossy().to_ascii_lowercase();
+                    if self.names.contains(name_lower.as_str()) {
+                        return true;
+                    }
                 }
             }
         }
         if !self.patterns.is_empty() {
-            let comps: Vec<String> = path
+            let comps: Vec<std::borrow::Cow<str>> = path
                 .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+                .map(|c| {
+                    let s = c.as_os_str();
+                    if let Some(s_str) = s.to_str() {
+                        if s_str.bytes().any(|b| b.is_ascii_uppercase()) {
+                            std::borrow::Cow::Owned(s_str.to_ascii_lowercase())
+                        } else {
+                            std::borrow::Cow::Borrowed(s_str)
+                        }
+                    } else {
+                        std::borrow::Cow::Owned(s.to_string_lossy().to_ascii_lowercase())
+                    }
+                })
                 .collect();
             for pattern in &self.patterns {
                 if comps
                     .windows(pattern.len())
-                    .any(|w| w == pattern.as_slice())
+                    .any(|w| w.iter().map(|c| c.as_ref()).eq(pattern.iter().map(|p| p.as_str())))
                 {
                     return true;
                 }

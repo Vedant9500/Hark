@@ -52,7 +52,7 @@ fn main() {
         std::process::exit(2);
     }
     let search_q = search_q.flatten();
-    args.retain(|a| a != "--daemon" && a != "--bench" && a != "--search");
+    args.retain(|a| a != "--daemon" && a != "--bench");
     // Drop only the flag's own operand (audit P3): a blanket retain would
     // also strip a program-path collision (`hark --search gimp gimp` must
     // keep the trailing `gimp`). The operand always exists here — a bare
@@ -110,11 +110,16 @@ fn main() {
 
             let launcher = ui::Launcher::new(app, engine.clone());
             // Daemon first activate: stay hidden unless an early IPC asked to show.
-            let show = !(daemon && first_activate.get()) || pending_toggle.get();
+            let default_show = !(daemon && first_activate.get());
+            let show = if pending_toggle.get() {
+                !default_show
+            } else {
+                default_show
+            };
             if show {
                 launcher.show();
-                pending_toggle.set(false);
             }
+            pending_toggle.set(false);
             first_activate.set(false);
             *slot = Some(launcher);
         });

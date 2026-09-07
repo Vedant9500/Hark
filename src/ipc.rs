@@ -48,9 +48,23 @@ pub fn request_toggle() -> bool {
                 // instead of a silently swallowed keypress — but the write
                 // still counts as delivered for old-daemon compatibility.
                 let mut buf = [0u8; 8];
-                match stream.read(&mut buf) {
-                    Ok(n) if buf.get(..n) == Some(b"ok\n".as_slice()) => {}
-                    _ => eprintln!("hark: ipc: toggle written but not acked"),
+                let mut pos = 0;
+                while pos < buf.len() {
+                    match stream.read(&mut buf[pos..]) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            pos += n;
+                            if buf[..pos].contains(&b'\n') {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if std::str::from_utf8(&buf[..pos]).unwrap_or("").trim() == "ok" {
+                    // Confirmed delivery.
+                } else {
+                    eprintln!("hark: ipc: toggle written but not acked");
                 }
                 return true;
             }
@@ -130,9 +144,7 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
 
     thread::spawn(move || {
         // Rate-limit accept-error logging (fd exhaustion would spam).
-        let mut last_err_log = std::time::Instant::now()
-            .checked_sub(Duration::from_secs(60))
-            .unwrap_or_else(std::time::Instant::now);
+        let mut last_err_log: Option<std::time::Instant> = None;
         for conn in listener.incoming() {
             let stream = match conn {
                 Ok(s) => s,
@@ -140,9 +152,9 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
                     // Accept fails instantly and forever under fd exhaustion
                     // (EMFILE/ENFILE) — instant retry would busy-loop a core
                     // at 100% with no recovery (audit P3). Back off instead.
-                    if last_err_log.elapsed() >= Duration::from_secs(5) {
+                    if last_err_log.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
                         eprintln!("hark: ipc accept error: {e}");
-                        last_err_log = std::time::Instant::now();
+                        last_err_log = Some(std::time::Instant::now());
                     }
                     thread::sleep(Duration::from_millis(20));
                     continue;

@@ -275,9 +275,15 @@ where
         samples.push(t0.elapsed().as_micros() as u64);
         hits = r.len();
     }
+    if samples.is_empty() {
+        return (0, 0, hits);
+    }
     samples.sort_unstable();
-    let median = samples[(samples.len() / 2).min(samples.len() - 1)];
-    let p95 = samples[(((samples.len() as f64) * 0.95).ceil() as usize - 1).min(samples.len() - 1)];
+    let median = samples[samples.len() / 2];
+    let p95_idx = ((samples.len() as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(samples.len() - 1);
+    let p95 = samples[p95_idx];
     (median, p95, hits)
 }
 
@@ -359,13 +365,10 @@ fn proc_cpu_self() -> CpuSnap {
     let Some(rest) = text.rfind(')').map(|i| &text[i + 2..]) else {
         return CpuSnap::default();
     };
-    let parts: Vec<&str> = rest.split_whitespace().collect();
+    let mut parts = rest.split_whitespace();
     // after ')': state is [0], utime is [11], stime is [12] (0-based from after comm)
-    if parts.len() < 13 {
-        return CpuSnap::default();
-    }
-    let utime: u64 = parts[11].parse().unwrap_or(0);
-    let stime: u64 = parts[12].parse().unwrap_or(0);
+    let utime: u64 = parts.nth(11).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let stime: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let hz = sysconf_clk_tck();
     CpuSnap {
         user_ms: (utime as f64) * 1000.0 / hz,
@@ -397,16 +400,19 @@ fn daemon_stats() -> Option<DaemonSnap> {
     let text = String::from_utf8_lossy(&out.stdout);
     let self_pid = std::process::id();
     for line in text.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 5 {
-            continue;
-        }
-        let Ok(pid) = cols[0].parse::<i32>() else {
+        let mut cols = line.split_whitespace();
+        let Some(pid_str) = cols.next() else { continue };
+        let Ok(pid) = pid_str.parse::<i32>() else {
             continue;
         };
         if pid as u32 == self_pid {
             continue;
         }
+        let Some(rss_str) = cols.next() else { continue };
+        let Some(cpu_str) = cols.next() else { continue };
+        let Some(mem_str) = cols.next() else { continue };
+        let Some(etime_str) = cols.next() else { continue };
+
         // check cmdline is --daemon (audit P3): NUL-separated argv compared
         // per-argument — a substring match would attribute any hark process
         // whose query merely contains the flag (e.g. `--search --daemon`).
@@ -417,13 +423,13 @@ fn daemon_stats() -> Option<DaemonSnap> {
         let mem = proc_mem_pid(&pid.to_string());
         return Some(DaemonSnap {
             pid,
-            rss_kb: mem.rss_kb.max(cols[1].parse().unwrap_or(0)),
+            rss_kb: mem.rss_kb.max(rss_str.parse().unwrap_or(0)),
             hwm_kb: mem.hwm_kb,
             vsz_kb: mem.vsz_kb,
             threads: mem.threads,
-            cpu_pct: cols[2].parse().unwrap_or(0.0),
-            mem_pct: cols[3].parse().unwrap_or(0.0),
-            etime: cols[4].to_string(),
+            cpu_pct: cpu_str.parse().unwrap_or(0.0),
+            mem_pct: mem_str.parse().unwrap_or(0.0),
+            etime: etime_str.to_string(),
         });
     }
     None
@@ -446,16 +452,18 @@ fn gpu_stats() -> Option<GpuSnap> {
     if line.is_empty() {
         return None;
     }
-    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-    if parts.len() < 5 {
-        return None;
-    }
+    let mut parts = line.split(',').map(str::trim);
+    let name = parts.next()?.to_string();
+    let util_pct = parts.next()?.to_string();
+    let mem_used_mb = parts.next()?.to_string();
+    let mem_total_mb = parts.next()?.to_string();
+    let driver = parts.next()?.to_string();
     Some(GpuSnap {
-        name: parts[0].to_string(),
-        util_pct: parts[1].to_string(),
-        mem_used_mb: parts[2].to_string(),
-        mem_total_mb: parts[3].to_string(),
-        driver: parts[4].to_string(),
+        name,
+        util_pct,
+        mem_used_mb,
+        mem_total_mb,
+        driver,
     })
 }
 
@@ -481,7 +489,8 @@ fn host_mem() -> Option<HostSnap> {
 }
 
 fn index_cache_bytes() -> Option<u64> {
-    let home = dirs::home_dir()?;
-    let p = home.join(".cache/hark/file-index.json");
+    let p = dirs::cache_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))?
+        .join("hark/file-index.json");
     std::fs::metadata(p).ok().map(|m| m.len())
 }
