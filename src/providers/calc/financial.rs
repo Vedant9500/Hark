@@ -5,7 +5,7 @@
 //! `gst 18% on 1000`, `emi 500000 8% 5 years`, `cagr 10000 to 20000 3 years`,
 //! `72 at 8%`, `100 to 150`, `25/hr to annual`, `60000/yr to hourly`.
 
-use super::util::{card_result, format_number};
+use super::util::{card_result, contains_ignore_ascii_case, format_number};
 use crate::providers::SearchResult;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -24,6 +24,9 @@ fn inr(v: f64) -> String {
 }
 
 fn fmt_pct(v: f64) -> String {
+    if !v.is_finite() {
+        return "0%".into();
+    }
     if (v - v.round()).abs() < 1e-9 {
         format!("{}%", v.round() as i64)
     } else {
@@ -32,6 +35,9 @@ fn fmt_pct(v: f64) -> String {
 }
 
 fn interest(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "interest") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^interest\s+({AMT})\s+at\s+(\d+(?:\.\d+)?)\s*%\s*(?:compounded?\s+)?(?:for|over)\s+(\d+(?:\.\d+)?)\s+(years?|yrs?|y|months?|mos?|mo)(?:\s+compounded?\s*(?:annually|yearly)?)?\s*$"
@@ -44,10 +50,13 @@ fn interest(q: &str) -> Option<SearchResult> {
     let t: f64 = c.get(3)?.as_str().parse().ok()?;
     let unit = c.get(4)?.as_str().to_ascii_lowercase();
     let t_years = if unit.starts_with('m') { t / 12.0 } else { t };
+    if !p.is_finite() || p <= 0.0 {
+        return None;
+    }
     if !rate.is_finite() || !t_years.is_finite() || rate <= 0.0 || t_years < 0.0 {
         return None;
     }
-    let compound = q.to_ascii_lowercase().contains("compound");
+    let compound = contains_ignore_ascii_case(q, "compound");
     let total = if compound {
         p * (1.0 + rate / 100.0).powf(t_years)
     } else {
@@ -90,17 +99,26 @@ fn interest(q: &str) -> Option<SearchResult> {
 }
 
 fn discount(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "off") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(r"(?i)^(\d+(?:\.\d+)?)\s*%\s*off\s+({AMT})\s*$")).unwrap()
     });
     let c = RE.captures(q)?;
     let pct: f64 = c.get(1)?.as_str().parse().ok()?;
     let base = amt(c.get(2)?.as_str())?;
-    if pct <= 0.0 {
+    if !pct.is_finite() || pct <= 0.0 {
+        return None;
+    }
+    if !base.is_finite() || base <= 0.0 {
         return None;
     }
     let saved = base * pct / 100.0;
     let total = base - saved;
+    if !saved.is_finite() || !total.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format_number(total),
@@ -119,6 +137,9 @@ fn discount(q: &str) -> Option<SearchResult> {
 }
 
 fn split(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "split") {
+        return None;
+    }
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(&format!(r"(?i)^split\s+({AMT})\s+(\d+)\s*$")).unwrap());
     let c = RE.captures(q)?;
@@ -127,7 +148,13 @@ fn split(q: &str) -> Option<SearchResult> {
     if n <= 0 {
         return None;
     }
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
     let per = total / n as f64;
+    if !per.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format!("{} each", format_number(per)),
@@ -146,6 +173,9 @@ fn split(q: &str) -> Option<SearchResult> {
 }
 
 fn gst(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "gst") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^(?:gst\s+(\d+(?:\.\d+)?)\s*%\s+on\s+|(\d+(?:\.\d+)?)\s*%\s+gst\s+on\s+)({AMT})\s*$"
@@ -158,11 +188,17 @@ fn gst(q: &str) -> Option<SearchResult> {
         .and_then(|m| m.as_str().parse().ok())
         .or_else(|| c.get(2).and_then(|m| m.as_str().parse().ok()))?;
     let base = amt(c.get(3)?.as_str())?;
-    if pct <= 0.0 {
+    if !pct.is_finite() || pct <= 0.0 {
+        return None;
+    }
+    if !base.is_finite() || base <= 0.0 {
         return None;
     }
     let gst_amt = base * pct / 100.0;
     let total = base + gst_amt;
+    if !gst_amt.is_finite() || !total.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         inr(total),
@@ -182,6 +218,9 @@ fn gst(q: &str) -> Option<SearchResult> {
 }
 
 fn emi(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "emi") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^emi\s+({AMT})\s+(\d+(?:\.\d+)?)\s*%\s+(\d+(?:\.\d+)?)\s+(years?|yrs?|y|months?|mos?|mo)\s*$"
@@ -194,16 +233,33 @@ fn emi(q: &str) -> Option<SearchResult> {
     let t: f64 = c.get(3)?.as_str().parse().ok()?;
     let unit = c.get(4)?.as_str().to_ascii_lowercase();
     let months = if unit.starts_with('m') { t } else { t * 12.0 };
-    if p <= 0.0 || annual_rate <= 0.0 || months <= 0.0 {
+    if !p.is_finite() || p <= 0.0 {
+        return None;
+    }
+    if !annual_rate.is_finite() || annual_rate <= 0.0 {
+        return None;
+    }
+    if !months.is_finite() || months <= 0.0 {
         return None;
     }
     let i = annual_rate / 100.0 / 12.0;
+    if !i.is_finite() || i <= 0.0 {
+        return None;
+    }
     let factor = (1.0 + i).powf(months);
     if !factor.is_finite() || factor <= 1.0 {
         return None;
     }
     let emi_amt = p * i * factor / (factor - 1.0);
     let total_payable = emi_amt * months;
+    if !emi_amt.is_finite() || !total_payable.is_finite() {
+        return None;
+    }
+    let months_disp = format_number(months);
+    let interest_total = total_payable - p;
+    if !interest_total.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format!("{}/mo", inr(emi_amt)),
@@ -211,15 +267,15 @@ fn emi(q: &str) -> Option<SearchResult> {
             "P {} @ {}%/yr · {} months",
             inr(p),
             annual_rate,
-            months as i64
+            months_disp
         ),
         format!(
             "EMI: {}/mo\nPrincipal: {}\nTenure: {} months\nTotal payable: {}\nInterest: {}",
             inr(emi_amt),
             inr(p),
-            months as i64,
+            months_disp,
             inr(total_payable),
-            inr(total_payable - p)
+            inr(interest_total)
         ),
         shown.into(),
         "emi",
@@ -229,6 +285,9 @@ fn emi(q: &str) -> Option<SearchResult> {
 }
 
 fn cagr(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "cagr") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^cagr\s+({AMT})\s+to\s+({AMT})\s+(\d+(?:\.\d+)?)\s+(years?|yrs?|y)\s*$"
@@ -239,10 +298,19 @@ fn cagr(q: &str) -> Option<SearchResult> {
     let start = amt(c.get(1)?.as_str())?;
     let end = amt(c.get(2)?.as_str())?;
     let t: f64 = c.get(3)?.as_str().parse().ok()?;
-    if start <= 0.0 || end <= 0.0 || t <= 0.0 {
+    if !start.is_finite() || start <= 0.0 {
+        return None;
+    }
+    if !end.is_finite() || end <= 0.0 {
+        return None;
+    }
+    if !t.is_finite() || t <= 0.0 {
         return None;
     }
     let rate = (end / start).powf(1.0 / t) - 1.0;
+    if !rate.is_finite() {
+        return None;
+    }
     let pct = fmt_pct(rate * 100.0);
     let shown = q.trim();
     Some(card_result(
@@ -268,15 +336,21 @@ fn cagr(q: &str) -> Option<SearchResult> {
 }
 
 fn rule72(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "72") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)^(?:(?:rule of )?72)\s+at\s+(\d+(?:\.\d+)?)\s*%\s*$").unwrap()
     });
     let c = RE.captures(q)?;
     let rate: f64 = c.get(1)?.as_str().parse().ok()?;
-    if rate <= 0.0 {
+    if !rate.is_finite() || rate <= 0.0 {
         return None;
     }
     let years = 72.0 / rate;
+    if !years.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format!("{} years", format_number(years)),
@@ -290,15 +364,25 @@ fn rule72(q: &str) -> Option<SearchResult> {
 }
 
 fn pct_change(q: &str) -> Option<SearchResult> {
+    // Fast gate: generic `X to Y` runs last, skip regex unless plausible.
+    if !contains_ignore_ascii_case(q, " to ") {
+        return None;
+    }
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(&format!(r"(?i)^({AMT})\s+to\s+({AMT})\s*$")).unwrap());
     let c = RE.captures(q)?;
     let from = amt(c.get(1)?.as_str())?;
     let to = amt(c.get(2)?.as_str())?;
+    if !from.is_finite() || !to.is_finite() {
+        return None;
+    }
     if from == 0.0 {
         return None;
     }
     let change = (to - from) / from * 100.0;
+    if !change.is_finite() {
+        return None;
+    }
     let sign = if change >= 0.0 { "+" } else { "" };
     let shown = q.trim();
     let pct = format!("{sign}{}", fmt_pct(change));
@@ -316,6 +400,9 @@ fn pct_change(q: &str) -> Option<SearchResult> {
 const WORK_HOURS_PER_YEAR: f64 = 2080.0;
 
 fn hourly_to_annual(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "/hr") {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^({AMT})\s*/hr\s+to\s+(annual|annum|yearly|per\s+year)\s*$"
@@ -324,7 +411,13 @@ fn hourly_to_annual(q: &str) -> Option<SearchResult> {
     });
     let c = RE.captures(q)?;
     let hourly = amt(c.get(1)?.as_str())?;
+    if !hourly.is_finite() || hourly <= 0.0 {
+        return None;
+    }
     let annual = hourly * WORK_HOURS_PER_YEAR;
+    if !annual.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format!("{}/yr", format_number(annual)),
@@ -348,6 +441,12 @@ fn hourly_to_annual(q: &str) -> Option<SearchResult> {
 }
 
 fn annual_to_hourly(q: &str) -> Option<SearchResult> {
+    if !contains_ignore_ascii_case(q, "/yr")
+        && !contains_ignore_ascii_case(q, "/year")
+        && !contains_ignore_ascii_case(q, "annum")
+    {
+        return None;
+    }
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(&format!(
             r"(?i)^({AMT})\s*/(?:yr|year|annum)\s+to\s+(?:hourly|per\s+hour|/hr)\s*$"
@@ -356,7 +455,13 @@ fn annual_to_hourly(q: &str) -> Option<SearchResult> {
     });
     let c = RE.captures(q)?;
     let annual = amt(c.get(1)?.as_str())?;
+    if !annual.is_finite() || annual <= 0.0 {
+        return None;
+    }
     let hourly = annual / WORK_HOURS_PER_YEAR;
+    if !hourly.is_finite() {
+        return None;
+    }
     let shown = q.trim();
     Some(card_result(
         format!("{}/hr", format_number(hourly)),
@@ -447,6 +552,18 @@ mod tests {
         let huge_years = format!("1{}", "0".repeat(308));
         let q = format!("interest 1 crore at 5% for {huge_years} years compounded");
         assert!(try_financial(&q).is_none());
+    }
+
+    #[test]
+    fn audit_b10_rejects_bad_amounts() {
+        assert!(try_financial("interest -1000 at 5% for 3 years").is_none());
+        assert!(try_financial("20% off -500").is_none());
+        assert!(try_financial("split -45 4").is_none());
+        assert!(try_financial("gst 18% on -1000").is_none());
+        assert!(try_financial("-25/hr to annual").is_none());
+        assert!(try_financial("-60000/yr to hourly").is_none());
+        assert!(try_financial("72 at 0%").is_none());
+        assert!(try_financial("cagr 10000 to 20000 0 years").is_none());
     }
 
     #[test]

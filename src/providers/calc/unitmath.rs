@@ -11,6 +11,7 @@ use super::util::{card_result, format_number, parse_qty_number};
 use crate::providers::SearchResult;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::borrow::Cow;
 
 #[derive(Clone)]
 struct Qty {
@@ -32,7 +33,11 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
         return Some(r);
     }
 
-    let norm = q.replace('×', "*").replace('÷', "/");
+    let norm: Cow<str> = if q.contains(['×', '÷']) {
+        Cow::Owned(q.replace('×', "*").replace('÷', "/"))
+    } else {
+        Cow::Borrowed(q)
+    };
     let (qty, had_op, unitful, had_fraction) = parse_expr(&norm)?;
     if !unitful {
         // Pure-number expression → plain math owns it.
@@ -45,10 +50,29 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
     }
 
     let formatted = if had_fraction {
-        // Show a bare fraction in its original unit ("0.5 cup").
-        let v = qty.base / unit_factor(qty.unit.as_deref()?)?;
-        format!("{} {}", format_number(v), qty.unit.as_deref()?)
+        // Show a bare fraction in its original unit ("0.5 cup"). Compound
+        // results (e.g. "1/2 cup + 1/2 cup") lose the unit in add_sub, so
+        // fall back to the smart display instead of dropping the query.
+        if let Some(u) = qty.unit.as_deref() {
+            let f = unit_factor(u)?;
+            if !qty.base.is_finite() {
+                return None;
+            }
+            let v = qty.base / f;
+            if !v.is_finite() {
+                return None;
+            }
+            format!("{} {}", format_number(v), u)
+        } else {
+            if !qty.base.is_finite() {
+                return None;
+            }
+            display_qty(&qty)
+        }
     } else {
+        if !qty.base.is_finite() {
+            return None;
+        }
         display_qty(&qty)
     };
     let shown = q.trim().to_string();
@@ -69,17 +93,30 @@ pub(crate) fn try_unit_math(q: &str) -> Option<SearchResult> {
 /// (meters vs minutes/million, bytes vs billion, tonne vs trillion).
 fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
     let unit = qty.unit.as_deref()?;
-    if matches!(unit, "m" | "b" | "t") {
+    if unit.eq_ignore_ascii_case("m") || unit.eq_ignore_ascii_case("b") || unit.eq_ignore_ascii_case("t") {
+        return None;
+    }
+    if !qty.base.is_finite() {
         return None;
     }
     let factor = unit_factor(unit)?;
     let orig = qty.base / factor;
+    if !orig.is_finite() {
+        return None;
+    }
     let base_unit = match qty.cat {
         Some("length") => "m",
         Some("mass") => "g",
         Some("volume") => "l",
         Some("data") => "b",
         Some("time") => "s",
+        Some("area") => "m2",
+        Some("speed") => "m/s",
+        Some("pressure") => "pa",
+        Some("energy") => "j",
+        Some("power") => "w",
+        Some("angle") => "rad",
+        Some("frequency") => "hz",
         _ => return None,
     };
     // Home display unit for the convertible categories; time/data keep
@@ -99,11 +136,28 @@ fn bare_value_card(qty: &Qty, shown: &str) -> Option<SearchResult> {
         _ => base_unit,
     };
     let title = match qty.cat {
-        Some("time") => super::duration::format_duration(qty.base),
-        Some("data") => smart_prefix(qty.base, "data"),
+        Some("time") => {
+            if qty.base < 0.0 {
+                format!("-{}", super::duration::format_duration(qty.base.abs()))
+            } else {
+                super::duration::format_duration(qty.base)
+            }
+        }
+        Some("data")
+        | Some("area")
+        | Some("speed")
+        | Some("pressure")
+        | Some("energy")
+        | Some("power")
+        | Some("angle")
+        | Some("frequency") => smart_prefix(qty.base, qty.cat.unwrap_or("data")),
         _ => {
             let (df, _) = to_base(display_unit)?;
-            format!("{} {display_unit}", format_number(qty.base / df))
+            let v = qty.base / df;
+            if !v.is_finite() {
+                return None;
+            }
+            format!("{} {display_unit}", format_number(v))
         }
     };
     let subtitle = format!("{} {} = {title}", format_number(orig), unit);
@@ -130,6 +184,9 @@ fn try_pct_units(q: &str) -> Option<SearchResult> {
     }
     let mut out = qty.clone();
     out.base = qty.base * pct / 100.0;
+    if !out.base.is_finite() {
+        return None;
+    }
     out.display = None;
     let formatted = display_qty(&out);
     let shown = c.get(2)?.as_str().trim();
@@ -158,10 +215,16 @@ fn try_tip_units(q: &str) -> Option<SearchResult> {
     let shown = c.get(2)?.as_str().trim();
     let mut tip = qty.clone();
     tip.base = qty.base * pct / 100.0;
+    if !tip.base.is_finite() {
+        return None;
+    }
     tip.display = None;
     let tip_disp = display_qty(&tip);
     let mut total = qty.clone();
     total.base = qty.base * (1.0 + pct / 100.0);
+    if !total.base.is_finite() {
+        return None;
+    }
     total.display = None;
     let total_disp = display_qty(&total);
     let title = format!("Total {total_disp}");
@@ -373,7 +436,13 @@ fn parse_term(p: &mut P) -> Option<(Qty, bool, bool)> {
         if cnum != "length" || cden != "time" {
             return None;
         }
+        if fd == 0.0 {
+            return None;
+        }
         value *= fn_ / fd;
+        if !value.is_finite() {
+            return None;
+        }
         return Some((
             Qty {
                 base: value,
@@ -387,9 +456,13 @@ fn parse_term(p: &mut P) -> Option<(Qty, bool, bool)> {
     }
 
     let (factor, cat) = to_base(&normalize_unit(&u))?;
+    let base = value * factor;
+    if !base.is_finite() {
+        return None;
+    }
     Some((
         Qty {
-            base: value * factor,
+            base,
             cat: Some(cat),
             unit: Some(u),
             display: None,
@@ -408,6 +481,9 @@ fn add_sub(a: Qty, b: Qty, op: char) -> Option<Qty> {
     } else {
         a.base - b.base
     };
+    if !base.is_finite() {
+        return None;
+    }
     Some(Qty {
         base,
         cat: a.cat,
@@ -420,15 +496,23 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
     match op {
         '*' => {
             if a.cat.is_none() {
+                let base = a.base * b.base;
+                if !base.is_finite() {
+                    return None;
+                }
                 Some(Qty {
-                    base: a.base * b.base,
+                    base,
                     cat: b.cat,
                     unit: b.unit,
                     display: None,
                 })
             } else if b.cat.is_none() {
+                let base = a.base * b.base;
+                if !base.is_finite() {
+                    return None;
+                }
                 Some(Qty {
-                    base: a.base * b.base,
+                    base,
                     cat: a.cat,
                     unit: a.unit,
                     display: None,
@@ -442,8 +526,12 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
                 if b.base == 0.0 {
                     return None;
                 }
+                let base = a.base / b.base;
+                if !base.is_finite() {
+                    return None;
+                }
                 Some(Qty {
-                    base: a.base / b.base,
+                    base,
                     cat: a.cat,
                     unit: a.unit,
                     display: None,
@@ -451,18 +539,31 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
             } else if a.cat.is_none() {
                 None
             } else if a.cat == Some("length") && b.cat == Some("time") {
+                if b.base == 0.0 {
+                    return None;
+                }
+                let base = a.base / b.base;
+                if !base.is_finite() {
+                    return None;
+                }
                 let unit_a = a.unit.clone().unwrap_or_else(|| "m".into());
                 let b_secs = b.base;
                 let af = unit_factor(&unit_a)?;
                 let display = if matches!(b.unit.as_deref(), Some("s") | Some("ms")) {
                     let v = (a.base / af) / b_secs;
+                    if !v.is_finite() {
+                        return None;
+                    }
                     format!("{} {}/s", format_number(v), unit_a)
                 } else {
                     let v = (a.base / af) / (b_secs / 3600.0);
+                    if !v.is_finite() {
+                        return None;
+                    }
                     format!("{} {}/h", format_number(v), unit_a)
                 };
                 Some(Qty {
-                    base: a.base / b.base,
+                    base,
                     cat: Some("speed"),
                     unit: None,
                     display: Some(display),
@@ -471,8 +572,12 @@ fn mul_div(a: Qty, b: Qty, op: char) -> Option<Qty> {
                 if b.base == 0.0 {
                     return None;
                 }
+                let base = a.base / b.base;
+                if !base.is_finite() {
+                    return None;
+                }
                 Some(Qty {
-                    base: a.base / b.base,
+                    base,
                     cat: None,
                     unit: None,
                     display: None,
@@ -510,14 +615,27 @@ fn display_qty(q: &Qty) -> String {
 /// Pick the prefix that lands the value ≥ 1 (largest first); falls back to the
 /// smallest prefix. `2km/5` → "400 m", `200mb * 10` → "2 gb".
 fn smart_prefix(base: f64, cat: &str) -> String {
+    if !base.is_finite() {
+        return format_number(base);
+    }
     let list: &[&str] = match cat {
         "length" => &["km", "m", "cm", "mm"],
         "mass" => &["t", "kg", "g", "mg"],
         "data" => &["tb", "gb", "mb", "kb", "b"],
-        "volume" => &["gal", "l", "pt", "cup", "ml", "tbsp", "tsp"],
+        // Descending by factor: tbsp/tsp sit above ml, otherwise unreachable.
+        "volume" => &["gal", "l", "pt", "cup", "tbsp", "tsp", "ml"],
         "area" => &["km2", "ha", "acre", "m2", "ft2", "cm2", "mm2"],
         "speed" => &["km/h", "m/s"],
-        _ => return format!("{} {cat}", format_number(base)),
+        "pressure" => &["atm", "bar", "psi", "kpa", "mmhg", "pa"],
+        "energy" => &["kwh", "kcal", "wh", "btu", "kj", "cal", "j", "ev"],
+        "power" => &["mw", "kw", "hp", "w"],
+        "angle" => &["deg", "rad"],
+        "frequency" => &["ghz", "mhz", "khz", "hz"],
+        "time" => &["yr", "wk", "d", "h", "min", "s", "ms", "us"],
+        _ => {
+            // Unknown category: show raw value, never the category name.
+            return format_number(base);
+        }
     };
     let abs = base.abs();
     let mut chosen = *list.last().expect("non-empty");
@@ -577,6 +695,27 @@ mod tests {
     #[test]
     fn fractions() {
         assert_eq!(t("1/2 cup"), "0.5 cup");
+        // Fraction arithmetic keeps the result instead of dropping it.
+        assert_eq!(t("1/2 cup + 1/2 cup"), "1 cup");
+    }
+
+    #[test]
+    fn audit_b09_guards() {
+        // Length/time divide-by-zero rejects instead of inf.
+        assert!(try_unit_math("5km / 0h").is_none());
+        assert!(try_unit_math("5km / 0s").is_none());
+        // Overflow rejects instead of rendering inf.
+        assert!(try_unit_math("1e308 m * 1e308").is_none());
+        // Ambiguous single letters stay unresolved, any case.
+        assert!(try_unit_math("100M").is_none());
+        assert!(try_unit_math("1B").is_none());
+        // Bare area/speed render instead of vanishing.
+        assert!(try_unit_math("5 acre").is_some());
+        assert!(try_unit_math("10 mph").is_some());
+        // tbsp/tsp reachable after volume reorder (15ml = 1 tbsp).
+        assert_eq!(t("2 tbsp + 1 tbsp"), "3 tbsp");
+        // Pressure arithmetic shows units, never the category name.
+        assert_eq!(t("2pa + 3pa"), "5 pa");
     }
 
     #[test]

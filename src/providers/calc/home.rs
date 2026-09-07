@@ -86,12 +86,15 @@ fn is_us_zone(zone: &str) -> bool {
 
 fn is_imperial_zone(zone: &str) -> bool {
     // US customary plus the only other holdouts (Liberia, Myanmar).
-    is_us_zone(zone) || zone == "Africa/Monrovia" || zone == "Asia/Yangon"
+    is_us_zone(zone)
+        || zone == "Africa/Monrovia"
+        || zone == "Asia/Yangon"
+        || zone == "Asia/Rangoon"
 }
 
 fn currency_for_zone(zone: &str) -> &'static str {
-    // South Asia
-    if zone == "Asia/Kolkata" {
+    // South Asia (include deprecated TZ links still present on some systems).
+    if zone == "Asia/Kolkata" || zone == "Asia/Calcutta" {
         return "INR";
     }
     if zone == "Asia/Colombo" {
@@ -120,6 +123,15 @@ fn currency_for_zone(zone: &str) -> &'static str {
     if zone == "Asia/Seoul" {
         return "KRW";
     }
+    if zone == "Asia/Taipei" {
+        return "TWD";
+    }
+    if zone == "Asia/Ho_Chi_Minh" || zone == "Asia/Saigon" {
+        return "VND";
+    }
+    if zone == "Asia/Kuala_Lumpur" {
+        return "MYR";
+    }
     if zone == "Asia/Singapore" {
         return "SGD";
     }
@@ -144,7 +156,37 @@ fn currency_for_zone(zone: &str) -> &'static str {
     if zone == "Asia/Jerusalem" {
         return "ILS";
     }
-    // Europe
+    // Europe (non-eurozone first — the `Europe/` catch-all below returns EUR).
+    if zone == "Europe/Zurich" {
+        return "CHF";
+    }
+    if zone == "Europe/Stockholm" {
+        return "SEK";
+    }
+    if zone == "Europe/Oslo" {
+        return "NOK";
+    }
+    if zone == "Europe/Copenhagen" {
+        return "DKK";
+    }
+    if zone == "Europe/Prague" {
+        return "CZK";
+    }
+    if zone == "Europe/Warsaw" {
+        return "PLN";
+    }
+    if zone == "Europe/Budapest" {
+        return "HUF";
+    }
+    if zone == "Europe/Bucharest" {
+        return "RON";
+    }
+    if zone == "Europe/Sofia" {
+        return "BGN";
+    }
+    if zone == "Atlantic/Reykjavik" {
+        return "ISK";
+    }
     if zone == "Europe/London" {
         return "GBP";
     }
@@ -201,7 +243,7 @@ fn currency_for_zone(zone: &str) -> &'static str {
     if zone.starts_with("Australia/") {
         return "AUD";
     }
-    if zone == "Pacific/Auckland" {
+    if zone == "Pacific/Auckland" || zone == "Pacific/Chatham" {
         return "NZD";
     }
     if zone == "Africa/Cairo" {
@@ -252,5 +294,18 @@ mod tests {
         let p = prefs_for_zone("");
         assert_eq!(p.currency, "USD");
         assert!(p.metric);
+    }
+
+    #[test]
+    fn audit_b10_currency_gaps() {
+        assert_eq!(prefs_for_zone("Europe/Zurich").currency, "CHF");
+        assert_eq!(prefs_for_zone("Europe/Stockholm").currency, "SEK");
+        assert_eq!(prefs_for_zone("Atlantic/Reykjavik").currency, "ISK");
+        assert_eq!(prefs_for_zone("Asia/Calcutta").currency, "INR");
+        assert_eq!(prefs_for_zone("Asia/Ho_Chi_Minh").currency, "VND");
+        assert_eq!(prefs_for_zone("Pacific/Chatham").currency, "NZD");
+        // Myanmar is an imperial holdout, old + new TZ names agree.
+        assert!(!prefs_for_zone("Asia/Rangoon").metric);
+        assert!(!prefs_for_zone("Asia/Yangon").metric);
     }
 }

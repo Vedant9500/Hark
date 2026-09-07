@@ -5,7 +5,7 @@
 //! `double 2 cups flour`, `scale 1.5x 200g rice`, `4 servings to 8 2 cups rice`,
 //! `fan 200c to conventional`, `conventional 220 c to fan`.
 
-use super::util::{card_result, format_number, parse_qty_number};
+use super::util::{card_result, contains_ignore_ascii_case, format_number, parse_qty_number};
 use crate::providers::SearchResult;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -74,12 +74,18 @@ fn find_ingredient(tail: &str) -> Option<&'static Ingredient> {
     // matching lets `oil` win inside `oily` and short aliases shadow longer,
     // more specific ones (`milk` inside `milk chocolate` still resolves to
     // milk — no chocolate density exists — but at least deliberately).
-    let t = format!(" {} ", tail.to_ascii_lowercase());
+    // Zero-alloc: lowercase once, then byte-window whole-word search without
+    // per-alias `format!(" {a} ")` heap allocations.
+    let lower = tail.to_ascii_lowercase();
+    let t = lower.as_bytes();
     let mut best: Option<&'static Ingredient> = None;
     let mut best_len = 0usize;
     for ing in INGREDIENTS {
         for a in ing.aliases {
-            if a.len() > best_len && t.contains(&format!(" {a} ")) {
+            if a.len() <= best_len {
+                continue;
+            }
+            if contains_word(t, a.as_bytes()) {
                 best = Some(ing);
                 best_len = a.len();
             }
@@ -88,15 +94,31 @@ fn find_ingredient(tail: &str) -> Option<&'static Ingredient> {
     best
 }
 
-/// Volume units → ml. `fl oz` handled after whitespace-normalizing.
+/// ASCII whole-word contains: `needle` must appear surrounded by non-letters
+/// (or string edges). Both sides already lowercased; byte-based, no alloc.
+fn contains_word(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .any(|(i, w)| {
+            w.eq_ignore_ascii_case(needle)
+                && (i == 0 || !haystack[i - 1].is_ascii_alphabetic())
+                && (i + needle.len() == haystack.len()
+                    || !haystack[i + needle.len()].is_ascii_alphabetic())
+        })
+}
+
+/// Volume units → ml. `fl oz` handled without allocating.
 fn vol_ml(unit: &str) -> Option<f64> {
-    let u = unit.replace(' ', "");
-    match u.as_str() {
+    match unit {
         "cup" | "cups" => Some(ML_PER_CUP),
         "tbsp" | "tbsps" | "tablespoon" | "tablespoons" => Some(14.786_764_8),
         "tsp" | "tsps" | "teaspoon" | "teaspoons" => Some(4.928_921_59),
-        "ml" | "milliliter" | "milliliters" => Some(1.0),
-        "l" | "liter" | "liters" => Some(1000.0),
+        "ml" | "milliliter" | "milliliters" | "millilitre" | "millilitres" => Some(1.0),
+        "l" | "liter" | "liters" | "litre" | "litres" => Some(1000.0),
         "floz" | "fl oz" => Some(29.573_529_6),
         _ => None,
     }
@@ -131,8 +153,8 @@ fn unit_label(unit: &str) -> &'static str {
         "cups" => "cups",
         "tbsp" | "tbsps" | "tablespoon" | "tablespoons" => "tbsp",
         "tsp" | "tsps" | "teaspoon" | "teaspoons" => "tsp",
-        "ml" | "milliliter" | "milliliters" => "ml",
-        "l" | "liter" | "liters" => "l",
+        "ml" | "milliliter" | "milliliters" | "millilitre" | "millilitres" => "ml",
+        "l" | "liter" | "liters" | "litre" | "litres" => "l",
         "floz" | "fl oz" => "fl oz",
         "g" | "gram" | "grams" => "g",
         "kg" | "kilogram" | "kilograms" => "kg",
@@ -146,7 +168,7 @@ static RE_DENSITY: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)^\s*([+-]?\d+(?:\.\d+)?(?:/\d+)?)\s*",
         r"(cup|cups|tbsp|tbsps|tablespoon|tablespoons|tsp|tsps|teaspoon|teaspoons|",
-        r"ml|milliliter|milliliters|l|liter|liters|fl\s?oz|floz|",
+        r"ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|fl\s?oz|",
         r"g|gram|grams|kg|kilogram|kilograms|oz|ounce|ounces|lb|lbs|pound|pounds|",
         r"stick|sticks)\s+(?:of\s+)?(.+?)\s*$",
     ))
@@ -197,10 +219,32 @@ pub(crate) fn try_cooking(q: &str) -> Option<SearchResult> {
             return None;
         }
         let mass = qty * G_PER_BUTTER_STICK;
+        if !mass.is_finite() {
+            return None;
+        }
+        let density = ing.g_per_cup / ML_PER_CUP; // g/ml
+        let v_ml = mass / density;
+        if !v_ml.is_finite() {
+            return None;
+        }
         let shown = q.trim().to_string();
         let (out, out_label) = match target.as_deref() {
-            Some(t) if mass_g(t).is_some() => (mass_to(mass, t), unit_label(t)),
-            _ => (mass, "g"),
+            Some(t) if mass_g(t).is_some() => {
+                let v = mass_to(mass, t);
+                if !v.is_finite() {
+                    return None;
+                }
+                (v, unit_label(t))
+            }
+            Some(t) if vol_ml(t).is_some() => {
+                let v = vol_to(v_ml, t);
+                if !v.is_finite() {
+                    return None;
+                }
+                (v, unit_label(t))
+            }
+            Some(_) => return None,
+            None => (mass, "g"),
         };
         let title = format!("{} {}", format_number(out), out_label);
         let subtitle = format!(
@@ -223,30 +267,67 @@ pub(crate) fn try_cooking(q: &str) -> Option<SearchResult> {
 
     let ing = find_ingredient(&ing_str)?;
     let density = ing.g_per_cup / ML_PER_CUP; // g/ml
+    if !density.is_finite() || density <= 0.0 {
+        return None;
+    }
 
     // Normalize both ways so any density pair is computable.
     let v_ml = vol_ml(&unit_raw).map(|ml| qty * ml);
     let mass = mass_g(&unit_raw).map(|g| qty * g);
     let (v_ml, g_mass) = match (v_ml, mass) {
-        (Some(v), None) => (v, v * density),
-        (None, Some(m)) => (m / density, m),
+        (Some(v), None) => {
+            if !v.is_finite() {
+                return None;
+            }
+            let m = v * density;
+            if !m.is_finite() {
+                return None;
+            }
+            (v, m)
+        }
+        (None, Some(m)) => {
+            if !m.is_finite() {
+                return None;
+            }
+            let v = m / density;
+            if !v.is_finite() {
+                return None;
+            }
+            (v, m)
+        }
         _ => return None,
     };
 
     // Pick output unit: explicit target, else the natural opposite.
     let (out, out_label) = if let Some(t) = target {
         if mass_g(&t).is_some() {
-            (mass_to(g_mass, &t), unit_label(&t))
+            let v = mass_to(g_mass, &t);
+            if !v.is_finite() {
+                return None;
+            }
+            (v, unit_label(&t))
         } else if vol_ml(&t).is_some() {
-            (vol_to(v_ml, &t), unit_label(&t))
+            let v = vol_to(v_ml, &t);
+            if !v.is_finite() {
+                return None;
+            }
+            (v, unit_label(&t))
         } else {
             return None;
         }
     } else if vol_ml(&unit_raw).is_some() {
         let u = default_mass_unit(g_mass);
-        (mass_to(g_mass, u), u)
+        let v = mass_to(g_mass, u);
+        if !v.is_finite() {
+            return None;
+        }
+        (v, u)
     } else {
-        (vol_to(v_ml, "cups"), "cups")
+        let v = vol_to(v_ml, "cups");
+        if !v.is_finite() {
+            return None;
+        }
+        (v, "cups")
     };
 
     let shown = q.trim().to_string();
@@ -277,7 +358,7 @@ static RE_REST: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)^\s*(\d+(?:\.\d+)?(?:/\d+)?)\s*",
         r"(cup|cups|tbsp|tbsps|tablespoon|tablespoons|tsp|tsps|teaspoon|teaspoons|",
-        r"ml|milliliter|milliliters|l|liter|liters|",
+        r"ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|",
         r"g|gram|grams|kg|kilogram|kilograms|oz|ounce|ounces|lb|lbs|pound|pounds)",
         r"\s+(?:of\s+)?(.+?)\s*$",
     ))
@@ -302,19 +383,24 @@ fn scale_prefix(s: &str) -> Option<(f64, &str)> {
             Lazy::new(|| Regex::new(r"(?i)^(\d+(?:\.\d+)?)x?\s+(.+)$").unwrap());
         if let Some(c) = RE_SCALE.captures(rest) {
             let f: f64 = c.get(1)?.as_str().parse().ok()?;
-            if f > 0.0 {
+            if f > 0.0 && f.is_finite() {
                 return Some((f, c.get(2)?.as_str()));
             }
         }
         return None;
     }
-    static RE_SERVINGS: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)^(\d+)\s+servings?\s+(?:to|for)\s+(\d+)\s+(.+)$").unwrap());
+    static RE_SERVINGS: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^(\d+(?:\.\d+)?)\s+servings?\s+(?:to|for)\s+(\d+(?:\.\d+)?)\s+(.+)$")
+            .unwrap()
+    });
     if let Some(c) = RE_SERVINGS.captures(s) {
         let from: f64 = c.get(1)?.as_str().parse().ok()?;
         let to: f64 = c.get(2)?.as_str().parse().ok()?;
-        if from > 0.0 {
-            return Some((to / from, c.get(3)?.as_str()));
+        if from > 0.0 && from.is_finite() && to.is_finite() {
+            let factor = to / from;
+            if factor.is_finite() && factor > 0.0 {
+                return Some((factor, c.get(3)?.as_str()));
+            }
         }
     }
     None
@@ -322,29 +408,57 @@ fn scale_prefix(s: &str) -> Option<(f64, &str)> {
 
 /// `double 2 cups flour`, `scale 1.5x 200g rice`, `4 servings to 8 2 cups rice`.
 pub(crate) fn try_recipe_scale(q: &str) -> Option<SearchResult> {
-    let lower = q.trim().to_ascii_lowercase();
-    let (factor, rest) = scale_prefix(&lower)?;
-    let c = RE_REST.captures(rest)?;
-    let qty = parse_qty_number(c.get(1)?.as_str())?;
-    if qty <= 0.0 {
+    // Fast gate before lowercasing the whole query per keystroke.
+    let t = q.trim_start();
+    let first = t.as_bytes().first().copied().unwrap_or(0).to_ascii_lowercase();
+    let looks_like_scale = matches!(first, b'd' | b't' | b'q' | b'h' | b's' | b'0'..=b'9')
+        && (contains_ignore_ascii_case(t, "double ")
+            || contains_ignore_ascii_case(t, "triple ")
+            || contains_ignore_ascii_case(t, "quadruple ")
+            || contains_ignore_ascii_case(t, "quintuple ")
+            || contains_ignore_ascii_case(t, "halve ")
+            || contains_ignore_ascii_case(t, "scale ")
+            || contains_ignore_ascii_case(t, "serving"));
+    if !looks_like_scale {
         return None;
     }
-    let unit_raw = c.get(2)?.as_str().to_ascii_lowercase();
+    let lower = q.trim().to_ascii_lowercase();
+    let (factor, rest) = scale_prefix(&lower)?;
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    let c = RE_REST.captures(rest)?;
+    let qty = parse_qty_number(c.get(1)?.as_str())?;
+    if qty <= 0.0 || !qty.is_finite() {
+        return None;
+    }
+    // `rest` is already lowercased, no second lowercase needed.
+    let unit_raw = c.get(2)?.as_str();
     let ing = find_ingredient(c.get(3)?.as_str())?;
 
     let scaled = qty * factor;
+    if !scaled.is_finite() {
+        return None;
+    }
     let shown = q.trim().to_string();
     let title = format!(
         "{} {} {}",
         format_number(scaled),
-        unit_label(&unit_raw),
+        unit_label(unit_raw),
         ing.name
     );
 
     // Bonus mass note when density is known and the unit is volume.
-    let mass_note = vol_ml(&unit_raw).map(|ml| {
+    let mass_note = vol_ml(unit_raw).and_then(|ml| {
         let mass = scaled * ml * (ing.g_per_cup / ML_PER_CUP);
-        format!(" ≈ {} {}", format_number(mass), default_mass_unit(mass))
+        if !mass.is_finite() {
+            return None;
+        }
+        Some(format!(
+            " ≈ {} {}",
+            format_number(mass),
+            default_mass_unit(mass)
+        ))
     });
     let subtitle = match mass_note {
         Some(n) => format!("{shown} · {}×{n}", format_number(factor)),
@@ -378,13 +492,23 @@ pub(crate) fn try_oven(q: &str) -> Option<SearchResult> {
     });
 
     let (v, unit, fan_to_conv, target) = {
-        let c = RE_FAN.captures(q).or_else(|| RE_CONV.captures(q))?;
-        let fan_to_conv = RE_FAN.is_match(q);
-        let v: f64 = c.get(2)?.as_str().parse().ok()?;
-        let unit = c.get(3)?.as_str().to_ascii_lowercase();
-        let target = c.get(4)?.as_str();
-        (v, unit, fan_to_conv, target)
+        if let Some(c) = RE_FAN.captures(q) {
+            let v: f64 = c.get(2)?.as_str().parse().ok()?;
+            let unit = c.get(3)?.as_str().to_ascii_lowercase();
+            let target = c.get(4)?.as_str();
+            (v, unit, true, target)
+        } else {
+            let c = RE_CONV.captures(q)?;
+            let v: f64 = c.get(2)?.as_str().parse().ok()?;
+            let unit = c.get(3)?.as_str().to_ascii_lowercase();
+            let target = c.get(4)?.as_str();
+            (v, unit, false, target)
+        }
     };
+
+    if !v.is_finite() {
+        return None;
+    }
 
     let v_c = match unit.as_str() {
         "c" => v,
@@ -418,9 +542,13 @@ pub(crate) fn try_oven(q: &str) -> Option<SearchResult> {
         format_number(FAN_OFFSET_C),
         if unit == "f" { "F" } else { "C" }
     );
-    let badge = match target {
-        "fan" | "convection" | "convect" => "fan",
-        _ => "conventional",
+    let badge = if target.eq_ignore_ascii_case("fan")
+        || target.eq_ignore_ascii_case("convection")
+        || target.eq_ignore_ascii_case("convect")
+    {
+        "fan"
+    } else {
+        "conventional"
     };
     Some(card_result(
         title.clone(),
@@ -479,6 +607,17 @@ mod tests {
         assert_eq!(r.title, "113.4 g");
         let r = try_cooking("2 sticks butter in oz").expect("sticks oz");
         assert_eq!(r.title, "8.0001 oz");
+        // Volume targets respect density instead of falling back to grams.
+        let r = try_cooking("1 stick butter in cups").expect("stick cups");
+        assert_eq!(r.title, "0.499559 cups");
+    }
+
+    #[test]
+    fn audit_b09_uk_spellings_and_servings() {
+        let r = try_cooking("500ml milk in litres").expect("uk litre");
+        assert!(r.title.ends_with(" l"), "{}", r.title);
+        let r = try_recipe_scale("4.5 servings to 9 2 cups rice").expect("decimal servings");
+        assert_eq!(r.title, "4 cups rice");
     }
 
     #[test]

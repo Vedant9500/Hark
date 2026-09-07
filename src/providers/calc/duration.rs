@@ -1,14 +1,13 @@
 use super::timezone::parse_clock;
-use super::util::{card_result, relative_secs};
+use super::util::{card_result, contains_ignore_ascii_case, relative_secs};
 use crate::providers::{Action, ConversionView, ResultKind, SearchResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
-    let lower = q.to_lowercase();
-
     // Clock range: "7:26 - 9:32", "7:26am to 9:32pm", "22:00 - 6:30"
-    if let Some(r) = try_clock_range(&lower, q) {
+    // Regexes are `(?i)`, so no `to_lowercase()` alloc per keystroke.
+    if let Some(r) = try_clock_range(q) {
         return Some(r);
     }
 
@@ -16,12 +15,18 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     // Single-token (`50% of 2h`) stays in unitmath's percentage card.
     static RE_PCT_OF: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*of\s+(.+?)\s*$").unwrap());
-    if let Some(c) = RE_PCT_OF.captures(&lower) {
+    if let Some(c) = RE_PCT_OF.captures(q) {
         let rest = c.get(2)?.as_str();
         let (secs, count, any_non_m_unit, _end) = parse_duration_tokens(rest)?;
         if count >= 2 && any_non_m_unit {
             let pct: f64 = c.get(1)?.as_str().parse().ok()?;
+            if !pct.is_finite() || !secs.is_finite() {
+                return None;
+            }
             let out = secs * pct / 100.0;
+            if !out.is_finite() {
+                return None;
+            }
             let formatted = format_duration(out.abs());
             let title = if out < 0.0 {
                 format!("-{formatted}")
@@ -42,15 +47,18 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
     }
 
     // Must look like multi-unit duration, not plain math or conversion
-    if lower.contains(" to ") || lower.contains(" in ") || lower.contains(" as ") {
+    if contains_ignore_ascii_case(q, " to ")
+        || contains_ignore_ascii_case(q, " in ")
+        || contains_ignore_ascii_case(q, " as ")
+    {
         return None;
     }
-    let (mut total_secs, count, any_non_m_unit, last_end) = parse_duration_tokens(&lower)?;
+    let (mut total_secs, count, any_non_m_unit, last_end) = parse_duration_tokens(q)?;
 
     // Optional ×/÷ by a dimensionless number (`2min 16 sec * 5`, `1h / 2`).
     let mut scale: Option<f64> = None;
     let mut divide = false;
-    let trailing = lower[last_end..].trim();
+    let trailing = q.get(last_end..).unwrap_or("").trim();
     if !trailing.is_empty() {
         static RE_SCALE: Lazy<Regex> =
             Lazy::new(|| Regex::new(r"^(?:×|\*|/|÷)\s*([+-]?\d+(?:\.\d+)?)\s*$").unwrap());
@@ -78,10 +86,14 @@ pub(crate) fn try_duration_expr(q: &str) -> Option<SearchResult> {
         } else {
             total_secs * s
         };
+        if !total_secs.is_finite() {
+            return None;
+        }
     }
     // Unbounded token digits overflow to inf before the saturating cast in
-    // format_duration can print absurd day counts (audit P3).
-    if !total_secs.is_finite() {
+    // format_duration can print absurd day counts (audit P3). Cap absurd
+    // finite totals too (≈100 years) so the card never shows megaday counts.
+    if !total_secs.is_finite() || total_secs.abs() > 3_156_000_000.0 {
         return None;
     }
 
@@ -133,11 +145,17 @@ fn parse_duration_tokens(s: &str) -> Option<(f64, usize, bool, usize)> {
         }
         let n: f64 = cap.get(2)?.as_str().parse().ok()?;
         let unit = cap.get(3)?.as_str();
-        if unit != "m" {
+        if !unit.eq_ignore_ascii_case("m") {
             any_non_m_unit = true;
         }
         let secs = relative_secs(n, unit)?;
+        if !secs.is_finite() {
+            return None;
+        }
         total_secs += sign * secs;
+        if !total_secs.is_finite() {
+            return None;
+        }
         count += 1;
         last_end = m.end();
     }
@@ -148,9 +166,9 @@ fn parse_duration_tokens(s: &str) -> Option<(f64, usize, bool, usize)> {
 ///
 /// Accepts: `7:26 - 9:32`, `7:26-9:32`, `7:26 to 9:32`, `7:26am - 9:32pm`,
 /// `7:26:15 - 9:32:00`, `9pm - 11:30pm`.
-fn try_clock_range(lower: &str, original: &str) -> Option<SearchResult> {
+fn try_clock_range(original: &str) -> Option<SearchResult> {
     // TIME SEP TIME — require at least one :mm (or am/pm on both sides) so bare
-    // math like "7 - 9" is not stolen.
+    // math like "7 - 9" is not stolen. `(?i)` handles case, no lowercase alloc.
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(concat!(
             r"(?i)^\s*",
@@ -161,7 +179,7 @@ fn try_clock_range(lower: &str, original: &str) -> Option<SearchResult> {
         ))
         .unwrap()
     });
-    let c = RE.captures(lower)?;
+    let c = RE.captures(original)?;
 
     let start_min = c.get(2);
     let start_ampm = c.get(4);
@@ -310,6 +328,18 @@ mod tests {
         let huge = format!("1{}h 30min", "9".repeat(400));
         assert!(try_duration_expr(&huge).is_none());
         assert_eq!(format_duration(f64::INFINITY), "0s");
+    }
+
+    #[test]
+    fn audit_b10_caps_and_case() {
+        // Uppercase units work without lowercasing the whole query.
+        let r = try_duration_expr("2H + 30MIN").expect("uppercase");
+        assert_eq!(r.title, "2h 30min");
+        // Absurd finite totals cap instead of printing megaday counts.
+        assert!(try_duration_expr("1000000d 1h").is_none());
+        // Huge pct-of overflows reject instead of showing 0s.
+        let huge = format!("50% of 1{}h 30min", "9".repeat(400));
+        assert!(try_duration_expr(&huge).is_none());
     }
 
     #[test]

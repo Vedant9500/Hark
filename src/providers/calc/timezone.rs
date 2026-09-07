@@ -410,6 +410,53 @@ const CITY_ALIASES: &[(&str, &str, &str)] = &[
     ("johannesburg", "Africa/Johannesburg", "JOHANNESBURG"),
     ("lagos", "Africa/Lagos", "LAGOS"),
     ("nairobi", "Africa/Nairobi", "NAIROBI"),
+    // countries (single-TZ; multi-TZ map to the F1 venue zone like mexico→CDMX)
+    ("italy", "Europe/Rome", "ITALY"),
+    ("spain", "Europe/Madrid", "SPAIN"),
+    ("austria", "Europe/Vienna", "AUSTRIA"),
+    ("belgium", "Europe/Brussels", "BELGIUM"),
+    ("hungary", "Europe/Budapest", "HUNGARY"),
+    ("netherlands", "Europe/Amsterdam", "NETHERLANDS"),
+    ("dutch", "Europe/Amsterdam", "NETHERLANDS"),
+    ("holland", "Europe/Amsterdam", "NETHERLANDS"),
+    ("azerbaijan", "Asia/Baku", "AZERBAIJAN"),
+    ("qatar", "Asia/Qatar", "QATAR"),
+    ("bahrain", "Asia/Bahrain", "BAHRAIN"),
+    ("saudi", "Asia/Riyadh", "SAUDI"),
+    ("saudi_arabia", "Asia/Riyadh", "SAUDI"),
+    ("monaco", "Europe/Monaco", "MONACO"),
+    ("uk", "Europe/London", "UK"),
+    ("britain", "Europe/London", "UK"),
+    ("england", "Europe/London", "UK"),
+    ("canada", "America/Toronto", "CANADA"),
+    // F1 2026 venues: track + host city resolve to the circuit zone
+    ("monza", "Europe/Rome", "MONZA"),
+    ("imola", "Europe/Rome", "IMOLA"),
+    ("madrid", "Europe/Madrid", "MADRID"),
+    ("madring", "Europe/Madrid", "MADRING"),
+    ("barcelona", "Europe/Madrid", "BARCELONA"),
+    ("catalunya", "Europe/Madrid", "BARCELONA"),
+    ("vienna", "Europe/Vienna", "VIENNA"),
+    ("spielberg", "Europe/Vienna", "SPIELBERG"),
+    ("brussels", "Europe/Brussels", "BRUSSELS"),
+    ("spa", "Europe/Brussels", "SPA"),
+    ("spa_francorchamps", "Europe/Brussels", "SPA"),
+    ("budapest", "Europe/Budapest", "BUDAPEST"),
+    ("hungaroring", "Europe/Budapest", "HUNGARORING"),
+    ("zandvoort", "Europe/Amsterdam", "ZANDVOORT"),
+    ("suzuka", "Asia/Tokyo", "SUZUKA"),
+    ("sakhir", "Asia/Bahrain", "SAKHIR"),
+    ("jeddah", "Asia/Riyadh", "JEDDAH"),
+    ("baku", "Asia/Baku", "BAKU"),
+    ("lusail", "Asia/Qatar", "LUSAIL"),
+    ("yas_marina", "Asia/Dubai", "YAS MARINA"),
+    ("abu_dhabi", "Asia/Dubai", "ABU DHABI"),
+    ("miami", "America/New_York", "MIAMI"),
+    ("montreal", "America/Toronto", "MONTREAL"),
+    ("austin", "America/Chicago", "AUSTIN"),
+    ("cota", "America/Chicago", "COTA"),
+    ("las_vegas", "America/Los_Angeles", "LAS VEGAS"),
+    ("vegas", "America/Los_Angeles", "VEGAS"),
     // abbreviations
     ("cet", "Europe/Paris", "CET"),
     ("cest", "Europe/Paris", "CEST"),
@@ -967,6 +1014,38 @@ mod timezone_query_tests {
     fn diacritics_fold_in_place_keys() {
         assert_eq!(normalize_place_key("São Paulo"), "sao_paulo");
         assert!(resolve_place("são paulo").is_some());
+    }
+
+    #[test]
+    fn f1_venues_and_countries_resolve() {
+        use chrono_tz::Tz;
+        let cases: &[(&str, Tz)] = &[
+            ("monza", "Europe/Rome".parse().unwrap()),
+            ("italy", "Europe/Rome".parse().unwrap()),
+            ("imola", "Europe/Rome".parse().unwrap()),
+            ("spa", "Europe/Brussels".parse().unwrap()),
+            ("spain", "Europe/Madrid".parse().unwrap()),
+            ("madring", "Europe/Madrid".parse().unwrap()),
+            ("zandvoort", "Europe/Amsterdam".parse().unwrap()),
+            ("suzuka", "Asia/Tokyo".parse().unwrap()),
+            ("sakhir", "Asia/Bahrain".parse().unwrap()),
+            ("baku", "Asia/Baku".parse().unwrap()),
+            ("lusail", "Asia/Qatar".parse().unwrap()),
+            ("yas marina", "Asia/Dubai".parse().unwrap()),
+            ("miami", "America/New_York".parse().unwrap()),
+            ("montreal", "America/Toronto".parse().unwrap()),
+            ("austin", "America/Chicago".parse().unwrap()),
+            ("vegas", "America/Los_Angeles".parse().unwrap()),
+        ];
+        for (q, want) in cases {
+            let (tz, _) = resolve_place(q).unwrap_or_else(|| panic!("expected hit for {q}"));
+            let got: Tz = tz;
+            assert_eq!(got, *want, "wrong zone for {q}");
+            assert!(
+                try_timezone(&format!("15:00 here to {q}")).is_some(),
+                "expected conversion hit for {q}"
+            );
+        }
     }
 
     #[test]

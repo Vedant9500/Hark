@@ -46,30 +46,27 @@ pub(crate) fn try_battery(q: &str) -> Option<SearchResult> {
 }
 
 fn is_battery_query(q: &str) -> bool {
-    let lower = q.trim().to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "battery"
-            | "batteries"
-            | "bat"
-            | "power"
-            | "power source"
-            | "powersource"
-            | "power status"
-            | "ac power"
-            | "on ac"
-            | "on battery"
-            | "charging"
-            | "charger"
-            | "plugged"
-            | "plugged in"
-            | "unplugged"
-            | "battery status"
-            | "battery level"
-            | "battery percent"
-            | "battery percentage"
-            | "power supply"
-    )
+    let t = q.trim();
+    t.eq_ignore_ascii_case("battery")
+        || t.eq_ignore_ascii_case("batteries")
+        || t.eq_ignore_ascii_case("bat")
+        || t.eq_ignore_ascii_case("power")
+        || t.eq_ignore_ascii_case("power source")
+        || t.eq_ignore_ascii_case("powersource")
+        || t.eq_ignore_ascii_case("power status")
+        || t.eq_ignore_ascii_case("ac power")
+        || t.eq_ignore_ascii_case("on ac")
+        || t.eq_ignore_ascii_case("on battery")
+        || t.eq_ignore_ascii_case("charging")
+        || t.eq_ignore_ascii_case("charger")
+        || t.eq_ignore_ascii_case("plugged")
+        || t.eq_ignore_ascii_case("plugged in")
+        || t.eq_ignore_ascii_case("unplugged")
+        || t.eq_ignore_ascii_case("battery status")
+        || t.eq_ignore_ascii_case("battery level")
+        || t.eq_ignore_ascii_case("battery percent")
+        || t.eq_ignore_ascii_case("battery percentage")
+        || t.eq_ignore_ascii_case("power supply")
 }
 
 fn read_power_snapshot() -> PowerSnapshot {
@@ -92,11 +89,11 @@ fn read_power_snapshot() -> PowerSnapshot {
         let supply_type = read_trimmed(&path.join("type")).unwrap_or_default();
         match supply_type.as_str() {
             "Mains" => {
-                // Prefer any online AC adapter; keep last if multiple.
-                let online = read_trimmed(&path.join("online"))
-                    .map(|s| s == "1")
-                    .unwrap_or(false);
-                ac_online = Some(ac_online.unwrap_or(false) || online);
+                // Prefer any online AC adapter; missing `online` leaves state untouched.
+                if let Some(s) = read_trimmed(&path.join("online")) {
+                    let online = s == "1";
+                    ac_online = Some(ac_online.unwrap_or(false) || online);
+                }
             }
             "Battery" => {
                 // Skip virtual / absent packs
@@ -108,22 +105,15 @@ fn read_power_snapshot() -> PowerSnapshot {
                 }
             }
             // USB-C / dock PD sources can act as AC when online.
-            "USB" => {
-                let online = read_trimmed(&path.join("online"))
-                    .map(|s| s == "1")
-                    .unwrap_or(false);
-                if online {
-                    ac_online = Some(true);
-                } else if ac_online.is_none() {
-                    // Don't force false — real Mains may still set it.
-                }
+            "USB" if read_trimmed(&path.join("online")).as_deref() == Some("1") => {
+                ac_online = Some(true);
             }
             _ => {}
         }
     }
 
     // Sort batteries by name for stable UI (BAT0 before BAT1).
-    batteries.sort_by(|a, b| a.name.cmp(&b.name));
+    batteries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
     // Prefer explicit AC `online`; otherwise infer from battery status.
     // "Not charging" usually means plugged in but charge limited / full — treat as AC.
@@ -138,12 +128,12 @@ fn read_power_snapshot() -> PowerSnapshot {
                     .iter()
                     .any(|b| b.status.eq_ignore_ascii_case("discharging"));
                 let any_on_ac = batteries.iter().any(|b| {
-                    let s = b.status.to_ascii_lowercase();
-                    matches!(s.as_str(), "charging" | "full" | "charged" | "not charging")
+                    b.status.eq_ignore_ascii_case("charging")
+                        || b.status.eq_ignore_ascii_case("full")
+                        || b.status.eq_ignore_ascii_case("charged")
+                        || b.status.eq_ignore_ascii_case("not charging")
                 });
-                if any_discharging && !any_on_ac {
-                    PowerSource::Battery
-                } else if any_on_ac {
+                if any_on_ac {
                     PowerSource::Ac
                 } else if any_discharging {
                     PowerSource::Battery
@@ -380,7 +370,7 @@ fn estimate_time(b: &BatteryInfo, source: PowerSource) -> Option<String> {
     }
 
     let status = b.status.to_ascii_lowercase();
-    let secs = if status == "discharging"
+    let (secs, to_full) = if status == "discharging"
         || matches!(source, PowerSource::Battery) && status != "charging"
     {
         // time to empty
@@ -388,13 +378,13 @@ fn estimate_time(b: &BatteryInfo, source: PowerSource) -> Option<String> {
             return None;
         }
         // energy µWh / power µW → hours; convert to seconds
-        (energy_now / power) * 3600.0
+        ((energy_now / power) * 3600.0, false)
     } else if status == "charging" {
         let remain = energy_full - energy_now;
         if remain <= 0.0 || energy_full <= 0.0 {
             return None;
         }
-        (remain / power) * 3600.0
+        ((remain / power) * 3600.0, true)
     } else {
         return None;
     };
@@ -402,16 +392,17 @@ fn estimate_time(b: &BatteryInfo, source: PowerSource) -> Option<String> {
     if !secs.is_finite() || secs <= 0.0 || secs > 48.0 * 3600.0 {
         return None;
     }
-    Some(format_duration_secs(secs as u64))
+    Some(format_duration_secs(secs as u64, to_full))
 }
 
-fn format_duration_secs(secs: u64) -> String {
+fn format_duration_secs(secs: u64, to_full: bool) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
+    let suffix = if to_full { "to full" } else { "left" };
     if h > 0 {
-        format!("~{h}h {m:02}m left")
+        format!("~{h}h {m:02}m {suffix}")
     } else {
-        format!("~{m}m left")
+        format!("~{m}m {suffix}")
     }
 }
 
@@ -467,8 +458,9 @@ mod tests {
 
     #[test]
     fn duration_format() {
-        assert_eq!(format_duration_secs(90), "~1m left");
-        assert_eq!(format_duration_secs(3661), "~1h 01m left");
+        assert_eq!(format_duration_secs(90, false), "~1m left");
+        assert_eq!(format_duration_secs(3661, false), "~1h 01m left");
+        assert_eq!(format_duration_secs(3661, true), "~1h 01m to full");
     }
 
     #[test]
