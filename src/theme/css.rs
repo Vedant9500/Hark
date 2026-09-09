@@ -104,6 +104,11 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     };
 
     let shell_bg = rgba(&theme.surface_container, base);
+    // Transparent twin of shell_bg for the settings scroll-edge fades.
+    let shell_bg_clear = rgba(&theme.surface_container, 0.0);
+    // Half-strength head of the fade gradient (user-tuned: full shell tone
+    // read too heavy over rows).
+    let shell_bg_half = rgba(&theme.surface_container, base * 0.5);
     // Popovers float over results/previews without Hyprland blur — need higher opacity.
     let popover_bg = rgba(&theme.surface_container, (base + 0.32).min(0.94));
     let popover_bg_solid = rgba(&theme.surface_container_high, (base + 0.42).min(0.97));
@@ -199,7 +204,7 @@ window.hark-window .hark-shell > stack > * {{
 
 /* --- Header / search (Raycast: flush top, no boxed field) --- */
 window.hark-window .hark-header {{
-  padding: 14px 16px 12px 16px;
+  padding: 14px 16px 6px 16px;
   background-color: transparent;
 }}
 
@@ -292,7 +297,9 @@ window.hark-window .hark-sep {{
 
 /* --- Results body --- */
 window.hark-window .hark-body {{
-  padding: 6px 8px;
+  /* Horizontal 0: the viewport + edge fades span the full window width;
+     rows keep their own 6px side margin so highlights stay inset by design. */
+  padding: 2px 0;
   background-color: transparent;
   /* Vicinae 770×480 / Raycast 750×474 → 720×480 (1.50) → body ~390px (480-90).
      720×405 16:9 too short, 720×540 4:3 too tall. Fits preview 380. */
@@ -1004,9 +1011,18 @@ window.hark-window .hark-settings-page-header {{
   background: transparent;
 }}
 
-window.hark-window .hark-settings-page-icon {{
-  color: {primary};
-  opacity: 0.95;
+/* Scroll-edge fades: soft scrims so rows never read as touching the viewport
+   rim. Shared by the settings pages and the main results list. Opacity is
+   driven per-view from the scroll position; the gradient just needs the
+   shell tone fading to transparent. */
+window.hark-window .hark-fade-top {{
+  background-image: linear-gradient(to bottom, {shell_bg_half}, {shell_bg_clear});
+  min-height: 28px;
+}}
+
+window.hark-window .hark-fade-bottom {{
+  background-image: linear-gradient(to top, {shell_bg_half}, {shell_bg_clear});
+  min-height: 28px;
 }}
 
 window.hark-window .hark-settings-body {{

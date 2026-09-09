@@ -478,24 +478,28 @@ impl SettingsPanel {
     }
 }
 
-fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
+/// Page frame: sticky title header + scrolling body. No header icon — the nav
+/// already shows the selected category's icon, so repeating it here was noise
+/// next to every title (audit B1).
+fn page_shell(title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     let outer = GtkBox::new(Orientation::Vertical, 0);
     outer.add_css_class("hark-settings-page");
     outer.set_hexpand(true);
     outer.set_vexpand(true);
 
-    // Sticky page header
+    // Header rides INSIDE the scrollable content, attached to the body 1:1:
+    // it slides away at exactly content speed on scroll-down and reappears
+    // proportionally on the slightest scroll-up. Pure scroll position — no
+    // thresholds, no hide/show state — so no flicker, no hijacked feel on
+    // trackpads or short pages (the Revealer attempt had all three: toggling
+    // the header resized the viewport into a feedback loop, and per-emission
+    // deltas never accumulated on smooth scroll input).
     let header = GtkBox::new(Orientation::Horizontal, 10);
     header.add_css_class("hark-settings-page-header");
-    header.set_margin_start(20);
-    header.set_margin_end(20);
+    header.set_margin_start(16);
+    header.set_margin_end(16);
     header.set_margin_top(16);
     header.set_margin_bottom(4);
-
-    let icon_w = Image::from_icon_name(icon);
-    icon_w.add_css_class("hark-settings-page-icon");
-    icon_w.set_pixel_size(18);
-    icon_w.set_valign(gtk::Align::Center);
 
     let head_text = GtkBox::new(Orientation::Vertical, 2);
     head_text.set_hexpand(true);
@@ -513,9 +517,7 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
 
     head_text.append(&t);
     head_text.append(&s);
-    header.append(&icon_w);
     header.append(&head_text);
-    outer.append(&header);
 
     let scroll = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -533,13 +535,66 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
 
     let body = GtkBox::new(Orientation::Vertical, 14);
     body.add_css_class("hark-settings-body");
-    body.set_margin_start(20);
-    body.set_margin_end(20);
-    body.set_margin_top(12);
-    body.set_margin_bottom(18);
+    body.set_margin_start(16);
+    body.set_margin_end(16);
+    body.set_margin_top(10);
+    body.set_margin_bottom(16);
 
-    scroll.set_child(Some(&body));
-    outer.append(&scroll);
+    let content = GtkBox::new(Orientation::Vertical, 0);
+    content.set_hexpand(true);
+    content.append(&header);
+    content.append(&body);
+
+    scroll.set_child(Some(&content));
+
+    // Scroll-edge fades (audit B5): rows scrolling under the viewport rim feel
+    // wrong (screenshot: half-rows touching top/bottom). Two click-through
+    // scrims fade in/out with scroll position — opacity only, never layout, so
+    // this cannot feed back into the scroll itself. Short pages stay at 0.
+    let overlay = gtk::Overlay::new();
+    overlay.set_hexpand(true);
+    overlay.set_vexpand(true);
+    overlay.set_child(Some(&scroll));
+
+    let fade_top = GtkBox::new(Orientation::Horizontal, 0);
+    fade_top.add_css_class("hark-fade-top");
+    fade_top.set_halign(gtk::Align::Fill);
+    fade_top.set_valign(gtk::Align::Start);
+    fade_top.set_vexpand(false);
+    fade_top.set_can_target(false);
+    // Full-bleed: spans the complete window width, edge to edge.
+    fade_top.set_opacity(0.0);
+
+    let fade_bottom = GtkBox::new(Orientation::Horizontal, 0);
+    fade_bottom.add_css_class("hark-fade-bottom");
+    fade_bottom.set_halign(gtk::Align::Fill);
+    fade_bottom.set_valign(gtk::Align::End);
+    fade_bottom.set_vexpand(false);
+    fade_bottom.set_can_target(false);
+    fade_bottom.set_opacity(0.0);
+
+    overlay.add_overlay(&fade_top);
+    overlay.add_overlay(&fade_bottom);
+
+    {
+        scroll.vadjustment().connect_value_changed(move |adj| {
+            const FADE_PX: f64 = 28.0;
+            let value = adj.value();
+            let max = (adj.upper() - adj.page_size()).max(0.0);
+            let (top, bottom) = if max <= 1.0 {
+                (0.0, 0.0)
+            } else {
+                (
+                    (value / FADE_PX).clamp(0.0, 1.0),
+                    ((max - value) / FADE_PX).clamp(0.0, 1.0),
+                )
+            };
+            fade_top.set_opacity(top);
+            fade_bottom.set_opacity(bottom);
+        });
+    }
+
+    outer.append(&overlay);
     (outer, body)
 }
 
@@ -548,7 +603,6 @@ fn build_indexing_page(
     cfg: &crate::config::HarkConfig,
 ) -> (GtkBox, Label, GtkBox) {
     let (outer, body) = page_shell(
-        "folder-saved-search-symbolic",
         "Indexing",
         "Choose which locations Hark searches and rebuild the file index.",
     );
@@ -761,7 +815,6 @@ fn refill_sources_card(card: &GtkBox, engine: &Arc<Engine>) {
 
 fn build_typos_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
-        "input-keyboard-symbolic",
         "Typo aliases",
         "Hark learns near-miss searches (e.g. wats → WhatsApp). Manage them here.",
     );
@@ -972,7 +1025,6 @@ fn typo_alias_row(alias: &crate::typos::TypoAlias, engine: &Arc<Engine>) -> GtkB
 
 fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
-        "folder-symbolic",
         "Extra folders",
         "Add folders outside home/mounts. They are indexed at the same depth.",
     );
@@ -1134,7 +1186,6 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
 
 fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
-        "edit-delete-symbolic",
         "Exclusions",
         "Folders or path fragments that are never indexed (e.g. node_modules, .git).",
     );
@@ -1216,7 +1267,6 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
 
 fn build_defaults_page(engine: &Arc<Engine>, dismiss_overlay: OnDoneBoolSlot) -> GtkBox {
     let (outer, body) = page_shell(
-        "preferences-desktop-default-applications-symbolic",
         "Default apps",
         "Choose which app Hark uses for each file kind. Empty means system default (xdg-open).",
     );
@@ -1615,7 +1665,6 @@ fn show_app_picker(
 
 fn build_display_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> GtkBox {
     let (outer, body) = page_shell(
-        "preferences-desktop-display-symbolic",
         "Display",
         "Control how indexed paths appear in search results.",
     );
@@ -1694,6 +1743,9 @@ fn setting_row(title: &str, subtitle: Option<&str>) -> GtkBox {
     t.add_css_class("hark-settings-list-label");
     t.set_halign(gtk::Align::Start);
     t.set_xalign(0.0);
+    // Long values (e.g. mount labels) must truncate, not push the row's
+    // control out of the card (audit B2).
+    t.set_ellipsize(gtk::pango::EllipsizeMode::End);
     text.append(&t);
 
     if let Some(sub) = subtitle {
@@ -1702,7 +1754,9 @@ fn setting_row(title: &str, subtitle: Option<&str>) -> GtkBox {
         s.set_halign(gtk::Align::Start);
         s.set_xalign(0.0);
         s.set_wrap(true);
-        s.set_max_width_chars(48);
+        // No max_width_chars cap (audit B3): the old 48-char cap wrapped
+        // subtitles earlier than the available width, stretching cards
+        // (e.g. Tools auto-detect to three lines). Wrap at allocation.
         text.append(&s);
     }
 
@@ -1940,7 +1994,6 @@ fn build_appearance_page(
     cfg: &crate::config::HarkConfig,
 ) -> GtkBox {
     let (outer, body) = page_shell(
-        "preferences-desktop-theme-symbolic",
         "Appearance",
         "Tweak layout density, transparency, accent colour, type scale, and icons. \
          Colours still follow your Caelestia scheme.",
@@ -2432,7 +2485,6 @@ fn commit_entry_on_idle(entry: &Entry, commit: impl Fn(String) + 'static) {
 
 fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> GtkBox {
     let (outer, body) = page_shell(
-        "applications-utilities-symbolic",
         "Tools",
         "Optional helpers. Turning a tool off stops all related background work.",
     );

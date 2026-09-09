@@ -217,6 +217,52 @@ impl Launcher {
         list.set_vexpand(false);
         scroll.set_child(Some(&list));
 
+        // Scroll-edge fades, same as the settings pages: rows glide under a
+        // soft scrim instead of touching the viewport rim. Click-through and
+        // opacity-only, so no layout feedback into the scroll itself.
+        let list_overlay = gtk::Overlay::new();
+        list_overlay.set_hexpand(true);
+        list_overlay.set_vexpand(true);
+        list_overlay.set_child(Some(&scroll));
+
+        let results_fade_top = GtkBox::new(Orientation::Horizontal, 0);
+        results_fade_top.add_css_class("hark-fade-top");
+        results_fade_top.set_halign(gtk::Align::Fill);
+        results_fade_top.set_valign(gtk::Align::Start);
+        results_fade_top.set_vexpand(false);
+        results_fade_top.set_can_target(false);
+        // Full-bleed: spans the complete window width, edge to edge.
+        results_fade_top.set_opacity(0.0);
+
+        let results_fade_bottom = GtkBox::new(Orientation::Horizontal, 0);
+        results_fade_bottom.add_css_class("hark-fade-bottom");
+        results_fade_bottom.set_halign(gtk::Align::Fill);
+        results_fade_bottom.set_valign(gtk::Align::End);
+        results_fade_bottom.set_vexpand(false);
+        results_fade_bottom.set_can_target(false);
+        results_fade_bottom.set_opacity(0.0);
+
+        list_overlay.add_overlay(&results_fade_top);
+        list_overlay.add_overlay(&results_fade_bottom);
+
+        {
+            scroll.vadjustment().connect_value_changed(move |adj| {
+                const FADE_PX: f64 = 28.0;
+                let value = adj.value();
+                let max = (adj.upper() - adj.page_size()).max(0.0);
+                let (top, bottom) = if max <= 1.0 {
+                    (0.0, 0.0)
+                } else {
+                    (
+                        (value / FADE_PX).clamp(0.0, 1.0),
+                        ((max - value) / FADE_PX).clamp(0.0, 1.0),
+                    )
+                };
+                results_fade_top.set_opacity(top);
+                results_fade_bottom.set_opacity(bottom);
+            });
+        }
+
         let empty = Label::new(Some("Type to search apps, files, math, or conversions"));
         empty.add_css_class("hark-empty");
         empty.set_halign(gtk::Align::Center);
@@ -228,7 +274,7 @@ impl Launcher {
         // steals vertical space under the list.
         empty.set_vexpand(false);
 
-        list_col.append(&scroll);
+        list_col.append(&list_overlay);
         list_col.append(&empty);
 
         // Shared with rows + preview so focus-loss hide is suppressed mid-drag.
