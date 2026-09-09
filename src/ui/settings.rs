@@ -1,4 +1,6 @@
-use crate::config::{discover_mounts, FileOpenCategory, LayoutMode, PathStyle, UiThemeConfig};
+use crate::config::{
+    default_mount_enabled, discover_mounts, FileOpenCategory, LayoutMode, PathStyle, UiThemeConfig,
+};
 use crate::engine::Engine;
 use crate::theme::ThemeManager;
 use gtk::gdk::Key;
@@ -202,6 +204,25 @@ impl SettingsPanel {
                     }
                     child = next;
                 }
+                // Keep selection on something visible (audit A1): a filter
+                // hiding the selected row left the stack showing a hidden
+                // category. Selecting fires row_selected, so the stack follows.
+                let selected_visible = nav.selected_row().is_some_and(|r| r.is_visible());
+                if !selected_visible {
+                    let mut first: Option<ListBoxRow> = None;
+                    let mut c = nav.first_child();
+                    while let Some(w) = c {
+                        let next = w.next_sibling();
+                        if let Ok(row) = w.downcast::<ListBoxRow>() {
+                            if row.is_visible() {
+                                first = Some(row);
+                                break;
+                            }
+                        }
+                        c = next;
+                    }
+                    nav.select_row(first.as_ref());
+                }
             });
         }
 
@@ -225,6 +246,7 @@ impl SettingsPanel {
 
         let done = Button::with_label("Done");
         done.add_css_class("hark-settings-btn");
+        done.add_css_class("hark-settings-primary");
         done.add_css_class("hark-settings-done");
         done.set_halign(gtk::Align::End);
 
@@ -246,7 +268,7 @@ impl SettingsPanel {
 
         let cfg = engine.config().snapshot();
 
-        let (indexing_page, status) = build_indexing_page(&engine, &cfg);
+        let (indexing_page, status, sources_card) = build_indexing_page(&engine, &cfg);
         content_stack.add_named(&indexing_page, Some("indexing"));
 
         let folders_page = build_folders_page(&engine);
@@ -279,13 +301,27 @@ impl SettingsPanel {
         {
             let content_stack = content_stack.clone();
             let dismiss_overlay = dismiss_overlay.clone();
+            let engine = engine.clone();
+            let sources_card = sources_card.clone();
+            // Only the Default-apps page can host an overlay (picker), so only
+            // leaving it can have something to dismiss (audit A7).
+            let last_page: Rc<RefCell<String>> = Rc::new(RefCell::new("indexing".into()));
             nav.connect_row_selected(move |_, row| {
-                // Leaving Default apps closes any in-page picker.
-                if let Some(cb) = dismiss_overlay.borrow().as_ref() {
-                    let _ = cb();
-                }
                 if let Some(row) = row {
-                    let id = row.widget_name();
+                    let id = row.widget_name().to_string();
+                    let mut last = last_page.borrow_mut();
+                    if *last == "defaults" && id != "defaults" {
+                        if let Some(cb) = dismiss_overlay.borrow().as_ref() {
+                            let _ = cb();
+                        }
+                    }
+                    *last = id.clone();
+                    drop(last);
+                    if id == "indexing" {
+                        // Mounts come and go (USB) while the panel lives —
+                        // rebuild from the live table on every visit (A5).
+                        refill_sources_card(&sources_card, &engine);
+                    }
                     if !id.is_empty() {
                         content_stack.set_visible_child_name(&id);
                     }
@@ -383,13 +419,32 @@ impl SettingsPanel {
         }
 
         let on_done: OnDoneSlot = Rc::new(RefCell::new(None));
-        {
+        let fire_done: Rc<dyn Fn()> = Rc::new({
             let on_done = on_done.clone();
-            done.connect_clicked(move |_| {
+            move || {
                 if let Some(cb) = on_done.borrow().as_ref() {
                     cb();
                 }
-            });
+            }
+        });
+        {
+            let fire_done = fire_done.clone();
+            done.connect_clicked(move |_| fire_done());
+        }
+        // The esc/Close hint is clickable too (audit A4): a static "Close"
+        // label next to the button read as dead UI. Attached to the labels
+        // only (not the footer box) so Done clicks can't double-fire.
+        {
+            let foot_click = gtk::GestureClick::new();
+            let fire_done = fire_done.clone();
+            foot_click.connect_pressed(move |_, _, _, _| fire_done());
+            esc.add_controller(foot_click);
+        }
+        {
+            let foot_click = gtk::GestureClick::new();
+            let fire_done = fire_done.clone();
+            foot_click.connect_pressed(move |_, _, _, _| fire_done());
+            close_hint.add_controller(foot_click);
         }
 
         Self {
@@ -471,6 +526,10 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
         .hexpand(true)
         .vexpand(true)
         .build();
+    // Always-visible scrollbars (audit A6): overlay indicators only appear on
+    // hover, so clipped pages (Rebuild, Reset) gave no cue there was more
+    // below. Matches the main results list, which also disables overlay.
+    scroll.set_overlay_scrolling(false);
 
     let body = GtkBox::new(Orientation::Vertical, 14);
     body.add_css_class("hark-settings-body");
@@ -484,7 +543,10 @@ fn page_shell(icon: &str, title: &str, subtitle: &str) -> (GtkBox, GtkBox) {
     (outer, body)
 }
 
-fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> (GtkBox, Label) {
+fn build_indexing_page(
+    engine: &Arc<Engine>,
+    cfg: &crate::config::HarkConfig,
+) -> (GtkBox, Label, GtkBox) {
     let (outer, body) = page_shell(
         "folder-saved-search-symbolic",
         "Indexing",
@@ -592,46 +654,7 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
 
     let sources = GtkBox::new(Orientation::Vertical, 0);
     sources.add_css_class("hark-settings-card");
-
-    let home_row = check_setting_row("Home directory (~)", None, cfg.index.include_home);
-    {
-        let engine = engine.clone();
-        let cb = home_row.1.clone();
-        cb.connect_toggled(move |btn| {
-            // Source toggles must reindex immediately (audit P2): otherwise
-            // results stay stale until the next periodic rebuild.
-            engine.config().update(|c| {
-                c.index.include_home = btn.is_active();
-            });
-            engine.force_reindex();
-        });
-    }
-    sources.append(&home_row.0);
-
-    let mounts = discover_mounts();
-    for (i, m) in mounts.iter().enumerate() {
-        sources.append(&Separator::new(Orientation::Horizontal));
-        let key = m.target.to_string_lossy().to_string();
-        let label = if m.label.is_empty() {
-            key.clone()
-        } else {
-            format!("{}  ({})", m.label, key)
-        };
-        let enabled = cfg.index.include_mounts.get(&key).copied().unwrap_or(true);
-        let (row, cb) = check_setting_row(&label, None, enabled);
-        {
-            let engine = engine.clone();
-            let key = key.clone();
-            cb.connect_toggled(move |btn| {
-                engine.config().update(|c| {
-                    c.index.include_mounts.insert(key.clone(), btn.is_active());
-                });
-                engine.force_reindex();
-            });
-        }
-        let _ = i;
-        sources.append(&row);
-    }
+    refill_sources_card(&sources, engine);
     body.append(&sources);
 
     body.append(&group_label("Index"));
@@ -661,18 +684,79 @@ fn build_indexing_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) ->
     {
         let engine = engine.clone();
         let status = status.clone();
+        let rebuild_btn = rebuild.clone();
         rebuild.connect_clicked(move |_| {
+            // Guard double-click: force_reindex spawns a worker per click.
+            if engine.index_progress().running {
+                return;
+            }
+            rebuild_btn.set_sensitive(false);
             status.set_text("Indexing… 0 files");
             engine.force_reindex();
             let status = status.clone();
             let engine = engine.clone();
-            glib_timeout_poll_index(engine, status, 0);
+            let rebuild_btn = rebuild_btn.clone();
+            glib_timeout_poll_index(engine, status, rebuild_btn, 0);
         });
     }
 
     body.append(&rebuild_row);
 
-    (outer, status)
+    (outer, status, sources)
+}
+
+/// (Re)build the Sources card from the live mount table + config snapshot.
+/// Called once at construction and on every visit to Indexing (audit A5):
+/// volumes come and go while the panel lives, and a stale list hides newly
+/// plugged drives until restart.
+fn refill_sources_card(card: &GtkBox, engine: &Arc<Engine>) {
+    while let Some(c) = card.first_child() {
+        card.remove(&c);
+    }
+    let cfg = engine.config().snapshot();
+    let home_row = check_setting_row("Home directory (~)", None, cfg.index.include_home);
+    {
+        let engine = engine.clone();
+        let cb = home_row.1.clone();
+        cb.connect_toggled(move |btn| {
+            // Source toggles must reindex immediately (audit P2): otherwise
+            // results stay stale until the next periodic rebuild.
+            engine.config().update(|c| {
+                c.index.include_home = btn.is_active();
+            });
+            engine.force_reindex();
+        });
+    }
+    card.append(&home_row.0);
+
+    let mounts = discover_mounts();
+    for m in mounts.iter() {
+        card.append(&Separator::new(Orientation::Horizontal));
+        let key = m.target.to_string_lossy().to_string();
+        let label = if m.label.is_empty() {
+            key.clone()
+        } else {
+            format!("{}  ({})", m.label, key)
+        };
+        let enabled = cfg
+            .index
+            .include_mounts
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| default_mount_enabled(&m.target));
+        let (row, cb) = check_setting_row(&label, None, enabled);
+        {
+            let engine = engine.clone();
+            let key = key.clone();
+            cb.connect_toggled(move |btn| {
+                engine.config().update(|c| {
+                    c.index.include_mounts.insert(key.clone(), btn.is_active());
+                });
+                engine.force_reindex();
+            });
+        }
+        card.append(&row);
+    }
 }
 
 fn build_typos_page(engine: &Arc<Engine>) -> GtkBox {
@@ -908,13 +992,20 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
     let add = Button::with_label("Add");
     add.add_css_class("hark-settings-btn");
     add.add_css_class("hark-settings-primary");
+    let extra_status = Label::new(None);
+    extra_status.add_css_class("hark-hint");
+    extra_status.set_halign(gtk::Align::Start);
+    extra_status.set_wrap(true);
+    extra_status.set_margin_top(4);
     {
         let engine = engine.clone();
-        let entry = entry.clone();
-        let list = list.clone();
-        add.connect_clicked(move |_| {
-            let raw = entry.text().to_string().trim().to_string();
+        let entry_cb = entry.clone();
+        let list_cb = list.clone();
+        let extra_status_cb = extra_status.clone();
+        let do_add = Rc::new(move || {
+            let raw = entry_cb.text().to_string().trim().to_string();
             if raw.is_empty() {
+                extra_status_cb.set_text("Enter a folder path");
                 return;
             }
             // Normalize like the pin path does so `~/x` and `/home/u/x`
@@ -925,6 +1016,19 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
                 .to_string_lossy()
                 .to_string();
             if !std::path::Path::new(&p).is_absolute() {
+                extra_status_cb.set_text("Path must be absolute (e.g. /mnt/data/projects)");
+                return;
+            }
+            if engine
+                .config()
+                .snapshot()
+                .index
+                .extra_roots
+                .iter()
+                .any(|r| r == &p)
+            {
+                extra_status_cb.set_text("Already listed");
+                entry_cb.set_text("");
                 return;
             }
             let mut changed = false;
@@ -937,15 +1041,25 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
             if changed {
                 engine.force_reindex();
             }
-            entry.set_text("");
-            refill_extra_list(&list, &engine);
+            extra_status_cb.set_text("");
+            entry_cb.set_text("");
+            refill_extra_list(&list_cb, &engine);
         });
+        {
+            let do_add = do_add.clone();
+            add.connect_clicked(move |_| do_add());
+        }
+        {
+            let do_add = do_add.clone();
+            entry.clone().connect_activate(move |_| do_add());
+        }
     }
     add_row.append(&entry);
     add_row.append(&add);
 
     body.append(&list);
     body.append(&add_row);
+    body.append(&extra_status);
 
     // Deep roots — always indexed to depth 6, preferred by live deep search.
     body.append(&group_label("Deep roots"));
@@ -974,26 +1088,47 @@ fn build_folders_page(engine: &Arc<Engine>) -> GtkBox {
     let deep_add = Button::with_label("Pin");
     deep_add.add_css_class("hark-settings-btn");
     deep_add.add_css_class("hark-settings-primary");
+    let deep_status = Label::new(None);
+    deep_status.add_css_class("hark-hint");
+    deep_status.set_halign(gtk::Align::Start);
+    deep_status.set_wrap(true);
+    deep_status.set_margin_top(4);
     {
         let engine = engine.clone();
-        let deep_entry = deep_entry.clone();
-        let deep_list = deep_list.clone();
-        deep_add.connect_clicked(move |_| {
-            let p = deep_entry.text().to_string().trim().to_string();
+        let deep_entry_cb = deep_entry.clone();
+        let deep_list_cb = deep_list.clone();
+        let deep_status_cb = deep_status.clone();
+        let do_pin = Rc::new(move || {
+            let p = deep_entry_cb.text().to_string().trim().to_string();
             if p.is_empty() {
+                deep_status_cb.set_text("Enter a folder path");
                 return;
             }
             let path = crate::providers::files::expand_user_path(&p);
-            engine.promote_deep_root(&path);
-            deep_entry.set_text("");
-            refill_deep_list(&deep_list, &engine);
+            match engine.promote_deep_root(&path) {
+                Ok(_) => {
+                    deep_status_cb.set_text("");
+                    deep_entry_cb.set_text("");
+                    refill_deep_list(&deep_list_cb, &engine);
+                }
+                Err(e) => deep_status_cb.set_text(&e),
+            }
         });
+        {
+            let do_pin = do_pin.clone();
+            deep_add.connect_clicked(move |_| do_pin());
+        }
+        {
+            let do_pin = do_pin.clone();
+            deep_entry.clone().connect_activate(move |_| do_pin());
+        }
     }
     deep_add_row.append(&deep_entry);
     deep_add_row.append(&deep_add);
 
     body.append(&deep_list);
     body.append(&deep_add_row);
+    body.append(&deep_status);
     outer
 }
 
@@ -1001,7 +1136,7 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     let (outer, body) = page_shell(
         "edit-delete-symbolic",
         "Exclusions",
-        "Folder or path fragments that are never indexed (e.g. node_modules, .git).",
+        "Folders or path fragments that are never indexed (e.g. node_modules, .git).",
     );
 
     let list = GtkBox::new(Orientation::Vertical, 0);
@@ -1019,34 +1154,63 @@ fn build_exclusions_page(engine: &Arc<Engine>) -> GtkBox {
     let add = Button::with_label("Add");
     add.add_css_class("hark-settings-btn");
     add.add_css_class("hark-settings-primary");
+    let excl_status = Label::new(None);
+    excl_status.add_css_class("hark-hint");
+    excl_status.set_halign(gtk::Align::Start);
+    excl_status.set_wrap(true);
+    excl_status.set_margin_top(4);
     {
         let engine = engine.clone();
-        let entry = entry.clone();
-        let list = list.clone();
-        add.connect_clicked(move |_| {
-            let p = entry.text().to_string().trim().to_string();
+        let entry_cb = entry.clone();
+        let list_cb = list.clone();
+        let excl_status_cb = excl_status.clone();
+        let do_add = Rc::new(move || {
+            let p = entry_cb.text().to_string().trim().to_string();
             if p.is_empty() {
+                excl_status_cb.set_text("Enter a name or path fragment");
+                return;
+            }
+            if engine
+                .config()
+                .snapshot()
+                .index
+                .exclude
+                .iter()
+                .any(|x| x == &p)
+            {
+                excl_status_cb.set_text("Already excluded");
+                entry_cb.set_text("");
                 return;
             }
             let mut changed = false;
             engine.config().update(|c| {
                 if !c.index.exclude.contains(&p) {
-                    c.index.exclude.push(p);
+                    c.index.exclude.push(p.clone());
                     changed = true;
                 }
             });
             if changed {
                 engine.force_reindex();
             }
-            entry.set_text("");
-            refill_exclude_list(&list, &engine);
+            excl_status_cb.set_text("");
+            entry_cb.set_text("");
+            refill_exclude_list(&list_cb, &engine);
         });
+        {
+            let do_add = do_add.clone();
+            add.connect_clicked(move |_| do_add());
+        }
+        {
+            let do_add = do_add.clone();
+            entry.clone().connect_activate(move |_| do_add());
+        }
     }
     add_row.append(&entry);
     add_row.append(&add);
 
     body.append(&list);
     body.append(&add_row);
+    body.append(&excl_status);
     outer
 }
 
@@ -1552,7 +1716,23 @@ fn check_setting_row(title: &str, subtitle: Option<&str>, active: bool) -> (GtkB
     cb.set_active(active);
     cb.set_valign(gtk::Align::Center);
     cb.add_css_class("hark-settings-check");
+    cb.update_property(&[gtk::accessible::Property::Label(title)]);
     row.append(&cb);
+    // Whole-row click toggles (audit A3): the bare 20px box was the only hit
+    // target and the title/subtitle area was dead. Capture + claim runs before
+    // the CheckButton's own click handling, so a direct hit on the box cannot
+    // double-toggle. Keyboard (Tab + Space) still works natively on the box.
+    let click = gtk::GestureClick::new();
+    click.set_button(1);
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let cb_w = cb.downgrade();
+    click.connect_pressed(move |gesture, _, _, _| {
+        if let Some(cb) = cb_w.upgrade() {
+            cb.set_active(!cb.is_active());
+        }
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    row.add_controller(click);
     (row, cb)
 }
 
@@ -1732,23 +1912,27 @@ fn removable_row(text: &str, engine: &Arc<Engine>, kind: ListKind) -> GtkBox {
     row
 }
 
-fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, n: u32) {
-    if n > 300 {
+fn glib_timeout_poll_index(engine: Arc<Engine>, status: Label, rebuild: Button, n: u32) {
+    // 200ms * 9000 = 30min safety cap. Was 60s then froze at "Indexing…" —
+    // depth 6 + Windows D easily exceeds 60s. Poll until the worker reports
+    // done, then re-enable Rebuild.
+    if n > 9000 {
         status.set_text(&engine.format_index_status());
+        rebuild.set_sensitive(true);
         return;
     }
     glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
-        let p = engine.index_progress();
         status.set_text(&engine.format_index_status());
-        if p.running {
-            glib_timeout_poll_index(engine, status, n + 1);
+        if engine.index_progress().running {
+            glib_timeout_poll_index(engine, status, rebuild, n + 1);
+        } else {
+            rebuild.set_sensitive(true);
         }
     });
 }
 
-// N14 guard: set while preset buttons programmatically update the accent
-// entry, so its changed handler doesn't double-apply.
-type AccentProgrammatic = std::rc::Rc<std::cell::Cell<bool>>;
+// N14 guard removed: accent entry now commits on Enter/blur (see
+// commit_entry_on_idle) so preset set_text no longer re-fires a handler.
 
 fn build_appearance_page(
     engine: &Arc<Engine>,
@@ -1938,16 +2122,13 @@ fn build_appearance_page(
     accent_row.append(&accent_entry);
     colour_card.append(&accent_row);
 
-    let accent_programmatic: AccentProgrammatic = Default::default();
+    // Commit on Enter/blur (not per keystroke): typing "#7aa2f7" passes
+    // through invalid prefixes ("#", "#7") which sanitize() would clear to
+    // None, flickering the accent + rewriting config on every key.
     {
         let engine = engine.clone();
         let theme = theme.clone();
-        let guard = accent_programmatic.clone();
-        accent_entry.connect_changed(move |entry| {
-            if guard.get() {
-                return;
-            }
-            let text = entry.text().to_string();
+        commit_entry_on_idle(&accent_entry, move |text| {
             engine.config().update(|c| {
                 let t = text.trim();
                 if t.is_empty() {
@@ -1985,12 +2166,8 @@ fn build_appearance_page(
         let engine = engine.clone();
         let theme = theme.clone();
         let accent_entry = accent_entry.clone();
-        let guard = accent_programmatic.clone();
         let hex = hex.to_string();
         btn.connect_clicked(move |_| {
-            // N14: set_text would re-fire the entry's changed handler
-            // (double config write + double CSS inject) — suppress it.
-            guard.set(true);
             if hex.is_empty() {
                 accent_entry.set_text("");
                 engine.config().update(|c| c.ui.accent = None);
@@ -1998,7 +2175,6 @@ fn build_appearance_page(
                 accent_entry.set_text(&hex);
                 engine.config().update(|c| c.ui.accent = Some(hex.clone()));
             }
-            guard.set(false);
             theme.reload();
         });
         presets.append(&btn);
@@ -2176,18 +2352,40 @@ fn build_appearance_page(
         let i_val = i_val.clone();
         let layout_cb = layout_cb.clone();
         let sym_cb = sym_cb.clone();
+        let opacity_hint = opacity_hint.clone();
+        let radius_hint = radius_hint.clone();
+        let font_hint = font_hint.clone();
+        let icon_hint = icon_hint.clone();
         reset_btn.connect_clicked(move |_| {
-            engine.config().update(|c| c.ui = UiThemeConfig::default());
+            let def = UiThemeConfig::default();
+            engine.config().update(|c| c.ui = def.clone());
+            // Idle-commit model: set_text does not fire a handler, so no
+            // double config write here (was N14 double with live-changed).
             accent_entry.set_text("");
-            op_val.set_text("85%");
-            r_val.set_text("16");
-            f_val.set_text("100%");
-            i_val.set_text("26");
-            layout_cb.set_active(true); // default Compact
-                                        // GTK only emits `toggled` on actual change — force the checkbox
-                                        // back in sync with the reset config.
-            if sym_cb.is_active() {
-                sym_cb.set_active(false);
+            op_val.set_text(&format!("{:.0}%", def.opacity * 100.0));
+            if let Some(h) = &opacity_hint {
+                h.set_text(&format!("{:.0}% opaque", def.opacity * 100.0));
+            }
+            r_val.set_text(&format!("{}", def.radius));
+            if let Some(h) = &radius_hint {
+                h.set_text(&format!("{}px", def.radius));
+            }
+            f_val.set_text(&format!("{:.0}%", def.font_scale * 100.0));
+            if let Some(h) = &font_hint {
+                h.set_text(&format!("{:.0}%", def.font_scale * 100.0));
+            }
+            i_val.set_text(&format!("{}", def.icon_size));
+            if let Some(h) = &icon_hint {
+                h.set_text(&format!("{}px", def.icon_size));
+            }
+            let want_compact = matches!(def.layout_mode, LayoutMode::Compact);
+            if layout_cb.is_active() != want_compact {
+                layout_cb.set_active(want_compact);
+            }
+            // GTK only emits `toggled` on actual change — force the checkbox
+            // back in sync with the reset config.
+            if sym_cb.is_active() != def.symbolic_icons {
+                sym_cb.set_active(def.symbolic_icons);
             }
             theme.reload();
         });
@@ -2244,6 +2442,14 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     let card = GtkBox::new(Orientation::Vertical, 0);
     card.add_css_class("hark-settings-card");
 
+    // Transient inline errors (e.g. rejected endpoint). Shared by the commit
+    // handlers below; cleared on the next successful commit.
+    let tools_status = Label::new(None);
+    tools_status.add_css_class("hark-hint");
+    tools_status.set_halign(gtk::Align::Start);
+    tools_status.set_wrap(true);
+    tools_status.set_margin_top(4);
+
     let (en_row, en_cb) = check_setting_row(
         "Enable translation",
         Some("When off: no network, cache, or translate work at all."),
@@ -2295,10 +2501,20 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     card.append(&target_row);
     {
         let engine = engine.clone();
-        commit_entry_on_idle(&target_entry, move |text| {
+        let target_entry = target_entry.clone();
+        let tools_status = tools_status.clone();
+        commit_entry_on_idle(&target_entry.clone(), move |text| {
             engine.config().update(|c| {
                 c.translate.target_lang = text;
             });
+            // Reflect sanitize (lowercase/strip) back so the field never shows
+            // a value that isn't stored (audit J5). set_text is safe here:
+            // idle-commit only fires on Enter/blur, not on set_text.
+            let saved = engine.config().snapshot().translate.target_lang.clone();
+            if target_entry.text().as_str() != saved {
+                target_entry.set_text(&saved);
+            }
+            tools_status.set_text("");
         });
     }
 
@@ -2315,14 +2531,39 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
         .build();
     ep_entry.add_css_class("hark-settings-entry");
     ep_entry.set_text(&cfg.translate.endpoint);
+    // Field truncates long URLs (audit S1) — full value on hover.
+    if cfg.translate.endpoint.is_empty() {
+        ep_entry.set_tooltip_text(None);
+    } else {
+        ep_entry.set_tooltip_text(Some(&cfg.translate.endpoint));
+    }
     ep_row.append(&ep_entry);
     card.append(&ep_row);
     {
         let engine = engine.clone();
-        commit_entry_on_idle(&ep_entry, move |text| {
+        let ep_entry = ep_entry.clone();
+        let tools_status = tools_status.clone();
+        commit_entry_on_idle(&ep_entry.clone(), move |text| {
+            let t = text.trim().to_string();
+            // Inline validation (audit J5): sanitize() would silently clear a
+            // bad endpoint on next load; refuse here with a reason instead.
+            if let Err(e) = crate::config::validate_translate_endpoint(&t) {
+                tools_status.set_text(&format!("Endpoint ignored: {e}"));
+                return;
+            }
             engine.config().update(|c| {
-                c.translate.endpoint = text;
+                c.translate.endpoint = t;
             });
+            let saved = engine.config().snapshot().translate.endpoint.clone();
+            if ep_entry.text().as_str() != saved {
+                ep_entry.set_text(&saved);
+            }
+            if saved.is_empty() {
+                ep_entry.set_tooltip_text(None);
+            } else {
+                ep_entry.set_tooltip_text(Some(&saved));
+            }
+            tools_status.set_text("");
         });
     }
 
@@ -2355,7 +2596,30 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
         });
     }
 
+    // Dependent rows dim when the master switch is off (audit J3): the
+    // auto-detect subtitle already says "Ignored when translation is
+    // disabled" but the rows stayed fully sensitive, inviting dead edits.
+    // Sensitivity propagates from the row box to its children.
+    auto_row.set_sensitive(cfg.translate.enabled);
+    target_row.set_sensitive(cfg.translate.enabled);
+    ep_row.set_sensitive(cfg.translate.enabled);
+    key_row.set_sensitive(cfg.translate.enabled);
+    {
+        let auto_row = auto_row.clone();
+        let target_row = target_row.clone();
+        let ep_row = ep_row.clone();
+        let key_row = key_row.clone();
+        en_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            auto_row.set_sensitive(on);
+            target_row.set_sensitive(on);
+            ep_row.set_sensitive(on);
+            key_row.set_sensitive(on);
+        });
+    }
+
     body.append(&card);
+    body.append(&tools_status);
 
     let note = Label::new(Some(
         "Paste non-Latin text (or type tr … / tr en es Hello). Shows Translating… then fills \

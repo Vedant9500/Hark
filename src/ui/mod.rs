@@ -901,7 +901,6 @@ impl Launcher {
             let hide_delay_esc = hide_delay.clone();
             let dismiss_settings_overlay = settings.dismiss_overlay_handle();
 
-            let settings_nav = settings.nav.clone();
             key.connect_key_pressed(move |_, keyval, _keycode, state| {
                 if in_settings.get() {
                     if keyval == Key::Escape {
@@ -920,38 +919,10 @@ impl Launcher {
                     {
                         return glib::Propagation::Proceed;
                     }
-                    // ↑/↓ / j/k cycle settings categories (window-level capture)
-                    let n = {
-                        let mut c = 0i32;
-                        let mut child = settings_nav.first_child();
-                        while let Some(w) = child {
-                            c += 1;
-                            child = w.next_sibling();
-                        }
-                        c
-                    };
-                    if n == 0 {
-                        return glib::Propagation::Proceed;
-                    }
-                    let cur = settings_nav
-                        .selected_row()
-                        .map(|r| r.index())
-                        .unwrap_or(0)
-                        .max(0);
-                    let next = match keyval {
-                        Key::Down | Key::j | Key::J => Some((cur + 1) % n),
-                        Key::Up | Key::k | Key::K => Some(if cur == 0 { n - 1 } else { cur - 1 }),
-                        Key::Home => Some(0),
-                        Key::End => Some(n - 1),
-                        _ => None,
-                    };
-                    if let Some(idx) = next {
-                        if let Some(row) = settings_nav.row_at_index(idx) {
-                            settings_nav.select_row(Some(&row));
-                            row.grab_focus();
-                        }
-                        return glib::Propagation::Stop;
-                    }
+                    // ↑/↓ / j/k category cycling is owned by the settings panel
+                    // itself (audit A2): it skips filtered-out rows and wraps,
+                    // while this window-level copy counted hidden rows and
+                    // shadowed it (window capture runs first). Defer to it.
                     return glib::Propagation::Proceed;
                 }
 

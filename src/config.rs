@@ -895,8 +895,7 @@ impl ConfigStore {
         }
         for m in &mounts {
             let key = m.target.to_string_lossy().to_string();
-            // windows_c off by default (large); others on
-            let on = !key.contains("windows_c") && !key.contains("windowsEFI");
+            let on = default_mount_enabled(&m.target);
             if let std::collections::hash_map::Entry::Vacant(e) =
                 cfg.index.include_mounts.entry(key)
             {
@@ -1412,6 +1411,50 @@ fn mount_from_path(path: &Path) -> MountInfo {
         label,
         drive_letter,
     }
+}
+
+/// Default enabled state for a newly seen mount (shared by the loader seed
+/// and the settings panel fallback so a fresh volume does not flash ON in
+/// the panel until restart seeds it OFF).
+///
+/// Content-based, never name-based: mount names are user-specific
+/// (`windows_c`, `win11`, `Elements`, …), so substring matches misfire for
+/// everyone else. Instead:
+/// - ESP (top-level `EFI` dir, e.g. `EFI/Boot`) → off; never useful to index.
+///   Whole-component, case-insensitive — `/mnt/KEFIR` is unaffected.
+/// - Windows OS drive (`Windows/System32`) → off; huge system tree.
+///   Exact case: Microsoft always creates `Windows/System32`, so a stray
+///   lowercase `windows` data folder cannot false-positive.
+/// - Empty/unreadable dir (stale unmounted mountpoint) → off; nothing to
+///   index, and it avoids auto-enabling a surprise volume later. One click
+///   to enable.
+/// - Otherwise → on.
+pub fn default_mount_enabled(target: &Path) -> bool {
+    let Ok(rd) = fs::read_dir(target) else {
+        return false;
+    };
+    let mut any = false;
+    let mut checked = 0usize;
+    for e in rd.flatten() {
+        any = true;
+        checked += 1;
+        if e.file_name().to_string_lossy().eq_ignore_ascii_case("efi") {
+            return false;
+        }
+        // Cap the scan: roots with hundreds of entries are data by definition
+        // for this check (ESP roots are tiny); the OS check below is a direct
+        // stat and unaffected by the cap.
+        if checked >= 256 {
+            break;
+        }
+    }
+    if !any {
+        return false;
+    }
+    if target.join("Windows").join("System32").is_dir() {
+        return false;
+    }
+    true
 }
 
 /// Format a path for display using config path style + mount table.
@@ -2044,6 +2087,64 @@ mod config_store_tests {
         let normal = home_dir.join(".cache");
         if normal.is_dir() {
             assert!(read_private_file(&normal.join("no-such-file")).is_none()); // missing = None either way
+        }
+    }
+
+    /// Mount defaults are content-based, never name-based: no user-specific
+    /// substrings like "windows_c"/"windowsEFI".
+    #[test]
+    fn default_mount_enabled_is_content_based() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let scratch = |tag: &str| {
+            let dir = std::env::temp_dir().join(format!(
+                "hark-mountdef-{}-{}-{}",
+                tag,
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+
+        // Data drive under an arbitrary user-specific name → on.
+        let data = scratch("win11");
+        fs::write(data.join("notes.txt"), "hi").unwrap();
+        assert!(default_mount_enabled(&data));
+
+        // Name containing "efi" as substring is NOT an ESP (cf. /mnt/KEFIR).
+        let kefir = scratch("KEFIR");
+        fs::write(kefir.join("notes.txt"), "hi").unwrap();
+        assert!(default_mount_enabled(&kefir));
+
+        // Lowercase `windows` data folder without System32 → on.
+        let lower = scratch("lower");
+        fs::create_dir_all(lower.join("windows").join("fonts")).unwrap();
+        fs::write(lower.join("file.txt"), "hi").unwrap();
+        assert!(default_mount_enabled(&lower));
+
+        // ESP layout (any mount name) → off.
+        let esp = scratch("esp-volume");
+        fs::create_dir_all(esp.join("EFI").join("Boot")).unwrap();
+        fs::write(esp.join("EFI").join("Boot").join("bootx64.efi"), "x").unwrap();
+        assert!(!default_mount_enabled(&esp));
+
+        // Windows OS drive (any mount name) → off.
+        let osc = scratch("os-drive");
+        fs::create_dir_all(osc.join("Windows").join("System32")).unwrap();
+        fs::write(osc.join("Windows").join("System32").join("kernel32.dll"), "x").unwrap();
+        fs::write(osc.join("data.txt"), "hi").unwrap();
+        assert!(!default_mount_enabled(&osc));
+
+        // Empty dir (stale unmounted mountpoint) → off.
+        let empty = scratch("empty");
+        assert!(!default_mount_enabled(&empty));
+
+        // Missing dir → off.
+        assert!(!default_mount_enabled(&empty.join("nope")));
+
+        for d in [&data, &kefir, &lower, &esp, &osc, &empty] {
+            let _ = fs::remove_dir_all(d);
         }
     }
 }

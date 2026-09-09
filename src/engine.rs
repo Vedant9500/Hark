@@ -711,7 +711,9 @@ impl Engine {
     /// Pin a folder as a deep root (always indexed to depth 6). Triggers reindex.
     /// Cap is small — deep roots are intentional project pins, not an open-ended list.
     /// Refuses `$HOME`, `/`, and other overly broad roots (see `is_forbidden_deep_root`).
-    pub fn promote_deep_root(&self, path: &std::path::Path) {
+    /// Returns Ok(canonical path) on add, Err(reason) for UI feedback instead of
+    /// silent no-ops (settings audit D2).
+    pub fn promote_deep_root(&self, path: &std::path::Path) -> Result<String, String> {
         const MAX_DEEP_ROOTS: usize = 32;
         // Prefer absolute path so config is stable across shells.
         let abs = if path.is_absolute() {
@@ -724,18 +726,21 @@ impl Engine {
         // Canonicalize when possible so `/home/foo/../foo` matches home checks.
         let abs = abs.canonicalize().unwrap_or(abs);
         if crate::config::is_forbidden_deep_root(&abs, &crate::config::discover_mounts()) {
-            return;
+            return Err("Too broad — pin a project subfolder instead".into());
         }
         let s = abs.to_string_lossy().to_string();
         if s.is_empty() {
-            return;
+            return Err("Enter a folder path".into());
+        }
+        if self.config.snapshot().index.deep_roots.iter().any(|x| x == &s) {
+            return Err("Already pinned".into());
         }
         let mut changed = false;
         self.config.update(|c| {
             if c.index.deep_roots.iter().any(|x| x == &s) {
                 return;
             }
-            c.index.deep_roots.push(s);
+            c.index.deep_roots.push(s.clone());
             // Drop oldest pins if over cap (keep most recent).
             if c.index.deep_roots.len() > MAX_DEEP_ROOTS {
                 let drop_n = c.index.deep_roots.len() - MAX_DEEP_ROOTS;
@@ -745,6 +750,9 @@ impl Engine {
         });
         if changed {
             self.force_reindex();
+            Ok(s)
+        } else {
+            Err("Already pinned".into())
         }
     }
 
