@@ -92,35 +92,47 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let (border, border_soft, shell_shadow) = if is_light {
         (
             rgba(&theme.outline_variant, 0.85),
-            rgba(&theme.outline_variant, 0.60),
+            rgba(&theme.outline_variant, 0.70),
             "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.60), inset 0 0 0 1px rgba(0, 0, 0, 0.08);",
         )
     } else {
         (
             rgba(&theme.outline_variant, 0.75),
-            rgba(&theme.outline_variant, 0.50),
+            rgba(&theme.outline_variant, 0.62),
             "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.05);",
         )
+    };
+    // Selected-row bevel: single-scanline inset top light, zero blur.
+    // Blurred outer shadows force an offscreen repaint per row per scroll
+    // frame; a 1px inset is one cached fill. Light themes get a stronger
+    // white glint, dark themes a faint one (black casts are invisible).
+    let row_bevel = if is_light {
+        "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.50);"
+    } else {
+        "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.09);"
     };
 
     let shell_bg = rgba(&theme.surface_container, base);
     // Transparent twin of shell_bg for the settings scroll-edge fades.
     let shell_bg_clear = rgba(&theme.surface_container, 0.0);
     // Half-strength head of the fade gradient (user-tuned: full shell tone
-    // read too heavy over rows).
-    let shell_bg_half = rgba(&theme.surface_container, base * 0.5);
+    // read too heavy over rows). Kept whisper-thin so the scroll scrim never
+    // reads as a shadow bar — 0.28 head over 16px.
+    let shell_bg_half = rgba(&theme.surface_container, base * 0.28);
     // Popovers float over results/previews without Hyprland blur — need higher opacity.
     let popover_bg = rgba(&theme.surface_container, (base + 0.32).min(0.94));
     let popover_bg_solid = rgba(&theme.surface_container_high, (base + 0.42).min(0.97));
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
-    let hover_bg = rgba(&theme.on_surface, 0.08);
+    let hover_bg = rgba(&theme.on_surface, 0.06);
     let selected_bg = rgba(&primary, 0.18);
-    // Selected row: a translucent wash just a step above hover so the active
-    // item reads without shouting. Same visual language as hover (an
-    // `on_surface` alpha fill), but stronger — hover @0.08, selection @0.12.
-    // Deliberately NOT a bright solid fill: over a semi-transparent shell that
-    // reads as a glowing block rather than a focused row.
-    let row_selected_bg = rgba(&theme.on_surface, 0.12);
+    // Selected row: clearly above hover (0.06 vs 0.14) so the active item
+    // reads at a glance. Same on_surface wash language — no bright solid
+    // block over the semi-transparent shell. Edge comes from a 1px border
+    // + inset top glint in the rule below, not from blur.
+    let row_selected_bg = rgba(&theme.on_surface, 0.14);
+    // Icon tile: faint flat fill that unifies mixed app/folder glyphs into
+    // one rhythm. Static background-color + 1px border, no blur, no shadow.
+    let icon_tile_bg = rgba(&theme.on_surface, 0.07);
     let hint = &theme.on_surface_variant;
     let empty = &theme.on_surface_variant;
     let subtitle = &theme.on_surface_variant;
@@ -177,10 +189,12 @@ window.hark-window .hark-shell stack > * {{
   background-image: none;
 }}
 
-/* Panel shell — single rounded card with dual-layer glass rim highlight */
+/* Panel shell — single rounded card with dual-layer glass rim highlight.
+   Subtle vertical shade (one static gradient, no blur): top catches light,
+   bottom grounds the card so the list reads as sitting INSIDE it. */
 window.hark-window .hark-shell {{
   background-color: {shell_bg};
-  background-image: none;
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.08));
   border: 1px solid {border};
   border-radius: {radius}px;
   {shell_shadow}
@@ -421,8 +435,12 @@ window.hark-window .hark-preview-picture {{
 }}
 
 window.hark-window .hark-row-icon {{
-  margin-right: 2px;
-  opacity: 0.95;
+  background-color: {icon_tile_bg};
+  border: 1px solid {border_soft};
+  border-radius: 8px;
+  padding: 4px;
+  margin-right: 4px;
+  opacity: 1;
   min-width: {icon_size}px;
   min-height: {icon_size}px;
 }}
@@ -448,21 +466,23 @@ window.hark-window .hark-results {{
 window.hark-window .hark-results > row {{
   background-color: transparent;
   background-image: none;
-  border: none;
+  /* Transparent 1px border reserves the selected edge so focus never
+     shifts layout by a pixel when the border tints in. */
+  border: 1px solid transparent;
   outline: none;
   box-shadow: none;
   border-radius: {row_radius}px;
   padding: 0;
   /* Horizontal inset keeps the rounded highlight off the preview separator
      and window edges; 6px also lands row text near the search field's 16px. */
-  margin: 1px 6px;
+  margin: 2px 6px;
   /* let content define height — fixed min-height was clipping glyphs */
-  min-height: 48px;
+  min-height: 52px;
 }}
 
 window.hark-window .hark-row-inner {{
   border-radius: {row_radius}px;
-  padding: 8px 10px;
+  padding: 9px 12px;
   background-color: transparent;
 }}
 
@@ -473,13 +493,15 @@ window.hark-window .hark-results > row:hover {{
 window.hark-window .hark-results > row:selected,
 window.hark-window .hark-results > row:selected:hover {{
   background-color: {row_selected_bg};
-  border: none;
+  border: 1px solid {border};
+  {row_bevel}
   outline: none;
 }}
 
-/* Modest legibility lift on selection; the solid fill carries the focus. */
+/* Subtitle sits back (0.70) so the title leads; selection lifts it slightly
+   without ever matching title brightness — brightness = closeness. */
 window.hark-window .hark-results > row:selected .hark-subtitle {{
-  opacity: 1;
+  opacity: 0.9;
 }}
 
 window.hark-window .hark-title {{
@@ -495,7 +517,7 @@ window.hark-window .hark-title {{
 window.hark-window .hark-subtitle {{
   color: {subtitle};
   font-size: {subtitle_fs};
-  opacity: 0.9;
+  opacity: 0.7;
   min-height: 16px;
   padding-top: 1px;
   padding-bottom: 1px;
@@ -507,8 +529,10 @@ window.hark-window .hark-badge {{
   border-radius: 0;
   padding: 0 2px;
   font-size: {badge_fs};
-  font-weight: 500;
-  opacity: 0.85;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
 }}
 
 window.hark-window .hark-badge.calc,
@@ -518,9 +542,11 @@ window.hark-window .hark-badge.folder {{
   color: {hint};
 }}
 
-/* --- Raycast-style conversion card --- */
+/* --- Raycast-style conversion card: hero of the list, so it wears the
+   same bordered-card language as a selected row (never the faint hover
+   wash). One static gradient + 1px inset glint, zero blur. */
 window.hark-window .hark-results > row.hark-conv-row {{
-  margin: 4px 0 8px 0;
+  margin: 2px 6px 8px 6px;
   border-radius: 12px;
   min-height: 0;
   padding: 0;
@@ -532,11 +558,13 @@ window.hark-window .hark-results > row.hark-conv-row:selected:hover {{
 }}
 
 window.hark-window .hark-conv-card {{
-  background-color: {hover_bg};
-  border: 1px solid {border_soft};
+  background-color: {row_selected_bg};
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.06));
+  border: 1px solid {border};
+  {row_bevel}
   border-radius: 12px;
   padding: 10px 14px 14px 14px;
-  margin: 0 2px;
+  margin: 0;
   transition: background-color 140ms ease, border-color 140ms ease;
 }}
 
@@ -557,7 +585,9 @@ window.hark-window .hark-conv-header {{
   color: {hint};
   font-size: 11px;
   font-weight: 600;
-  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.65;
   margin-bottom: 2px;
 }}
 
@@ -614,7 +644,7 @@ window.hark-window .hark-conv-badge {{
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 500;
-  opacity: 0.95;
+  opacity: 0.8;
   font-feature-settings: "tnum" 1;
 }}
 
@@ -1011,18 +1041,18 @@ window.hark-window .hark-settings-page-header {{
   background: transparent;
 }}
 
-/* Scroll-edge fades: soft scrims so rows never read as touching the viewport
-   rim. Shared by the settings pages and the main results list. Opacity is
-   driven per-view from the scroll position; the gradient just needs the
-   shell tone fading to transparent. */
+/* Scroll-edge fades: whisper scrims so rows never read as touching the
+   viewport rim. Shared by settings + results list. Opacity driven per-view
+   from scroll position; 16px / 0.28 head so it cues scroll without reading
+   as a shadow bar between search / list / footer. */
 window.hark-window .hark-fade-top {{
   background-image: linear-gradient(to bottom, {shell_bg_half}, {shell_bg_clear});
-  min-height: 28px;
+  min-height: 16px;
 }}
 
 window.hark-window .hark-fade-bottom {{
   background-image: linear-gradient(to top, {shell_bg_half}, {shell_bg_clear});
-  min-height: 28px;
+  min-height: 16px;
 }}
 
 window.hark-window .hark-settings-body {{
@@ -1206,9 +1236,12 @@ mod tests {
         let css = render(&theme, &ui);
         let alpha_of = |rule: &str| -> f32 {
             let bg = rule.split("background-color:").nth(1).unwrap();
-            let start = bg.rfind(',').unwrap() + 1;
-            let end = bg.find(')').unwrap();
-            bg[start..end].trim().parse().unwrap()
+            // Only the background declaration — the selected rule now also
+            // carries a bordered edge + inset glint with their own rgba().
+            let decl = bg.split(';').next().unwrap();
+            let start = decl.rfind(',').unwrap() + 1;
+            let end = decl.find(')').unwrap();
+            decl[start..end].trim().parse().unwrap()
         };
         let hover_rule = css
             .split("window.hark-window .hark-results > row:hover {")
@@ -1228,6 +1261,52 @@ mod tests {
         // the active row is distinguishable without reading as a bright block.
         assert!(sel_rule.contains("background-color: rgba("), "{sel_rule}");
         assert!(alpha_of(sel_rule) > alpha_of(hover_rule), "{sel_rule}");
+    }
+
+    #[test]
+    fn test_selected_row_bevel_without_blur() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        let sel_rule = css
+            .split("window.hark-window .hark-results > row:selected,")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        // Edge from 1px border + single-scanline inset glint — zero blur
+        // radius, so no offscreen repaint per row on scroll.
+        assert!(sel_rule.contains("border: 1px solid"), "{sel_rule}");
+        assert!(sel_rule.contains("inset 0 1px 0 0"), "{sel_rule}");
+        let hover_rule = css
+            .split("window.hark-window .hark-results > row:hover {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        // Hover stays a flat wash: no border, no shadow.
+        assert!(!hover_rule.contains("box-shadow"), "{hover_rule}");
+        // No blurred outer shadows anywhere on rows (flatten + jank).
+        assert!(!css.contains(".hark-results > row {\n  background-color: transparent;\n  background-image: none;\n  border: none;"));
+    }
+
+    #[test]
+    fn test_row_icon_tile_is_flat() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig::default();
+        let css = render(&theme, &ui);
+        let icon_rule = css
+            .split("window.hark-window .hark-row-icon {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(icon_rule.contains("background-color: rgba("), "{icon_rule}");
+        assert!(icon_rule.contains("border: 1px solid"), "{icon_rule}");
+        assert!(!icon_rule.contains("box-shadow"), "{icon_rule}");
     }
 
     #[test]

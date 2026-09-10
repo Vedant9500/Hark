@@ -247,7 +247,7 @@ impl Launcher {
 
         {
             scroll.vadjustment().connect_value_changed(move |adj| {
-                const FADE_PX: f64 = 28.0;
+                const FADE_PX: f64 = 16.0;
                 let value = adj.value();
                 let max = (adj.upper() - adj.page_size()).max(0.0);
                 let (top, bottom) = if max <= 1.0 {

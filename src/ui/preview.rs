@@ -292,6 +292,10 @@ impl PreviewPanel {
         image_view.add_css_class("hark-preview-body");
         image_view.set_hexpand(true);
         image_view.set_vexpand(true);
+        // Center the group like the icon view: wide panoramas letterbox in
+        // the fixed 4:3 stage, and top-packing left all the slack at the
+        // bottom so the preview read as "small". No geometry change.
+        image_view.set_valign(Align::Center);
 
         let picture = Picture::new();
         picture.add_css_class("hark-preview-picture");
@@ -519,8 +523,9 @@ impl PreviewPanel {
             return;
         };
 
-        // Preview is media-only: images get a picture frame; video/audio get icon detail.
-        // Apps, folders, docs, calc, etc. never open the panel.
+        // Rich previews only: picture (image / video frame / PDF page),
+        // code, audio tags. Icon-only documents (.md/.txt/.docx…) duplicate
+        // the row — they never open the panel, window stays compact.
         if !matches!(item.kind, ResultKind::File | ResultKind::Folder) {
             self.clear();
             return;
@@ -609,52 +614,17 @@ impl PreviewPanel {
             return;
         }
 
-        // Non-PDF documents stay icon + metadata.
-        self.cancel_debounce();
-        self.gen.set(self.gen.get().wrapping_add(1));
-        *self.last_path.borrow_mut() = Some(path.to_path_buf());
-        *self.inflight.borrow_mut() = None;
-        let badge = media_badge(media);
-        let icon_name = item
-            .icon
-            .as_deref()
-            .unwrap_or_else(|| icon_for_media(media));
-        let detail = match media {
-            MediaKind::Video => format!("Video file\n{meta}"),
-            MediaKind::Document => format!("Document\n{meta}"),
-            _ => meta,
-        };
-        self.show_icon_preview(icon_name, badge, &item.title, &item.subtitle, Some(&detail));
+        // Non-PDF documents would be icon + filename + path — a duplicate
+        // of the list row for 280px of width. Stay compact instead; the row
+        // already ellipsizes the long name. (PDFs return earlier via the
+        // picture pipeline — page 1 is worth the width.)
+        self.clear();
     }
 
     fn cancel_debounce(&self) {
         if let Some(id) = self.debounce.borrow_mut().take() {
             id.remove();
         }
-    }
-
-    fn show_icon_preview(
-        &self,
-        icon: &str,
-        badge: &str,
-        title: &str,
-        subtitle: &str,
-        meta: Option<&str>,
-    ) {
-        self.picture.set_paintable(Option::<&gdk::Paintable>::None);
-        Self::show_icon_preview_shared(
-            &self.icon,
-            &self.icon_type,
-            &self.icon_title,
-            &self.icon_sub,
-            &self.icon_meta,
-            &self.stack,
-            icon,
-            badge,
-            title,
-            subtitle,
-            meta,
-        );
     }
 
     fn show_image_chrome(&self, title: &str, meta: &str, dims: &str) {
@@ -664,8 +634,7 @@ impl PreviewPanel {
         self.stack.set_visible_child_name("image");
     }
 
-    /// Shared icon-view renderer used by both `show_icon_preview` and the
-    /// audio worker (which only has borrowed widget handles).
+    /// Icon-view renderer for the audio worker (borrowed widget handles).
     #[allow(clippy::too_many_arguments)]
     fn show_icon_preview_shared(
         icon: &Image,
@@ -1403,13 +1372,6 @@ fn guess_language(path: &Path) -> Option<sourceview5::Language> {
 
 /// Unified off-main decode for images, video first-frame, and PDF page 1.
 fn decode_preview_media(path: &Path) -> Option<DecodedPixels> {
-    // FreeDesktop cache first (images we generated, or system thumbnailers).
-    if let Some(thumb) = freedesktop_thumbnail(path) {
-        if let Some(px) = decode_thumb_or_scaled(&thumb, path) {
-            return Some(px);
-        }
-    }
-
     let kind = media_kind(path);
     let is_pdf = path
         .extension()
@@ -1417,10 +1379,32 @@ fn decode_preview_media(path: &Path) -> Option<DecodedPixels> {
         .map(|e| e.eq_ignore_ascii_case("pdf"))
         .unwrap_or(false);
 
+    // Fresh renders first: a 256px thumbnailer tile passes the frame gate
+    // but paints soft next to a 496 render, so same-kind files looked
+    // inconsistent (one crisp full-bleed, one dull). Render at 496, fall
+    // back to the cached thumb only when the decode fails.
+    if is_pdf {
+        if let Some(px) = decode_pdf_page(path) {
+            return Some(px);
+        }
+    } else if kind == MediaKind::Image {
+        if let Some(px) = decode_image_scaled(path) {
+            return Some(px);
+        }
+    }
+
+    // FreeDesktop cache fallback (or system thumbnailers).
+    if let Some(thumb) = freedesktop_thumbnail(path) {
+        if let Some(px) = decode_thumb_or_scaled(&thumb, path) {
+            return Some(px);
+        }
+    }
+
     if kind == MediaKind::Video {
         return decode_video_frame(path);
     }
     if is_pdf {
+        // Fresh render already tried above; thumb path also failed.
         return decode_pdf_page(path);
     }
     if kind == MediaKind::Image {
@@ -1927,18 +1911,6 @@ fn resolve_icon_name(name: &str) -> &str {
         "folder"
     } else {
         "text-x-generic"
-    }
-}
-
-fn media_badge(kind: MediaKind) -> &'static str {
-    match kind {
-        MediaKind::Image => "Image",
-        MediaKind::Video => "Video",
-        MediaKind::Audio => "Audio",
-        MediaKind::Document => "Document",
-        MediaKind::Archive => "Archive",
-        MediaKind::Code => "Code",
-        MediaKind::Other => "File",
     }
 }
 
