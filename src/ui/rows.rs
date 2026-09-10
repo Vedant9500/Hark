@@ -388,7 +388,10 @@ impl PooledRow {
         icon.set_pixel_size(26);
         icon.set_valign(gtk::Align::Center);
 
-        let text = GtkBox::new(Orientation::Vertical, 2);
+        // Title/subtitle gap: 3px = +1px card height (6 rows fill the ~6px
+        // viewport remainder: 6x64px rows in a 390px viewport). Keeps
+        // top/bottom gaps symmetric at default icon size / font scale.
+        let text = GtkBox::new(Orientation::Vertical, 3);
         text.set_hexpand(true);
         text.set_valign(gtk::Align::Center);
 

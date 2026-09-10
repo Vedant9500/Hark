@@ -732,7 +732,14 @@ impl Engine {
         if s.is_empty() {
             return Err("Enter a folder path".into());
         }
-        if self.config.snapshot().index.deep_roots.iter().any(|x| x == &s) {
+        if self
+            .config
+            .snapshot()
+            .index
+            .deep_roots
+            .iter()
+            .any(|x| x == &s)
+        {
             return Err("Already pinned".into());
         }
         let mut changed = false;

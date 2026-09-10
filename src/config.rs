@@ -2132,7 +2132,11 @@ mod config_store_tests {
         // Windows OS drive (any mount name) → off.
         let osc = scratch("os-drive");
         fs::create_dir_all(osc.join("Windows").join("System32")).unwrap();
-        fs::write(osc.join("Windows").join("System32").join("kernel32.dll"), "x").unwrap();
+        fs::write(
+            osc.join("Windows").join("System32").join("kernel32.dll"),
+            "x",
+        )
+        .unwrap();
         fs::write(osc.join("data.txt"), "hi").unwrap();
         assert!(!default_mount_enabled(&osc));
 

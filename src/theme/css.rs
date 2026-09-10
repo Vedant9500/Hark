@@ -663,7 +663,7 @@ window.hark-window .hark-footer-action {{
   color: {on_surface};
   font-size: 12px;
   font-weight: 500;
-  opacity: 0.90;
+  opacity: 0.85;
 }}
 
 window.hark-window .hark-footer-actions {{
@@ -674,7 +674,7 @@ window.hark-window .hark-footer-div {{
   color: {hint};
   font-size: 11px;
   opacity: 0.28;
-  padding: 0 6px;
+  padding: 0 10px;
 }}
 
 window.hark-window .hark-keycap {{
@@ -686,7 +686,7 @@ window.hark-window .hark-keycap {{
   font-size: 10.5px;
   font-weight: 600;
   min-width: 14px;
-  opacity: 0.88;
+  opacity: 1;
   letter-spacing: 0.01em;
 }}
 
@@ -712,7 +712,7 @@ window.hark-window .hark-action-label {{
   color: {on_surface};
   font-size: 12px;
   font-weight: 500;
-  opacity: 0.82;
+  opacity: 0.72;
 }}
 
 /* --- Action panel (Ctrl+K) / Open With --- */
