@@ -68,14 +68,40 @@ fn fmt_readable_date(d: &impl Datelike) -> String {
 }
 
 /// Day-count answer: `Today`/`Tomorrow`/`Yesterday` for ±1, else `N days` with
-/// a weekday line (`5 days` / `Saturday`).
+/// a weekday line (`5 days` / `Saturday`). Past deltas render as `N days ago`
+/// so bare past dates never show a negative count (`-5 days`).
 fn fmt_days_until(days: i64, date: &impl Datelike) -> (String, String) {
     match days {
         0 => ("Today".into(), "Today".into()),
         1 => ("Tomorrow".into(), "Tomorrow".into()),
         -1 => ("Yesterday".into(), "Yesterday".into()),
-        n => {
+        n if n > 1 => {
             let count = format!("{n} days");
+            let right = format!("{count}\n{}", weekday_name(date.weekday()));
+            (count, right)
+        }
+        n => {
+            let count = format!("{} days ago", n.abs());
+            let right = format!("{count}\n{}", weekday_name(date.weekday()));
+            (count, right)
+        }
+    }
+}
+
+/// Elapsed answer for `days since/after <date>`: `elapsed = today - date`.
+/// Past dates render positive (`13401 days`), future dates render `in N days`.
+fn fmt_days_since(elapsed: i64, date: &impl Datelike) -> (String, String) {
+    match elapsed {
+        0 => ("Today".into(), "Today".into()),
+        1 => ("Yesterday".into(), "Yesterday".into()),
+        -1 => ("Tomorrow".into(), "Tomorrow".into()),
+        n if n > 1 => {
+            let count = format!("{n} days");
+            let right = format!("{count}\n{}", weekday_name(date.weekday()));
+            (count, right)
+        }
+        n => {
+            let count = format!("in {} days", n.abs());
             let right = format!("{count}\n{}", weekday_name(date.weekday()));
             (count, right)
         }
@@ -225,6 +251,30 @@ fn numeric_naive_date(s: &str) -> Option<NaiveDate> {
     ] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
             return Some(d);
+        }
+    }
+    None
+}
+
+/// Parse any date shape accepted by `days since/until`: ISO, numeric
+/// (`dd/mm/yyyy`, `dd-mm-yy`), text (`11 march 2005`), bare year (`1990` →
+/// Jan 1). Bare year exists because users type `days since 1990`.
+fn parse_days_date(s: &str, today: NaiveDate) -> Option<NaiveDate> {
+    let t = s.trim();
+    if let Ok(d) = NaiveDate::parse_from_str(t, "%Y-%m-%d") {
+        return Some(d);
+    }
+    if let Some(d) = numeric_naive_date(t) {
+        return Some(d);
+    }
+    if let Some(d) = parse_text_date(t, today) {
+        return Some(d);
+    }
+    if t.len() == 4 {
+        if let Ok(year) = t.parse::<i32>() {
+            if (1000..=9999).contains(&year) {
+                return NaiveDate::from_ymd_opt(year, 1, 1);
+            }
         }
     }
     None
@@ -445,24 +495,44 @@ pub(crate) fn try_datetime(q: &str) -> Option<SearchResult> {
         )
         .unwrap()
     });
+    // days until / days since <date> — any supported date shape (ISO,
+    // dd/mm/yyyy, dd-mm-yy, `11 march 2005`, bare year).
     static RE_UNTIL2: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)^\s*days?\s+(until|to|till|before|after|since)\s+(\d{4}-\d{2}-\d{2})\s*$")
-            .unwrap()
+        Regex::new(r"(?i)^\s*days?\s+(until|to|till|before|after|since)\s+(.+?)\s*$").unwrap()
     });
     if let Some(c) = RE_UNTIL2.captures(trimmed) {
-        let date = NaiveDate::parse_from_str(c.get(2)?.as_str(), "%Y-%m-%d").ok()?;
+        let verb = c.get(1)?.as_str();
+        let raw = c.get(2)?.as_str();
         let today = now.date_naive();
-        let days = (date - today).num_days();
-        let (title, right) = fmt_days_until(days, &date);
-        return Some(card_result(
-            title,
-            format!("{} → {date}", c.get(1)?.as_str()),
-            days.to_string(),
-            date.to_string(),
-            "date",
-            right,
-            "result",
-        ));
+        if let Some(date) = parse_days_date(raw, today) {
+            // `since`/`after` count elapsed (today - date, positive for past);
+            // `until`/`to`/`till`/`before` count remaining (date - today).
+            if verb.eq_ignore_ascii_case("since") || verb.eq_ignore_ascii_case("after") {
+                let elapsed = (today - date).num_days();
+                let (title, right) = fmt_days_since(elapsed, &date);
+                return Some(card_result(
+                    title,
+                    format!("{} → {date}", verb),
+                    elapsed.to_string(),
+                    date.to_string(),
+                    "date",
+                    right,
+                    "result",
+                ));
+            }
+            let days = (date - today).num_days();
+            let (title, right) = fmt_days_until(days, &date);
+            return Some(card_result(
+                title,
+                format!("{} → {date}", verb),
+                days.to_string(),
+                date.to_string(),
+                "date",
+                right,
+                "result",
+            ));
+        }
+        // Unparseable remainder falls through to other handlers.
     }
     if let Some(c) = RE_UNTIL.captures(trimmed) {
         if trimmed.contains('-') && trimmed.len() == 10 {
