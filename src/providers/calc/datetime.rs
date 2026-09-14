@@ -931,8 +931,13 @@ mod datetime_tests {
     fn age_and_date_diff() {
         let r = try_datetime("age 1998-03-15").expect("age");
         assert!(r.conversion.as_ref().unwrap().left_badge == "age", "{r:?}");
-        // 1998-03-15 → 2026-08-15 = 28y 5m.
-        assert!(r.title.starts_with("28 years 5 months"), "{}", r.title);
+        // Clock-relative: compute expected y/m from today so the test never
+        // time-bombs when the month rolls over (was hardcoded 28y 5m).
+        let today = Local::now().date_naive();
+        let birth = NaiveDate::from_ymd_opt(1998, 3, 15).unwrap();
+        let (ey, em, _, _) = ymd_between(birth, today);
+        let expected = fmt_span(ey, em, 0);
+        assert!(r.title.starts_with(&expected), "{} vs {expected}", r.title);
         let r = try_datetime("1998-03-15 to 2026-08-15").expect("diff");
         assert_eq!(r.title, "28 years 5 months");
         assert_eq!(r.conversion.as_ref().unwrap().left_badge, "date diff");
@@ -941,7 +946,11 @@ mod datetime_tests {
         assert_eq!(r.title, "28 years 5 months");
         // `to now` resolves against the clock.
         let r = try_datetime("1998-03-15 to now").expect("to now");
-        assert!(r.title.starts_with("28 years"), "{}", r.title);
+        assert!(
+            r.title.starts_with(&format!("{ey} year")),
+            "{} vs {ey} years",
+            r.title
+        );
         // Single dates still fall through to the plain date card.
         let r = try_datetime("2026-08-15").expect("bare date");
         assert_eq!(r.conversion.as_ref().unwrap().left_badge, "date");
@@ -963,7 +972,17 @@ mod datetime_tests {
         let r = try_datetime("11/03/2005 to 20/03/2026").expect("diff long span");
         assert_eq!(r.title, "21 years 9 days");
         // Unambiguous day-first: 11/03/2005 is 11 March, never 3 Nov.
+        // Fixed-span proof (no clock): Mar 11 → Apr 11 is exactly 1 month;
+        // a US mm/dd misparse (Nov 3) would give a different span.
+        let r = try_datetime("11/03/2005 to 11/04/2005").expect("day-first span");
+        assert_eq!(r.title, "1 month");
+        // Clock-relative age: compute expected y/m from today so the month
+        // rollover never breaks the test (was hardcoded 21y 5m).
+        let today = Local::now().date_naive();
+        let birth = NaiveDate::from_ymd_opt(2005, 3, 11).unwrap();
+        let (ey, em, _, _) = ymd_between(birth, today);
+        let expected = fmt_span(ey, em, 0);
         let r = try_datetime("age 11/03/2005").expect("day-first");
-        assert!(r.title.starts_with("21 years 5 months"), "{}", r.title);
+        assert!(r.title.starts_with(&expected), "{} vs {expected}", r.title);
     }
 }

@@ -2683,6 +2683,26 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     note.set_wrap(true);
     body.append(&note);
 
+    body.append(&group_label("Definitions"));
+
+    let def_card = GtkBox::new(Orientation::Vertical, 0);
+    def_card.add_css_class("hark-settings-card");
+
+    let (def_en_row, def_en_cb) = check_setting_row(
+        "Enable definitions",
+        Some("what does X mean / X full form / def X via Wikipedia. No network until then; misses offer a web search."),
+        cfg.define.enabled,
+    );
+    {
+        let engine = engine.clone();
+        def_en_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine.config().update(|c| c.define.enabled = on);
+        });
+    }
+    def_card.append(&def_en_row);
+    body.append(&def_card);
+
     body.append(&group_label("Web search"));
 
     let web_card = GtkBox::new(Orientation::Vertical, 0);

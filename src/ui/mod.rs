@@ -56,6 +56,9 @@ const SHELL_INSET: i32 = 0;
 const SEARCH_DEBOUNCE_MS: u64 = 75;
 /// Auto-detect translate queries: longer settle so paste/IME does not spawn workers per glyph.
 const TRANSLATE_DEBOUNCE_MS: u64 = 180;
+/// Define queries: longer settle so intermediate `define b/bl/…` prefixes
+/// don't each spawn a network fetch that head-of-line blocks the final term.
+const DEFINE_DEBOUNCE_MS: u64 = 200;
 /// Delay before showing `No results` when stale results exist — keeps the
 /// old list visible during rapid typing instead of flashing empty.
 const EMPTY_STALE_DELAY_MS: u64 = 140;
@@ -513,8 +516,12 @@ impl Launcher {
                 let window_tc = window_c.clone();
                 let shell_tc = shell_c.clone();
                 let size_anim_tc = size_anim_c.clone();
-                // Longer settle only for auto script paste/IME (not forced `tr …`).
-                let wait_ms = if engine.translate_is_auto_query(&q) {
+                // Longer settle for auto script paste/IME (not forced `tr …`)
+                // and for define prefixes (each `define b/bl/…` used to spawn
+                // a fetch that queued behind the final term).
+                let wait_ms = if crate::providers::define::parse_term(&q).is_some() {
+                    DEFINE_DEBOUNCE_MS
+                } else if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
                 } else {
                     SEARCH_DEBOUNCE_MS
@@ -1613,9 +1620,11 @@ fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
         // Conversion rows complete to nothing (audit P2): every conversion
         // action is `Copy`, and filling the answer title (`220.462 lb`)
         // destroys the query — which itself re-parses as a new conversion.
-        Action::Copy(_) if matches!(item.kind, ResultKind::Conversion) => None,
-        // Web rows complete to nothing: the title echoes the query
-        // (`Search Google for "…"`) and filling it would destroy the query.
+        // Conversion + define rows complete to nothing: conversion answers
+        // would re-parse as new conversions, and define titles echo the
+        // query (`Search Google for "…"`) or name an answer — filling either
+        // destroys the query.
+        Action::Copy(_) if matches!(item.kind, ResultKind::Conversion | ResultKind::Define) => None,
         Action::OpenUrl(_) => None,
         Action::Copy(_)
         | Action::OpenSettings
@@ -1925,6 +1934,14 @@ mod tab_complete_tests {
             Action::Copy("220.462 lb".into()),
         );
         assert_eq!(completion_text_for("100 kg in lb", &answer), None);
+        // Define rows are `Copy` too, and filling the article title would
+        // destroy the question — Tab keeps the query.
+        let def = item(
+            "SIMD · Wikipedia",
+            ResultKind::Define,
+            Action::Copy("Single instruction…".into()),
+        );
+        assert_eq!(completion_text_for("what does SIMD mean", &def), None);
         // Non-conversion Copy rows (calc answers) still fill the title.
         let calc = item("4", ResultKind::Calc, Action::Copy("4".into()));
         assert_eq!(completion_text_for("2 + 2", &calc).as_deref(), Some("4"));
@@ -2266,7 +2283,11 @@ fn activate_result<F: Fn()>(
 fn should_learn_activation(kind: ResultKind) -> bool {
     !matches!(
         kind,
-        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command | ResultKind::Web
+        ResultKind::Calc
+            | ResultKind::Conversion
+            | ResultKind::Command
+            | ResultKind::Web
+            | ResultKind::Define
     )
 }
 
@@ -2407,6 +2428,10 @@ fn search_mode_icon(query: &str) -> &'static str {
     if crate::providers::web::is_force_web_query(q) {
         return mode_web_icon();
     }
+    // Explicit definition questions beat every other detector.
+    if crate::providers::define::parse_term(q).is_some() {
+        return mode_define_icon();
+    }
     let lower = q.to_ascii_lowercase();
     let (forced, text) = strip_translate_prefix(q);
     if forced || looks_like_translatable_script(text) {
@@ -2537,6 +2562,13 @@ fn mode_web_icon() -> &'static str {
         "web-browser-symbolic",
         "applications-internet-symbolic",
         "applications-internet",
+    ])
+}
+
+fn mode_define_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "accessories-dictionary-symbolic",
+        "accessories-dictionary",
     ])
 }
 
@@ -2765,7 +2797,8 @@ fn refresh_results(
     }
 
     // Async translate (network). UI path only did cache/pending — never curl on main.
-    if engine.should_translate_network(&q) {
+    // Skipped when define owns the query (explicit question beats auto-detect).
+    if engine.should_translate_network(&q) && !engine.define_should_handle(&q) {
         let engine_t = engine.clone();
         let list_t = list.clone();
         let row_pool_t = row_pool.clone();
@@ -2816,6 +2849,63 @@ fn refresh_results(
                 &suppress_t,
                 icon_size_t.get(),
                 symbolic_t.get(),
+            );
+        });
+    }
+
+    // Async define (network). Same shape as translate: sync path showed a
+    // cached hit or a "Defining…" placeholder; the worker fills the answer.
+    if engine.should_define_network(&q) {
+        let engine_d = engine.clone();
+        let list_d = list.clone();
+        let row_pool_d = row_pool.clone();
+        let empty_d = empty.clone();
+        let results_d = results.clone();
+        let selected_d = selected.clone();
+        let footer_action_d = footer_action.clone();
+        let preview_d = preview.clone();
+        let deep_gen_d = deep_gen.clone();
+        let search_entry_d = search_entry.clone();
+        let drag_session_d = drag_session.clone();
+        let suppress_d = suppress_select.clone();
+        let icon_size_d = ui_icon_size.clone();
+        let symbolic_d = ui_symbolic.clone();
+        let async_pending_d = async_pending.clone();
+        let q_d = q.clone();
+        let gen_d = gen;
+        async_pending.set(async_pending.get() + 1);
+        update_search_icons(search_entry, async_pending);
+        let (tx_d, rx_d) = async_channel::bounded::<Vec<SearchResult>>(1);
+        schedule_define_job(engine_d.clone(), q_d.clone(), gen_d, tx_d);
+        glib::spawn_future_local(async move {
+            let Ok(hits) = rx_d.recv().await else {
+                return;
+            };
+            if deep_gen_d.get() != gen_d {
+                return;
+            }
+            if search_entry_d.text().as_str() != q_d.as_str() {
+                return;
+            }
+            let pending = async_pending_d.get().saturating_sub(1);
+            async_pending_d.set(pending);
+            update_search_icons(&search_entry_d, &async_pending_d);
+            if hits.is_empty() {
+                return;
+            }
+            apply_define_hits(
+                &hits,
+                &list_d,
+                &row_pool_d,
+                &empty_d,
+                &results_d,
+                &selected_d,
+                &footer_action_d,
+                &preview_d,
+                &drag_session_d,
+                &suppress_d,
+                icon_size_d.get(),
+                symbolic_d.get(),
             );
         });
     }
@@ -2987,6 +3077,27 @@ fn schedule_translate_job(
     });
 }
 
+/// Define network fetch: one thread per query, no queue.
+///
+/// The old single-flight gate serialized fetches, so intermediate prefixes
+/// (`define b`, `define bl`, …) head-of-line blocked the final term behind
+/// a 0.5s+ fetch each — the 4–5s perceived lag. Stale results are harmless:
+/// the async callback drops them via the gen + entry-text checks, so
+/// concurrency stays bounded by typing speed (debounced) and each worker
+/// exits after one fetch.
+fn schedule_define_job(
+    engine: Arc<Engine>,
+    query: String,
+    gen: u64,
+    reply: async_channel::Sender<Vec<SearchResult>>,
+) {
+    let _ = gen;
+    std::thread::spawn(move || {
+        let hits = engine.search_define_network(&query);
+        let _ = reply.send_blocking(hits);
+    });
+}
+
 /// Truncate `merged` to the result cap without evicting the selected row
 /// (audit P3): async merges used to `truncate(25)` blindly, and when deep
 /// hits pushed the selection past the cap the fallback `unwrap_or(0)` landed
@@ -3028,6 +3139,7 @@ mod learn_gate_tests {
             ResultKind::Conversion,
             ResultKind::Command,
             ResultKind::Web,
+            ResultKind::Define,
         ] {
             assert_eq!(
                 should_learn(kind, None),
@@ -3157,6 +3269,73 @@ fn apply_translate_hits(
     }
     // Preserve selection by id (was: unconditional reset to 0, same hero
     // landmine as the deep-merge path — audit P3).
+    let new_sel = sel_id
+        .as_deref()
+        .and_then(|id| out.iter().position(|r| r.id == id))
+        .unwrap_or(0);
+    selected.set(new_sel);
+    *results.borrow_mut() = out;
+
+    if let Some(row) = row_pool.borrow().row_at(new_sel).cloned() {
+        suppress_select.set(true);
+        list.select_row(Some(&row));
+        suppress_select.set(false);
+        update_footer(results, new_sel, footer_action);
+        refresh_preview_at(results, new_sel, preview);
+    } else {
+        list.select_row(Option::<&ListBoxRow>::None);
+        update_footer(results, 0, footer_action);
+        preview.clear();
+    }
+}
+
+/// Replace pending define row with network result (answer or web-search miss).
+#[allow(clippy::too_many_arguments)]
+fn apply_define_hits(
+    hits: &[SearchResult],
+    list: &ListBox,
+    row_pool: &Rc<RefCell<ResultRowPool>>,
+    empty: &Label,
+    results: &Rc<RefCell<Vec<SearchResult>>>,
+    selected: &Rc<Cell<usize>>,
+    footer_action: &FooterPrimary,
+    preview: &Rc<PreviewPanel>,
+    drag_session: &DragSession,
+    suppress_select: &Rc<Cell<bool>>,
+    icon_size: i32,
+    symbolic_icons: bool,
+) {
+    if drag_session.is_active() || hits.is_empty() {
+        return;
+    }
+
+    // Same ownership move as the translate path: existing rows move into
+    // `out`, only id `String`s clone for the dedup set.
+    let sel_id = results.borrow().get(selected.get()).map(|r| r.id.clone());
+    let mut existing = std::mem::take(&mut *results.borrow_mut());
+    existing.retain(|r| !crate::providers::define::is_pending_result(r));
+    let mut out = hits.to_vec();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|r| r.id.clone()).collect();
+    for r in existing {
+        if seen.insert(r.id.clone()) {
+            out.push(r);
+        }
+    }
+    truncate_keep_selected(&mut out, sel_id.as_deref());
+
+    let no_hits = out.is_empty();
+    empty.set_visible(no_hits);
+    empty.set_vexpand(no_hits);
+    list.set_visible(!no_hits);
+    {
+        let mut pool = row_pool.borrow_mut();
+        if out.is_empty() {
+            pool.clear(list);
+        } else {
+            pool.apply(list, &out, icon_size, symbolic_icons, None);
+        }
+    }
+    // Preserve selection by id (same hero landmine as the translate path).
     let new_sel = sel_id
         .as_deref()
         .and_then(|id| out.iter().position(|r| r.id == id))
@@ -3332,11 +3511,12 @@ fn ensure_row_visible(row: &ListBoxRow, dir: i32, anim: &scroll_anim::ScrollTwee
 fn kind_rank_ui(k: ResultKind) -> u8 {
     match k {
         ResultKind::Calc | ResultKind::Conversion => 0,
-        ResultKind::Command => 1,
-        ResultKind::App => 2,
-        ResultKind::Folder => 3,
-        ResultKind::File => 4,
-        ResultKind::Web => 5,
+        ResultKind::Define => 1,
+        ResultKind::Command => 2,
+        ResultKind::App => 3,
+        ResultKind::Folder => 4,
+        ResultKind::File => 5,
+        ResultKind::Web => 6,
     }
 }
 

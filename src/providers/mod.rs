@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod calc;
+pub mod define;
 pub mod files;
 pub mod fx;
 pub mod http;
@@ -17,6 +18,9 @@ pub enum ResultKind {
     Conversion,
     Command,
     Web,
+    /// Inline definition: standard row with a wrapped paragraph subtitle
+    /// (never a conversion card — cards truncate to one line).
+    Define,
 }
 
 /// Raycast-style dual-panel conversion display (time zones, units, etc.)
@@ -295,7 +299,7 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 }
             }
         }
-        ResultKind::Calc | ResultKind::Conversion => {
+        ResultKind::Calc | ResultKind::Conversion | ResultKind::Define => {
             let text = match &item.action {
                 Action::Copy(t) => t.clone(),
                 _ => item.title.clone(),
@@ -307,6 +311,21 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 action: Action::Copy(text),
                 destructive: false,
             });
+            // Define rows with a resolved Wikipedia page offer it as a
+            // secondary action (mem-cache lookup only — no I/O).
+            if item.kind == ResultKind::Define {
+                if let Some(media) = crate::providers::define::lookup_media_by_id(&item.id) {
+                    if let Some(url) = media.page_url {
+                        out.push(ActionSpec {
+                            id: "open_article",
+                            label: "Open Article".into(),
+                            shortcut: None,
+                            action: Action::OpenUrl(url),
+                            destructive: false,
+                        });
+                    }
+                }
+            }
             // Raycast trio: ⌘↵ unformatted value, ⌘⇧↵ question + answer.
             if let Some(v) = unformatted_value(item) {
                 out.push(ActionSpec {

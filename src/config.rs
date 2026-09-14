@@ -527,6 +527,41 @@ impl TranslateConfig {
     }
 }
 
+/// Inline definitions (`what does X mean`, `X full form`, `def X`).
+/// Online via Wikipedia → DuckDuckGo, aggressively disk-cached.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DefineConfig {
+    /// Master switch. When off: no network, cache, or define work at all.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Max term characters accepted for lookup.
+    #[serde(default = "default_define_max_chars")]
+    pub max_chars: usize,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_define_max_chars() -> usize {
+    100
+}
+
+impl Default for DefineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_chars: default_define_max_chars(),
+            extra: Default::default(),
+        }
+    }
+}
+
+impl DefineConfig {
+    pub fn sanitize(&mut self) {
+        self.max_chars = self.max_chars.clamp(20, 300);
+    }
+}
+
 /// Web-search fallback settings (no LLM, no daemon network).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebConfig {
@@ -798,6 +833,9 @@ pub struct HarkConfig {
     /// Web-search fallback (no local hit → Enter opens the browser).
     #[serde(default)]
     pub web: WebConfig,
+    /// Inline definitions (Wikipedia → DDG, disk-cached).
+    #[serde(default)]
+    pub define: DefineConfig,
     /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -877,6 +915,7 @@ impl ConfigStore {
                             ui: section_or_default(&v, "ui", &mut bad_sections),
                             translate: section_or_default(&v, "translate", &mut bad_sections),
                             web: section_or_default(&v, "web", &mut bad_sections),
+                            define: section_or_default(&v, "define", &mut bad_sections),
                             // Flattened extras are written inline, so unknown
                             // top-level keys reappear here on reload — gather
                             // them back so they survive rewrites (audit P3).
@@ -893,6 +932,7 @@ impl ConfigStore {
                                                     | "ui"
                                                     | "translate"
                                                     | "web"
+                                                    | "define"
                                                     | "extra"
                                             )
                                         })
@@ -989,6 +1029,11 @@ impl ConfigStore {
             if cfg.web != before_web {
                 changed = true;
             }
+            let before_def = cfg.define.clone();
+            cfg.define.sanitize();
+            if cfg.define != before_def {
+                changed = true;
+            }
         }
 
         let store = Self {
@@ -1020,7 +1065,7 @@ impl ConfigStore {
     }
 
     /// Apply a mutation. Clones the config, runs `f`, sanitizes
-    /// UI/translate/web/index. Swaps the Arc and schedules a disk write **only when** the result
+    /// UI/translate/web/define/index. Swaps the Arc and schedules a disk write **only when** the result
     /// differs from the previous snapshot (no-op promote/settings toggles
     /// must not thrash I/O). Writes run on a background thread, coalesced
     /// through `pending_save` — so per-keystroke updates never do main-thread
@@ -1032,6 +1077,7 @@ impl ConfigStore {
         cfg.ui.sanitize();
         cfg.translate.sanitize();
         cfg.web.sanitize();
+        cfg.define.sanitize();
         cfg.index.sanitize();
         if cfg == **g {
             return;
@@ -2047,6 +2093,19 @@ mod config_store_tests {
         cfg.custom_url = "file:///etc/passwd?q=%s".into();
         cfg.sanitize();
         assert!(cfg.custom_url.is_empty());
+    }
+
+    #[test]
+    fn define_sanitize_clamps_term_budget() {
+        let mut cfg = DefineConfig {
+            max_chars: 5000,
+            ..Default::default()
+        };
+        cfg.sanitize();
+        assert_eq!(cfg.max_chars, 300);
+        cfg.max_chars = 1;
+        cfg.sanitize();
+        assert_eq!(cfg.max_chars, 20);
     }
 
     #[cfg(unix)]

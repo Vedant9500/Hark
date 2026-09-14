@@ -155,6 +155,8 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let preview_title_fs = fs(13.0);
     let preview_meta_fs = fs(11.0);
     let preview_code_fs = fs(11.0);
+    let doc_title_fs = fs(15.0);
+    let doc_body_fs = fs(13.5);
     let empty_fs = fs(12.0);
 
     format!(
@@ -426,9 +428,78 @@ window.hark-window .hark-preview-code text {{
   color: {on_surface};
 }}
 
+/* Define article (list row): plain reading view, never a card. The text
+   sits directly on the shell — no inner background, no border — so the
+   selected-row wash must not paint here either. */
+window.hark-window .hark-results > row.hark-define-row,
+window.hark-window .hark-results > row.hark-define-row:hover,
+window.hark-window .hark-results > row.hark-define-row:selected,
+window.hark-window .hark-results > row.hark-define-row:selected:hover {{
+  background-color: transparent;
+  background-image: none;
+  border: 1px solid transparent;
+  box-shadow: none;
+  outline: none;
+  min-height: 0;
+}}
+
+window.hark-window .hark-define {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 10px 14px 12px 14px;
+}}
+
+window.hark-window .hark-define-title {{
+  font-size: {doc_title_fs};
+  font-weight: 700;
+  color: {on_surface};
+  line-height: 1.35;
+}}
+
+window.hark-window .hark-define-body {{
+  font-size: {doc_body_fs};
+  line-height: 1.65;
+  color: {on_surface};
+  opacity: 0.92;
+}}
+
+window.hark-window .hark-define-body selection {{
+  background-color: {selected_bg};
+  color: {on_surface};
+}}
+
+/* Long-form reading view (define provider): article title + selectable
+   body. Body uses full-strength text (not dimmed meta) for contrast. */
+window.hark-window .hark-preview-doc-title {{
+  font-size: {doc_title_fs};
+  font-weight: 600;
+  color: {on_surface};
+}}
+
+window.hark-window .hark-preview-doc-scroll {{
+  background-color: transparent;
+}}
+
+window.hark-window .hark-preview-doc-body {{
+  font-size: {doc_body_fs};
+  line-height: 1.6;
+  color: {on_surface};
+}}
+
+window.hark-window .hark-preview-doc-body selection {{
+  background-color: {selected_bg};
+  color: {on_surface};
+}}
+
 window.hark-window .hark-preview-picture {{
   border-radius: 10px;
-  background-color: {hover_bg};
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
   /* 4:3 frame (248×186 inside 280px panel) */
   min-width: 248px;
   min-height: 186px;

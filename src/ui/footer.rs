@@ -46,6 +46,7 @@ pub(crate) fn update_footer(
         Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => "Use Scope",
         Some(i) => match i.kind {
             ResultKind::Calc | ResultKind::Conversion => "Copy Result",
+            ResultKind::Define => "Copy Definition",
             ResultKind::Command => "Open",
             ResultKind::Web => "Search Web",
             // Files / folders / apps are also draggable (drag path out of the row).

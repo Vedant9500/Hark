@@ -1,6 +1,7 @@
 use crate::config::ConfigStore;
 use crate::providers::apps::AppProvider;
 use crate::providers::calc::CalcProvider;
+use crate::providers::define::DefineProvider;
 use crate::providers::files::{FileProvider, IndexProgress};
 use crate::providers::translate::TranslateProvider;
 use crate::providers::web::WebProvider;
@@ -24,6 +25,7 @@ pub struct Engine {
     calc: Arc<CalcProvider>,
     translate: Arc<TranslateProvider>,
     web: Arc<WebProvider>,
+    define: Arc<DefineProvider>,
     usage: Arc<UsageStore>,
     typos: Arc<TypoStore>,
     config: Arc<ConfigStore>,
@@ -51,6 +53,7 @@ impl Engine {
         let calc = Arc::new(CalcProvider::new());
         let translate = Arc::new(TranslateProvider::new(config.clone()));
         let web = Arc::new(WebProvider::new(config.clone()));
+        let define = Arc::new(DefineProvider::new(config.clone()));
 
         // Currency rates: use on-disk cache only at boot. Network fetch is deferred
         // until an FX conversion is actually requested (see FxStore::convert) so
@@ -62,6 +65,7 @@ impl Engine {
             calc,
             translate,
             web,
+            define,
             usage,
             typos,
             config,
@@ -266,9 +270,23 @@ impl Engine {
             .any(|r| matches!(r.kind, ResultKind::Calc | ResultKind::Conversion));
         results.extend(calc);
 
+        // Define: explicit question intent wins over translate auto-detect
+        // (translating "what does 你好 mean" as a sentence is nonsense;
+        // defining 你好 is the ask). Any define row owns the query.
+        let mut force_define = false;
+        if !calc_hit && self.define.is_enabled() && self.define.should_handle(q) {
+            let def = self.define.search(q);
+            force_define = !def.is_empty();
+            results.extend(def);
+        }
+
         // Translate: only when enabled. Disabled → zero I/O / no background work.
         let mut force_translate = false;
-        if !calc_hit && self.translate.is_enabled() && self.translate.should_handle(q) {
+        if !calc_hit
+            && !force_define
+            && self.translate.is_enabled()
+            && self.translate.should_handle(q)
+        {
             let tr = self.translate.search(q);
             // Any translate row (success or soft-fail) owns the query.
             force_translate = !tr.is_empty();
@@ -283,8 +301,8 @@ impl Engine {
         if force_files {
             // Path/glob queries: files only (no Chrome for `*.md`).
             results.extend(self.files.search_with(q, true, DeepMode::Skip));
-        } else if force_translate {
-            // Strong translation hit — do not mix in apps/files noise.
+        } else if force_translate || force_define {
+            // Strong translation / definition hit — do not mix in apps/files noise.
         } else if !calc_hit {
             let mut apps = self.apps.search(q);
             // App score bands: exact 50k, prefix 30k+, contains 15k+, fuzzy often <1k.
@@ -331,7 +349,10 @@ impl Engine {
                 .filter(|r| {
                     !matches!(
                         r.kind,
-                        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                        ResultKind::Calc
+                            | ResultKind::Conversion
+                            | ResultKind::Command
+                            | ResultKind::Define
                     )
                 })
                 .map(|r| r.id.as_str())
@@ -343,7 +364,10 @@ impl Engine {
             .filter(|r| {
                 !matches!(
                     r.kind,
-                    ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+                    ResultKind::Calc
+                        | ResultKind::Conversion
+                        | ResultKind::Command
+                        | ResultKind::Define
                 )
             })
             .zip(boosts)
@@ -355,7 +379,7 @@ impl Engine {
         }
 
         // Personal typo aliases (v1/v2): boost or inject the learned target.
-        if !force_files && !force_translate && !calc_hit {
+        if !force_files && !force_translate && !force_define && !calc_hit {
             self.apply_typo_alias(q, &mut results);
         }
 
@@ -376,9 +400,14 @@ impl Engine {
         // Web fallback: last row (or only row) for free-text queries with no
         // local owner. Appended after truncate so it always survives; local
         // rows shrink to 24 to keep the 25-row cap.
-        if let Some(row) =
-            self.web_fallback_row(q, matches_cmd, calc_hit, force_translate, force_files)
-        {
+        if let Some(row) = self.web_fallback_row(
+            q,
+            matches_cmd,
+            calc_hit,
+            force_translate,
+            force_define,
+            force_files,
+        ) {
             if results.len() >= 25 {
                 results.truncate(24);
             }
@@ -388,17 +417,18 @@ impl Engine {
     }
 
     /// Last-row web fallback, or `None` when another provider owns the query.
-    /// Pure + cheap (no I/O): path/glob, calc, translate, and the Settings
-    /// command never get a web row; single chars skip it as noise.
+    /// Pure + cheap (no I/O): path/glob, calc, translate, define, and the
+    /// Settings command never get a web row; single chars skip it as noise.
     fn web_fallback_row(
         &self,
         q: &str,
         matches_cmd: bool,
         calc_hit: bool,
         force_translate: bool,
+        force_define: bool,
         force_files: bool,
     ) -> Option<SearchResult> {
-        if matches_cmd || calc_hit || force_translate || force_files {
+        if matches_cmd || calc_hit || force_translate || force_define || force_files {
             return None;
         }
         if q.chars().count() < 2 {
@@ -734,6 +764,25 @@ impl Engine {
         self.translate.is_enabled() && self.translate.is_auto_query(query)
     }
 
+    /// Whether the UI should schedule an async define fetch (enabled + needs network).
+    pub fn should_define_network(&self, query: &str) -> bool {
+        self.define.is_enabled() && self.define.needs_network(query)
+    }
+
+    /// Whether this query is a define candidate (UI gates: translate
+    /// suppression, mode icon).
+    pub fn define_should_handle(&self, query: &str) -> bool {
+        self.define.is_enabled() && self.define.should_handle(query)
+    }
+
+    /// Blocking network define for worker threads only (never call on GTK main).
+    pub fn search_define_network(&self, query: &str) -> Vec<SearchResult> {
+        if !self.define.is_enabled() {
+            return Vec::new();
+        }
+        self.define.search_network(query)
+    }
+
     /// Whether the UI should schedule an async deep walk for this query.
     pub fn should_deep_search(&self, query: &str, current: &[SearchResult]) -> bool {
         // Translate owns CJK / `tr ` queries — never deep-walk those (was a major stutter).
@@ -742,6 +791,10 @@ impl Engine {
         }
         // Forced web (`? foo`, `g foo`) owns the query — no local walk.
         if crate::providers::web::is_force_web_query(query) {
+            return false;
+        }
+        // Define owns question queries — never deep-walk those either.
+        if self.define.is_enabled() && self.define.should_handle(query) {
             return false;
         }
         // Calc/conversion already answered (battery, math, `now`, …) and Engine::search
@@ -1065,11 +1118,12 @@ fn is_force_files_query(q: &str, files: &FileProvider) -> bool {
 fn kind_rank(k: ResultKind) -> u8 {
     match k {
         ResultKind::Calc | ResultKind::Conversion => 0,
-        ResultKind::Command => 1,
-        ResultKind::App => 2,
-        ResultKind::Folder => 3,
-        ResultKind::File => 4,
-        ResultKind::Web => 5,
+        ResultKind::Define => 1,
+        ResultKind::Command => 2,
+        ResultKind::App => 3,
+        ResultKind::Folder => 4,
+        ResultKind::File => 5,
+        ResultKind::Web => 6,
     }
 }
 
@@ -1166,9 +1220,10 @@ mod engine_search_tests {
 
     fn base_config() -> HarkConfig {
         let mut cfg = HarkConfig::default();
-        // Translate + web are on by default; disable for deterministic ranking.
+        // Translate + web + define are on by default; disable for deterministic ranking.
         cfg.translate.enabled = false;
         cfg.web.enabled = false;
+        cfg.define.enabled = false;
         cfg.index.include_home = false;
         cfg.index.extra_roots.clear();
         cfg
@@ -1199,6 +1254,7 @@ mod engine_search_tests {
             calc: Arc::new(CalcProvider::new()),
             translate: Arc::new(TranslateProvider::new(cfg.clone())),
             web: Arc::new(crate::providers::web::WebProvider::new(cfg.clone())),
+            define: Arc::new(crate::providers::define::DefineProvider::new(cfg.clone())),
             usage,
             typos,
             config: cfg,
@@ -1737,6 +1793,45 @@ mod engine_search_tests {
                 "no web row for {q:?}: {results:?}"
             );
         }
+    }
+
+    #[test]
+    fn define_pending_owns_query_and_hides_web() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        te.engine.config().update(|c| {
+            c.define.enabled = true;
+            c.web.enabled = true;
+        });
+        let results = te.engine.search("what does SIMD mean");
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].kind, ResultKind::Define);
+        assert_eq!(results[0].title, "Defining…");
+        assert!(crate::providers::define::is_pending_result(&results[0]));
+        // Owned like translate: no deep walk, no web row.
+        assert!(!te
+            .engine
+            .should_deep_search("what does SIMD mean", &results));
+    }
+
+    #[test]
+    fn define_disabled_leaves_web_fallback() {
+        let te = build_engine(&[], &[]);
+        te.engine.config().update(|c| c.web.enabled = true);
+        let results = te.engine.search("what does SIMD mean");
+        assert!(results.iter().any(|r| r.kind == ResultKind::Web));
+        assert!(results
+            .iter()
+            .all(|r| !crate::providers::define::is_pending_result(r)));
+    }
+
+    #[test]
+    fn define_skipped_for_calc() {
+        let te = build_engine(&[], &[]);
+        te.engine.config().update(|c| c.define.enabled = true);
+        let results = te.engine.search("2+2");
+        assert!(results
+            .iter()
+            .all(|r| !crate::providers::define::is_pending_result(r)));
     }
 
     #[test]

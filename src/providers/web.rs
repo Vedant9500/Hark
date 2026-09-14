@@ -215,6 +215,15 @@ pub fn is_force_web_query(query: &str) -> bool {
     strip_force_web_prefix(query).is_some()
 }
 
+/// Plain Google search URL for a term (used by the define miss row so a
+/// failed lookup still lands somewhere useful on Enter).
+pub fn google_search_url(term: &str) -> String {
+    format!(
+        "https://www.google.com/search?q={}",
+        encode_query(term.trim())
+    )
+}
+
 /// Percent-encode a query string (RFC 3986 unreserved set passes through,
 /// everything else `%XX` over UTF-8 bytes; space → `%20` so custom
 /// path-style templates also work).

@@ -203,6 +203,14 @@ pub struct PreviewPanel {
     /// Path → decoded preview texture (LRU via `cache_order`).
     cache: Rc<RefCell<HashMap<PathBuf, CachedTexture>>>,
     cache_order: Rc<RefCell<Vec<PathBuf>>>,
+    /// Wikipedia thumbnail URL → decoded texture (LRU via `url_order`).
+    /// Define images are small (330px) and hot across rebinds; the bytes
+    /// themselves are not persisted — the article JSON cache re-resolves
+    /// the URL after restart.
+    url_cache: Rc<RefCell<HashMap<String, (Texture, String)>>>,
+    url_order: Rc<RefCell<Vec<String>>>,
+    /// Define result id currently bound (skips re-download on rebind).
+    last_define: Rc<RefCell<Option<String>>>,
     debounce: Rc<RefCell<Option<glib::SourceId>>>,
     /// Pending / in-flight decode — always the latest selection only.
     inflight: Rc<RefCell<Option<DecodeRequest>>>,
@@ -448,6 +456,9 @@ impl PreviewPanel {
             last_path: Rc::new(RefCell::new(None)),
             cache: Rc::new(RefCell::new(HashMap::new())),
             cache_order: Rc::new(RefCell::new(Vec::new())),
+            url_cache: Rc::new(RefCell::new(HashMap::new())),
+            url_order: Rc::new(RefCell::new(Vec::new())),
+            last_define: Rc::new(RefCell::new(None)),
             debounce: Rc::new(RefCell::new(None)),
             inflight: Rc::new(RefCell::new(None)),
             worker_busy: Rc::new(Cell::new(false)),
@@ -504,6 +515,7 @@ impl PreviewPanel {
         self.cancel_debounce();
         self.gen.set(self.gen.get().wrapping_add(1));
         *self.last_path.borrow_mut() = None;
+        *self.last_define.borrow_mut() = None;
         *self.inflight.borrow_mut() = None;
         self.drag.set_path(None);
         self.picture.set_paintable(Option::<&gdk::Paintable>::None);
@@ -517,6 +529,116 @@ impl PreviewPanel {
         self.set_panel_visible(false);
     }
 
+    /// Define preview: the article text lives inline in the list row, so the
+    /// panel shows the Wikipedia image (thumbnail from the summary payload)
+    /// or hides when the row has none — never a duplicate text pane. The
+    /// download + decode run off-main; a gen guard drops stale results when
+    /// the query moves on.
+    fn show_define_preview(self: &Rc<Self>, item: &SearchResult) {
+        // Same id rebound (cache re-render): keep pixels, skip refetch.
+        if self.last_define.borrow().as_deref() == Some(item.id.as_str())
+            && self.picture.paintable().is_some()
+        {
+            self.stack.set_visible_child_name("image");
+            self.set_panel_visible(true);
+            return;
+        }
+        self.cancel_debounce();
+        self.gen.set(self.gen.get().wrapping_add(1));
+        *self.last_path.borrow_mut() = None;
+        *self.inflight.borrow_mut() = None;
+        self.drag.set_path(None);
+        self.picture.set_paintable(Option::<&gdk::Paintable>::None);
+
+        let Some(media) = crate::providers::define::lookup_media_by_id(&item.id) else {
+            // No image (DDG hit, imageless article, pending row): the row
+            // already shows the full text — stay compact, no duplicate pane.
+            *self.last_define.borrow_mut() = None;
+            self.clear();
+            return;
+        };
+        // URL-cache hit: paint immediately, no network.
+        if let Some((tex, dims)) = self.url_cache.borrow().get(&media.image_url).cloned() {
+            *self.last_define.borrow_mut() = Some(item.id.clone());
+            self.image_title.set_text(&item.title);
+            self.image_meta
+                .set_text(media.description.as_deref().unwrap_or("Wikipedia"));
+            self.image_dims.set_text(&dims);
+            self.picture.set_paintable(Some(&tex));
+            self.stack.set_visible_child_name("image");
+            self.set_panel_visible(true);
+            return;
+        }
+
+        *self.last_define.borrow_mut() = Some(item.id.clone());
+        self.image_title.set_text(&item.title);
+        self.image_meta
+            .set_text(media.description.as_deref().unwrap_or("Wikipedia"));
+        self.image_dims.set_text("Loading image…");
+        self.picture.set_paintable(Option::<&gdk::Paintable>::None);
+        self.stack.set_visible_child_name("image");
+        self.set_panel_visible(true);
+
+        let gen = self.gen.get();
+        let this = self.clone();
+        let item_id = item.id.clone();
+        let url = media.image_url.clone();
+        let url_worker = url.clone();
+        let (tx, rx) = async_channel::bounded::<Option<DecodedPixels>>(1);
+        std::thread::spawn(move || {
+            // Allowlist already enforced at parse + lookup; re-check at the
+            // fetch boundary so a future caller can't smuggle a host through.
+            let ok_host = url_worker.starts_with("https://upload.wikimedia.org/")
+                || url_worker.starts_with("https://thumb.wikimedia.org/");
+            let decoded = if !ok_host {
+                None
+            } else {
+                crate::providers::http::get_bytes(&url_worker)
+                    .ok()
+                    .and_then(|bytes| decode_picture_bytes(&bytes, None))
+            };
+            let _ = tx.send_blocking(decoded);
+        });
+        glib::spawn_future_local(async move {
+            let decoded = rx.recv().await.ok().flatten();
+            if this.gen.get() != gen {
+                return;
+            }
+            if this.last_define.borrow().as_deref() != Some(item_id.as_str()) {
+                return;
+            }
+            let Some(mut px) = decoded else {
+                this.image_dims.set_text("Could not load image");
+                return;
+            };
+            px.dims_label = format!("{} × {} · Wikipedia", px.width, px.height);
+            let dims = px.dims_label.clone();
+            if let Some(tex) = texture_from_pixels(px) {
+                this.image_dims.set_text(&dims);
+                this.picture.set_paintable(Some(&tex));
+                // LRU insert (cap mirrors the file texture cache).
+                {
+                    let mut map = this.url_cache.borrow_mut();
+                    let mut order = this.url_order.borrow_mut();
+                    if !map.contains_key(&url) {
+                        while order.len() >= TEXTURE_CACHE_CAP {
+                            if let Some(old) = order.first().cloned() {
+                                order.remove(0);
+                                map.remove(&old);
+                            } else {
+                                break;
+                            }
+                        }
+                        order.push(url.clone());
+                    }
+                    map.insert(url, (tex, dims));
+                }
+            } else {
+                this.image_dims.set_text("Could not load image");
+            }
+        });
+    }
+
     pub fn update(self: &Rc<Self>, item: Option<&SearchResult>) {
         let Some(item) = item else {
             self.clear();
@@ -526,6 +648,12 @@ impl PreviewPanel {
         // Rich previews only: picture (image / video frame / PDF page),
         // code, audio tags. Icon-only documents (.md/.txt/.docx…) duplicate
         // the row — they never open the panel, window stays compact.
+        // Definitions show the article text inline in the list row and the
+        // Wikipedia image here (text fallback when no image).
+        if matches!(item.kind, ResultKind::Define) {
+            self.show_define_preview(item);
+            return;
+        }
         if !matches!(item.kind, ResultKind::File | ResultKind::Folder) {
             self.clear();
             return;

@@ -156,7 +156,7 @@ Examples:
 4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Hark-only, does not change system MIME
 5. **Display** — path style: **Label** vs **Drive** (`~/…` / `Windows C:…` style)
 6. **Appearance** — opacity, accent colour, font scale, icon size/style, corner radius
-7. **Tools** — translate master switch; web-search fallback (engine + custom URL); typo aliases management
+7. **Tools** — translate master switch; definitions toggle; web-search fallback (engine + custom URL); typo aliases management
 
 Also:
 
@@ -191,6 +191,7 @@ Also:
 ### Online translate
 
 - **Translate-on-paste:** CJK auto / `tr …` / `tr en zh …` direction → conversion card + copy
+- **Definitions:** `what does X mean` / `X full form` / `def X` → one-line row + full article in the preview reader (selectable, Enter copies); misses open a web search on Enter
 - Backends: Google∥MyMemory (free) or LibreTranslate (own endpoint + API key)
 - `source:auto` when supported; disk+fail cache; async + generation cancel
 - Master kill switch in Settings → Tools
@@ -271,6 +272,7 @@ Positions near ~20% from the top of the focused monitor.
 | `providers/fx` | Currency rates store |
 | `providers/translate` | Translate backends + cache |
 | `providers/web` | Web-search fallback (zero I/O until Enter) |
+| `providers/define` | Inline definitions (Wikipedia → DDG, disk-cached) |
 | `ui/*` | Window, rows, preview, DnD, settings, action panel, footer |
 | `theme` | Caelestia + CSS |
 | `config` | Index settings + mounts |

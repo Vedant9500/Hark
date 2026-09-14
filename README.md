@@ -30,6 +30,7 @@ Out of the box, Hark is:
 - **battery / power status** — `battery`, `power`, `charging`
 - **online translation** — `tr Hola`, `tr en es Hello`, or paste foreign script
 - **web fallback** — no local hit → Enter searches the web (`? foo`, `g foo`, `wiki foo` force it)
+- **definitions** — `what does SIMD mean`, `AVX full form`, `def gyroscope` (Wikipedia, cached; misses offer a web search)
 - **typo learning** — learns from your launches (`wats` → WhatsApp)
 - **media preview, drag-and-drop, Open With, themes**
 

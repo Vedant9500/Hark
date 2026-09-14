@@ -189,6 +189,25 @@ pub(crate) struct ResultRowPool {
     attached: usize,
 }
 
+/// Resolved define rows render the full article inline (text-left pane):
+/// title + wrapped extract, no icon row, no badge, no card chrome.
+/// Pending (`Defining…`) and miss rows stay standard one-liners.
+fn is_define_article(item: &SearchResult) -> bool {
+    item.kind == ResultKind::Define && crate::providers::define::is_ok_result(item)
+}
+
+/// Full article text behind a define row (the `Copy` payload). `None` for
+/// every other row shape so the bind skip-key stays allocation-free there.
+fn define_body_text(item: &SearchResult) -> Option<&str> {
+    if !is_define_article(item) {
+        return None;
+    }
+    match &item.action {
+        crate::providers::Action::Copy(t) => Some(t.as_str()),
+        _ => None,
+    }
+}
+
 struct PooledRow {
     row: ListBoxRow,
     // standard layout (owned widgets; reparented via set_child)
@@ -215,6 +234,12 @@ struct PooledRow {
     swap_timer: std::rc::Rc<RefCell<Option<glib::SourceId>>>,
     badge_kind: ResultKind,
     showing_conv: bool,
+    // Define article layout (text-left pane): title + full extract, no icon
+    // row, no badge, no card chrome. Pending/miss rows stay standard.
+    define_root: GtkBox,
+    define_title: Label,
+    define_body: Label,
+    showing_define: bool,
     /// Display content of the last `bind` (audit P3 Pass 17): rebinds with
     /// identical content (cache re-render, repeated applies) skip all GTK
     /// writes. Wheel swaps rotate items so every slot differs — those still
@@ -233,15 +258,22 @@ struct BoundSig {
     matched: Option<Vec<usize>>,
     kind: ResultKind,
     as_card: bool,
+    as_define: bool,
     icon_size: i32,
     symbolic: bool,
     conv: Option<(String, String, String, String)>,
+    /// Full article text behind a define row (`Copy` action). The visible
+    /// subtitle is only a snippet, so the sig must key the body too or an
+    /// extract refresh would skip its GTK write.
+    define_body: Option<String>,
     drag: Option<PathBuf>,
 }
 
 impl BoundSig {
     fn matches(&self, item: &SearchResult, as_card: bool, icon_size: i32, symbolic: bool) -> bool {
+        let as_define = is_define_article(item);
         self.as_card == as_card
+            && self.as_define == as_define
             && self.icon_size == icon_size
             && self.symbolic == symbolic
             && self.kind == item.kind
@@ -250,6 +282,7 @@ impl BoundSig {
             && self.subtitle == item.subtitle
             && self.icon == item.icon
             && self.matched == item.matched
+            && self.define_body.as_deref() == define_body_text(item)
             && self.drag.as_deref() == item.action.drag_path()
             && self.conv.as_ref().map(|c| (&c.0, &c.1, &c.2, &c.3))
                 == item
@@ -267,6 +300,7 @@ impl BoundSig {
             matched: item.matched.clone(),
             kind: item.kind,
             as_card,
+            as_define: is_define_article(item),
             icon_size,
             symbolic,
             conv: item.conversion.as_ref().map(|c| {
@@ -277,6 +311,7 @@ impl BoundSig {
                     c.right_badge.clone(),
                 )
             }),
+            define_body: define_body_text(item).map(|s| s.to_string()),
             drag: item.action.drag_path().map(|p| p.to_path_buf()),
         }
     }
@@ -461,6 +496,46 @@ impl PooledRow {
         panels.append(&conv_right);
         conv_root.append(&panels);
 
+        // ── define article (text-left pane) ─────────────────────────────
+        // Plain reading view directly on the shell: no card background, no
+        // icon row, no badge. Word-wrap (never WordChar: mid-word breaks
+        // wreck prose) + dedicated title/body classes for doc typography.
+        let define_root = GtkBox::new(Orientation::Vertical, 4);
+        define_root.add_css_class("hark-row-inner");
+        define_root.add_css_class("hark-define");
+        define_root.set_hexpand(true);
+        define_root.set_vexpand(false);
+
+        let define_title = Label::new(None);
+        define_title.add_css_class("hark-define-title");
+        define_title.set_halign(gtk::Align::Start);
+        define_title.set_valign(gtk::Align::Start);
+        define_title.set_xalign(0.0);
+        define_title.set_wrap(true);
+        define_title.set_wrap_mode(gtk::pango::WrapMode::Word);
+        define_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        define_title.set_lines(2);
+        define_title.set_single_line_mode(false);
+        define_title.set_max_width_chars(84);
+
+        let define_body = Label::new(None);
+        define_body.add_css_class("hark-define-body");
+        define_body.set_halign(gtk::Align::Start);
+        define_body.set_valign(gtk::Align::Start);
+        define_body.set_xalign(0.0);
+        define_body.set_yalign(0.0);
+        define_body.set_wrap(true);
+        define_body.set_wrap_mode(gtk::pango::WrapMode::Word);
+        define_body.set_selectable(false);
+        define_body.set_hexpand(true);
+        define_body.set_justify(gtk::Justification::Left);
+        // Bound the panel's minimum width like the preview doc body: long
+        // URLs / technical tokens are single Pango words.
+        define_body.set_max_width_chars(84);
+
+        define_root.append(&define_title);
+        define_root.append(&define_body);
+
         // Default child: standard layout.
         row.set_child(Some(&std_root));
 
@@ -487,24 +562,45 @@ impl PooledRow {
             swap_timer: std::rc::Rc::new(RefCell::new(None)),
             badge_kind: ResultKind::File,
             showing_conv: false,
+            define_root,
+            define_title,
+            define_body,
+            showing_define: false,
             bound_sig: None,
         }
     }
 
     fn set_mode_std(&mut self) {
-        if self.showing_conv {
+        if self.showing_conv || self.showing_define {
             self.row.set_child(Some(&self.std_root));
             self.showing_conv = false;
+            self.showing_define = false;
         }
         self.row.remove_css_class("hark-conv-row");
+        self.row.remove_css_class("hark-define-row");
     }
 
     fn set_mode_conv(&mut self) {
-        if !self.showing_conv {
+        if !self.showing_conv || self.showing_define {
             self.row.set_child(Some(&self.conv_root));
             self.showing_conv = true;
+            self.showing_define = false;
         }
+        self.row.remove_css_class("hark-define-row");
         self.row.add_css_class("hark-conv-row");
+    }
+
+    fn set_mode_define(&mut self) {
+        if !self.showing_define {
+            self.row.set_child(Some(&self.define_root));
+            self.showing_define = true;
+            self.showing_conv = false;
+        }
+        // Plain reading view: never the conversion card border, never the
+        // selected-row wash (CSS keeps hark-define-row transparent even
+        // when :selected) — the text sits directly on the shell.
+        self.row.remove_css_class("hark-conv-row");
+        self.row.add_css_class("hark-define-row");
     }
 
     /// Row 0 of a conversion prediction set renders as the fixed hero card;
@@ -527,6 +623,21 @@ impl PooledRow {
                 .as_ref()
                 .is_some_and(|s| s.matches(item, as_card, icon_size, symbolic_icons))
         {
+            return;
+        }
+        // Resolved definitions render the full article inline (text-left):
+        // title + wrapped extract. Pending/miss rows fall through to the
+        // standard one-liner below.
+        if is_define_article(item) {
+            self.set_mode_define();
+            self.define_title.set_text(&item.title);
+            let body = match &item.action {
+                crate::providers::Action::Copy(t) => t.as_str(),
+                _ => item.subtitle.as_str(),
+            };
+            self.define_body.set_text(body);
+            self.drag.set_path(None);
+            self.bound_sig = Some(BoundSig::capture(item, as_card, icon_size, symbolic_icons));
             return;
         }
         if as_card {
@@ -677,7 +788,7 @@ fn add_badge_kind_class(badge: &Label, kind: ResultKind) {
         ResultKind::Calc | ResultKind::Conversion => badge.add_css_class("calc"),
         ResultKind::File => badge.add_css_class("file"),
         ResultKind::Folder => badge.add_css_class("folder"),
-        ResultKind::App | ResultKind::Command | ResultKind::Web => {}
+        ResultKind::App | ResultKind::Command | ResultKind::Web | ResultKind::Define => {}
     }
 }
 
@@ -686,7 +797,7 @@ fn remove_badge_kind_class(badge: &Label, kind: ResultKind) {
         ResultKind::Calc | ResultKind::Conversion => badge.remove_css_class("calc"),
         ResultKind::File => badge.remove_css_class("file"),
         ResultKind::Folder => badge.remove_css_class("folder"),
-        ResultKind::App | ResultKind::Command | ResultKind::Web => {}
+        ResultKind::App | ResultKind::Command | ResultKind::Web | ResultKind::Define => {}
     }
 }
 
@@ -799,6 +910,7 @@ fn default_icon_for_kind(kind: ResultKind) -> &'static str {
         ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
         ResultKind::Command => "preferences-system",
         ResultKind::Web => "applications-internet",
+        ResultKind::Define => "accessories-dictionary",
     }
 }
 
@@ -830,6 +942,7 @@ fn fallback_icon(kind: ResultKind, icon_name: &str) -> &'static str {
         }
         ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
         ResultKind::Command => "preferences-system",
+        ResultKind::Define => "accessories-dictionary",
     }
 }
 
@@ -880,6 +993,7 @@ fn kind_key(kind: ResultKind) -> u8 {
         ResultKind::Conversion => 4,
         ResultKind::Command => 5,
         ResultKind::Web => 6,
+        ResultKind::Define => 7,
     }
 }
 
@@ -892,6 +1006,7 @@ fn kind_label(kind: ResultKind) -> &'static str {
         ResultKind::Conversion => "Convert",
         ResultKind::Command => "Command",
         ResultKind::Web => "Web",
+        ResultKind::Define => "Define",
     }
 }
 
