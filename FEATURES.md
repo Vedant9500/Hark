@@ -156,7 +156,7 @@ Examples:
 4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Hark-only, does not change system MIME
 5. **Display** — path style: **Label** vs **Drive** (`~/…` / `Windows C:…` style)
 6. **Appearance** — opacity, accent colour, font scale, icon size/style, corner radius
-7. **Tools** — translate master switch; typo aliases management
+7. **Tools** — translate master switch; web-search fallback (engine + custom URL); typo aliases management
 
 Also:
 
@@ -270,6 +270,7 @@ Positions near ~20% from the top of the focused monitor.
 | `providers/calc/*` | Math, units, FX, TZ, datetime, duration |
 | `providers/fx` | Currency rates store |
 | `providers/translate` | Translate backends + cache |
+| `providers/web` | Web-search fallback (zero I/O until Enter) |
 | `ui/*` | Window, rows, preview, DnD, settings, action panel, footer |
 | `theme` | Caelestia + CSS |
 | `config` | Index settings + mounts |

@@ -3,6 +3,7 @@ use crate::providers::apps::AppProvider;
 use crate::providers::calc::CalcProvider;
 use crate::providers::files::{FileProvider, IndexProgress};
 use crate::providers::translate::TranslateProvider;
+use crate::providers::web::WebProvider;
 use crate::providers::{Action, ResultKind, SearchResult};
 use crate::typos::TypoStore;
 use crate::usage::UsageStore;
@@ -22,6 +23,7 @@ pub struct Engine {
     files: Arc<FileProvider>,
     calc: Arc<CalcProvider>,
     translate: Arc<TranslateProvider>,
+    web: Arc<WebProvider>,
     usage: Arc<UsageStore>,
     typos: Arc<TypoStore>,
     config: Arc<ConfigStore>,
@@ -48,6 +50,7 @@ impl Engine {
         let files = Arc::new(FileProvider::new_empty(config.clone(), usage.clone()));
         let calc = Arc::new(CalcProvider::new());
         let translate = Arc::new(TranslateProvider::new(config.clone()));
+        let web = Arc::new(WebProvider::new(config.clone()));
 
         // Currency rates: use on-disk cache only at boot. Network fetch is deferred
         // until an FX conversion is actually requested (see FxStore::convert) so
@@ -58,6 +61,7 @@ impl Engine {
             files,
             calc,
             translate,
+            web,
             usage,
             typos,
             config,
@@ -215,6 +219,12 @@ impl Engine {
             return self.empty_results();
         }
 
+        // Forced web (`? foo`, `g foo`, `wiki foo`): explicit user intent —
+        // owns the query like translate does, skipping local providers.
+        if let Some(row) = self.web.forced(q) {
+            return vec![row];
+        }
+
         let mut results = Vec::new();
 
         let q_ascii = q.is_ascii();
@@ -363,7 +373,38 @@ impl Engine {
                 .then_with(|| a.title.cmp(&b.title))
         });
         results.truncate(25);
+        // Web fallback: last row (or only row) for free-text queries with no
+        // local owner. Appended after truncate so it always survives; local
+        // rows shrink to 24 to keep the 25-row cap.
+        if let Some(row) =
+            self.web_fallback_row(q, matches_cmd, calc_hit, force_translate, force_files)
+        {
+            if results.len() >= 25 {
+                results.truncate(24);
+            }
+            results.push(row);
+        }
         results
+    }
+
+    /// Last-row web fallback, or `None` when another provider owns the query.
+    /// Pure + cheap (no I/O): path/glob, calc, translate, and the Settings
+    /// command never get a web row; single chars skip it as noise.
+    fn web_fallback_row(
+        &self,
+        q: &str,
+        matches_cmd: bool,
+        calc_hit: bool,
+        force_translate: bool,
+        force_files: bool,
+    ) -> Option<SearchResult> {
+        if matches_cmd || calc_hit || force_translate || force_files {
+            return None;
+        }
+        if q.chars().count() < 2 {
+            return None;
+        }
+        self.web.fallback(q)
     }
 
     fn empty_results(&self) -> Vec<SearchResult> {
@@ -464,6 +505,13 @@ impl Engine {
             },
             Action::SetQuery(q) => ExecuteOutcome::SetQuery(q.clone()),
             Action::OpenSettings => ExecuteOutcome::OpenSettings,
+            Action::OpenUrl(url) => match crate::providers::web::open_url(url) {
+                Ok(()) => ExecuteOutcome::Launched,
+                Err(err) => {
+                    eprintln!("hark: open URL failed: {err}");
+                    ExecuteOutcome::Failed(err)
+                }
+            },
             Action::RevealPath(path) => {
                 match crate::providers::files::reveal_in_file_manager(path) {
                     Ok(()) => ExecuteOutcome::Launched,
@@ -690,6 +738,10 @@ impl Engine {
     pub fn should_deep_search(&self, query: &str, current: &[SearchResult]) -> bool {
         // Translate owns CJK / `tr ` queries — never deep-walk those (was a major stutter).
         if self.translate.is_enabled() && self.translate.should_handle(query) {
+            return false;
+        }
+        // Forced web (`? foo`, `g foo`) owns the query — no local walk.
+        if crate::providers::web::is_force_web_query(query) {
             return false;
         }
         // Calc/conversion already answered (battery, math, `now`, …) and Engine::search
@@ -1017,6 +1069,7 @@ fn kind_rank(k: ResultKind) -> u8 {
         ResultKind::App => 2,
         ResultKind::Folder => 3,
         ResultKind::File => 4,
+        ResultKind::Web => 5,
     }
 }
 
@@ -1092,9 +1145,10 @@ mod engine_search_tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicU64;
 
-    /// Hermetic Engine: temp-dir config (translate disabled), injected app list,
-    /// seeded in-memory file index, empty usage/typos. No disk scans, no cache
-    /// writes, no network, no periodic thread. T1 ranking-matrix testbed.
+    /// Hermetic Engine: temp-dir config (translate + web disabled), injected
+    /// app list, seeded in-memory file index, empty usage/typos. No disk
+    /// scans, no cache writes, no network, no periodic thread.
+    /// T1 ranking-matrix testbed.
     struct TestEngine {
         engine: Engine,
         _dir: PathBuf,
@@ -1112,8 +1166,9 @@ mod engine_search_tests {
 
     fn base_config() -> HarkConfig {
         let mut cfg = HarkConfig::default();
-        // Translate is on by default; disable for deterministic ranking.
+        // Translate + web are on by default; disable for deterministic ranking.
         cfg.translate.enabled = false;
+        cfg.web.enabled = false;
         cfg.index.include_home = false;
         cfg.index.extra_roots.clear();
         cfg
@@ -1143,6 +1198,7 @@ mod engine_search_tests {
             files: file_provider,
             calc: Arc::new(CalcProvider::new()),
             translate: Arc::new(TranslateProvider::new(cfg.clone())),
+            web: Arc::new(crate::providers::web::WebProvider::new(cfg.clone())),
             usage,
             typos,
             config: cfg,
@@ -1619,6 +1675,68 @@ mod engine_search_tests {
             results.len(),
             "duplicate ids in results: {results:?}"
         );
+    }
+
+    #[test]
+    fn web_fallback_disabled_in_ranking_testbed() {
+        let te = build_engine(&[], &[]);
+        let results = te.engine.search("what does SIMD mean");
+        assert!(
+            results.iter().all(|r| r.kind != ResultKind::Web),
+            "web must stay off when disabled: {results:?}"
+        );
+    }
+
+    #[test]
+    fn web_fallback_is_last_row_for_unknown_query() {
+        let te = build_engine(&[], &[]);
+        te.engine.config().update(|c| c.web.enabled = true);
+        let results = te.engine.search("what does SIMD mean");
+        let last = results.last().expect("fallback row must exist");
+        assert_eq!(last.kind, ResultKind::Web);
+        assert!(last.title.contains("what does SIMD mean"), "{last:?}");
+        match &last.action {
+            Action::OpenUrl(u) => assert!(u.starts_with("https://www.google.com/"), "{u}"),
+            _ => panic!("web row must carry OpenUrl: {last:?}"),
+        }
+    }
+
+    #[test]
+    fn web_fallback_survives_alongside_apps() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        te.engine.config().update(|c| c.web.enabled = true);
+        let results = te.engine.search("firefox");
+        assert_eq!(results.first().map(|r| r.kind), Some(ResultKind::App));
+        assert_eq!(results.last().map(|r| r.kind), Some(ResultKind::Web));
+        assert!(results.len() <= 25);
+    }
+
+    #[test]
+    fn web_forced_prefix_owns_query() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        te.engine.config().update(|c| c.web.enabled = true);
+        let results = te.engine.search("g hello world");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, ResultKind::Web);
+        match &results[0].action {
+            Action::OpenUrl(u) => assert!(u.contains("hello%20world"), "{u}"),
+            _ => panic!("forced web must carry OpenUrl"),
+        }
+        // Forced web skips the deep walk (owns the query like translate).
+        assert!(!te.engine.should_deep_search("g hello world", &results));
+    }
+
+    #[test]
+    fn web_skipped_for_paths_calc_commands_and_single_chars() {
+        let te = build_engine(&[("firefox.desktop", "Firefox")], &[]);
+        te.engine.config().update(|c| c.web.enabled = true);
+        for q in ["*.md", "2+2", "settings", "a"] {
+            let results = te.engine.search(q);
+            assert!(
+                results.iter().all(|r| r.kind != ResultKind::Web),
+                "no web row for {q:?}: {results:?}"
+            );
+        }
     }
 
     #[test]

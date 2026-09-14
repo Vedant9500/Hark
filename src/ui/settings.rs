@@ -2683,5 +2683,137 @@ fn build_tools_page(engine: &Arc<Engine>, cfg: &crate::config::HarkConfig) -> Gt
     note.set_wrap(true);
     body.append(&note);
 
+    body.append(&group_label("Web search"));
+
+    let web_card = GtkBox::new(Orientation::Vertical, 0);
+    web_card.add_css_class("hark-settings-card");
+
+    let web_status = Label::new(None);
+    web_status.add_css_class("hark-hint");
+    web_status.set_halign(gtk::Align::Start);
+    web_status.set_wrap(true);
+    web_status.set_margin_top(4);
+
+    let (web_en_row, web_en_cb) = check_setting_row(
+        "Enable web fallback",
+        Some("Free-text queries get a last-row Search … fallback. Enter opens the browser. No network until then."),
+        cfg.web.enabled,
+    );
+    {
+        let engine = engine.clone();
+        web_en_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine.config().update(|c| c.web.enabled = on);
+        });
+    }
+    web_card.append(&web_en_row);
+
+    web_card.append(&Separator::new(Orientation::Horizontal));
+
+    // Search engine
+    let engine_row = setting_row(
+        "Search engine",
+        Some("google / duckduckgo / bing / brave / wikipedia / custom"),
+    );
+    let engine_entry = Entry::builder()
+        .placeholder_text("google")
+        .hexpand(false)
+        .width_chars(12)
+        .build();
+    engine_entry.add_css_class("hark-settings-entry");
+    engine_entry.set_text(&cfg.web.engine);
+    engine_row.append(&engine_entry);
+    web_card.append(&engine_row);
+    {
+        let engine = engine.clone();
+        let engine_entry = engine_entry.clone();
+        let web_status = web_status.clone();
+        commit_entry_on_idle(&engine_entry.clone(), move |text| {
+            engine.config().update(|c| {
+                c.web.engine = text;
+            });
+            let saved = engine.config().snapshot().web.engine.clone();
+            if engine_entry.text().as_str() != saved {
+                engine_entry.set_text(&saved);
+            }
+            web_status.set_text("");
+        });
+    }
+
+    web_card.append(&Separator::new(Orientation::Horizontal));
+
+    // Custom URL template
+    let custom_row = setting_row(
+        "Custom URL",
+        Some("Template with %s for the query, e.g. https://search.example/?q=%s. Only used when engine is custom."),
+    );
+    let custom_entry = Entry::builder()
+        .placeholder_text("https://…?q=%s")
+        .hexpand(true)
+        .build();
+    custom_entry.add_css_class("hark-settings-entry");
+    custom_entry.set_text(&cfg.web.custom_url);
+    if cfg.web.custom_url.is_empty() {
+        custom_entry.set_tooltip_text(None);
+    } else {
+        custom_entry.set_tooltip_text(Some(&cfg.web.custom_url));
+    }
+    custom_row.append(&custom_entry);
+    web_card.append(&custom_row);
+    {
+        let engine = engine.clone();
+        let custom_entry = custom_entry.clone();
+        let web_status = web_status.clone();
+        commit_entry_on_idle(&custom_entry.clone(), move |text| {
+            let t = text.trim().to_string();
+            if !t.is_empty() {
+                let lower = t.to_ascii_lowercase();
+                let http = lower.starts_with("https://") || lower.starts_with("http://");
+                if !http || !t.contains("%s") {
+                    web_status
+                        .set_text("Custom URL ignored: must start with http(s):// and contain %s");
+                    return;
+                }
+            }
+            engine.config().update(|c| {
+                c.web.custom_url = t;
+            });
+            let saved = engine.config().snapshot().web.custom_url.clone();
+            if custom_entry.text().as_str() != saved {
+                custom_entry.set_text(&saved);
+            }
+            if saved.is_empty() {
+                custom_entry.set_tooltip_text(None);
+            } else {
+                custom_entry.set_tooltip_text(Some(&saved));
+            }
+            web_status.set_text("");
+        });
+    }
+
+    engine_row.set_sensitive(cfg.web.enabled);
+    custom_row.set_sensitive(cfg.web.enabled);
+    {
+        let engine_row = engine_row.clone();
+        let custom_row = custom_row.clone();
+        web_en_cb.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            engine_row.set_sensitive(on);
+            custom_row.set_sensitive(on);
+        });
+    }
+
+    body.append(&web_card);
+    body.append(&web_status);
+
+    let web_note = Label::new(Some(
+        "Force it per query: ? foo and g foo use the configured engine, wiki foo searches \
+         Wikipedia. Path, glob, math, translate, and Settings queries never get a web row.",
+    ));
+    web_note.add_css_class("hark-hint");
+    web_note.set_halign(gtk::Align::Start);
+    web_note.set_wrap(true);
+    body.append(&web_note);
+
     outer
 }

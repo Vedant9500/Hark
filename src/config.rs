@@ -527,6 +527,70 @@ impl TranslateConfig {
     }
 }
 
+/// Web-search fallback settings (no LLM, no daemon network).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebConfig {
+    /// Master switch. When on, free-text queries get a last-row
+    /// `Search … for "…"` fallback; Enter opens the default browser.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Search engine: `google`, `duckduckgo`, `bing`, `brave`,
+    /// `wikipedia`, or `custom` (uses `custom_url`).
+    #[serde(default = "default_web_engine")]
+    pub engine: String,
+    /// Custom search template containing `%s` (query-escaped).
+    /// Empty = unused. Only http(s) templates are kept.
+    #[serde(default)]
+    pub custom_url: String,
+    /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_web_engine() -> String {
+    "google".into()
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            engine: default_web_engine(),
+            custom_url: String::new(),
+            extra: Default::default(),
+        }
+    }
+}
+
+impl WebConfig {
+    pub fn sanitize(&mut self) {
+        let e = self.engine.trim().to_ascii_lowercase();
+        self.engine = match e.as_str() {
+            "duckduckgo" | "ddg" => "duckduckgo".into(),
+            "bing" => "bing".into(),
+            "brave" => "brave".into(),
+            "wikipedia" | "wiki" => "wikipedia".into(),
+            "custom" => "custom".into(),
+            "google" | "" => default_web_engine(),
+            // Forward-compat: unknown names degrade to Google at URL-build
+            // time, but the stored value resets so Settings shows the truth.
+            _ => default_web_engine(),
+        };
+        let t = self.custom_url.trim().to_string();
+        if t.is_empty() {
+            self.custom_url.clear();
+            return;
+        }
+        let lower = t.to_ascii_lowercase();
+        let http = lower.starts_with("https://") || lower.starts_with("http://");
+        if !http || !t.contains("%s") {
+            self.custom_url.clear();
+        } else {
+            self.custom_url = t;
+        }
+    }
+}
+
 /// Validate a LibreTranslate-compatible base URL.
 ///
 /// Empty is allowed (means free backends). Otherwise require `http`/`https`, a host,
@@ -731,6 +795,9 @@ pub struct HarkConfig {
     /// Translate-on-paste (non-Latin scripts / `tr ` prefix). Online via LibreTranslate or free backends.
     #[serde(default)]
     pub translate: TranslateConfig,
+    /// Web-search fallback (no local hit → Enter opens the browser).
+    #[serde(default)]
+    pub web: WebConfig,
     /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -809,6 +876,7 @@ impl ConfigStore {
                             open_with: section_or_default(&v, "open_with", &mut bad_sections),
                             ui: section_or_default(&v, "ui", &mut bad_sections),
                             translate: section_or_default(&v, "translate", &mut bad_sections),
+                            web: section_or_default(&v, "web", &mut bad_sections),
                             // Flattened extras are written inline, so unknown
                             // top-level keys reappear here on reload — gather
                             // them back so they survive rewrites (audit P3).
@@ -824,6 +892,7 @@ impl ConfigStore {
                                                     | "open_with"
                                                     | "ui"
                                                     | "translate"
+                                                    | "web"
                                                     | "extra"
                                             )
                                         })
@@ -915,6 +984,11 @@ impl ConfigStore {
             if cfg.translate != before_tr {
                 changed = true;
             }
+            let before_web = cfg.web.clone();
+            cfg.web.sanitize();
+            if cfg.web != before_web {
+                changed = true;
+            }
         }
 
         let store = Self {
@@ -946,7 +1020,7 @@ impl ConfigStore {
     }
 
     /// Apply a mutation. Clones the config, runs `f`, sanitizes
-    /// UI/translate/index. Swaps the Arc and schedules a disk write **only when** the result
+    /// UI/translate/web/index. Swaps the Arc and schedules a disk write **only when** the result
     /// differs from the previous snapshot (no-op promote/settings toggles
     /// must not thrash I/O). Writes run on a background thread, coalesced
     /// through `pending_save` — so per-keystroke updates never do main-thread
@@ -957,6 +1031,7 @@ impl ConfigStore {
         f(&mut cfg);
         cfg.ui.sanitize();
         cfg.translate.sanitize();
+        cfg.web.sanitize();
         cfg.index.sanitize();
         if cfg == **g {
             return;
@@ -1944,6 +2019,34 @@ mod config_store_tests {
         cfg.endpoint = "https://lt.example.com/path/".into();
         cfg.sanitize();
         assert_eq!(cfg.endpoint, "https://lt.example.com/path");
+    }
+
+    #[test]
+    fn web_sanitize_normalizes_engine_and_template() {
+        let mut cfg = WebConfig {
+            engine: "DDG".into(),
+            custom_url: "https://search.example/?q=%s".into(),
+            ..Default::default()
+        };
+        cfg.sanitize();
+        assert_eq!(cfg.engine, "duckduckgo");
+        assert_eq!(cfg.custom_url, "https://search.example/?q=%s");
+
+        cfg.engine = "wiki".into();
+        cfg.sanitize();
+        assert_eq!(cfg.engine, "wikipedia");
+
+        cfg.engine = "kagi-future".into();
+        cfg.sanitize();
+        assert_eq!(cfg.engine, "google");
+
+        // Bad templates clear; good ones keep the %s slot.
+        cfg.custom_url = "https://search.example/".into();
+        cfg.sanitize();
+        assert!(cfg.custom_url.is_empty());
+        cfg.custom_url = "file:///etc/passwd?q=%s".into();
+        cfg.sanitize();
+        assert!(cfg.custom_url.is_empty());
     }
 
     #[cfg(unix)]

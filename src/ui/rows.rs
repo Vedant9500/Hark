@@ -677,7 +677,7 @@ fn add_badge_kind_class(badge: &Label, kind: ResultKind) {
         ResultKind::Calc | ResultKind::Conversion => badge.add_css_class("calc"),
         ResultKind::File => badge.add_css_class("file"),
         ResultKind::Folder => badge.add_css_class("folder"),
-        ResultKind::App | ResultKind::Command => {}
+        ResultKind::App | ResultKind::Command | ResultKind::Web => {}
     }
 }
 
@@ -686,7 +686,7 @@ fn remove_badge_kind_class(badge: &Label, kind: ResultKind) {
         ResultKind::Calc | ResultKind::Conversion => badge.remove_css_class("calc"),
         ResultKind::File => badge.remove_css_class("file"),
         ResultKind::Folder => badge.remove_css_class("folder"),
-        ResultKind::App | ResultKind::Command => {}
+        ResultKind::App | ResultKind::Command | ResultKind::Web => {}
     }
 }
 
@@ -798,6 +798,7 @@ fn default_icon_for_kind(kind: ResultKind) -> &'static str {
         ResultKind::Folder => "folder",
         ResultKind::Calc | ResultKind::Conversion => "accessories-calculator",
         ResultKind::Command => "preferences-system",
+        ResultKind::Web => "applications-internet",
     }
 }
 
@@ -805,6 +806,7 @@ fn fallback_icon(kind: ResultKind, icon_name: &str) -> &'static str {
     match kind {
         ResultKind::App => "application-x-executable",
         ResultKind::Folder => "folder",
+        ResultKind::Web => "applications-internet",
         ResultKind::File => {
             if icon_name.starts_with("image-") {
                 "image-x-generic"
@@ -877,6 +879,7 @@ fn kind_key(kind: ResultKind) -> u8 {
         ResultKind::Calc => 3,
         ResultKind::Conversion => 4,
         ResultKind::Command => 5,
+        ResultKind::Web => 6,
     }
 }
 
@@ -888,6 +891,7 @@ fn kind_label(kind: ResultKind) -> &'static str {
         ResultKind::Calc => "Calc",
         ResultKind::Conversion => "Convert",
         ResultKind::Command => "Command",
+        ResultKind::Web => "Web",
     }
 }
 

@@ -29,6 +29,7 @@ Out of the box, Hark is:
 - **timezones & time ranges** — `15:00 here to tokyo`, `7:26 - 9:32`
 - **battery / power status** — `battery`, `power`, `charging`
 - **online translation** — `tr Hola`, `tr en es Hello`, or paste foreign script
+- **web fallback** — no local hit → Enter searches the web (`? foo`, `g foo`, `wiki foo` force it)
 - **typo learning** — learns from your launches (`wats` → WhatsApp)
 - **media preview, drag-and-drop, Open With, themes**
 

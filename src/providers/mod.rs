@@ -4,6 +4,7 @@ pub mod files;
 pub mod fx;
 pub mod http;
 pub mod translate;
+pub mod web;
 
 use std::path::PathBuf;
 
@@ -15,6 +16,7 @@ pub enum ResultKind {
     Calc,
     Conversion,
     Command,
+    Web,
 }
 
 /// Raycast-style dual-panel conversion display (time zones, units, etc.)
@@ -87,6 +89,8 @@ pub enum Action {
     OpenPath(PathBuf),
     OpenTerminal(PathBuf),
     Copy(String),
+    /// Open a URL in the default browser (web-search fallback).
+    OpenUrl(String),
     /// Replace the launcher search text (scope folder completions after ` in `).
     SetQuery(String),
     OpenSettings,
@@ -121,6 +125,7 @@ impl Action {
             | Action::TrashPath(p) => Some(p.as_path()),
             Action::LaunchApp { desktop_path, .. } => desktop_path.as_deref(),
             Action::Copy(_)
+            | Action::OpenUrl(_)
             | Action::SetQuery(_)
             | Action::OpenSettings
             | Action::OpenWith(_)
@@ -328,6 +333,26 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 label: "Open".into(),
                 shortcut: Some("↵"),
                 action: item.action.clone(),
+                destructive: false,
+            });
+        }
+        ResultKind::Web => {
+            let url = match &item.action {
+                Action::OpenUrl(u) => u.clone(),
+                _ => return out,
+            };
+            out.push(ActionSpec {
+                id: "open",
+                label: "Open in Browser".into(),
+                shortcut: Some("↵"),
+                action: Action::OpenUrl(url.clone()),
+                destructive: false,
+            });
+            out.push(ActionSpec {
+                id: "copy_link",
+                label: "Copy Link".into(),
+                shortcut: Some("Ctrl Shift C"),
+                action: Action::Copy(url),
                 destructive: false,
             });
         }

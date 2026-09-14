@@ -1614,6 +1614,9 @@ fn completion_text_for(current: &str, item: &SearchResult) -> Option<String> {
         // action is `Copy`, and filling the answer title (`220.462 lb`)
         // destroys the query — which itself re-parses as a new conversion.
         Action::Copy(_) if matches!(item.kind, ResultKind::Conversion) => None,
+        // Web rows complete to nothing: the title echoes the query
+        // (`Search Google for "…"`) and filling it would destroy the query.
+        Action::OpenUrl(_) => None,
         Action::Copy(_)
         | Action::OpenSettings
         | Action::RevealPath(_)
@@ -2263,7 +2266,7 @@ fn activate_result<F: Fn()>(
 fn should_learn_activation(kind: ResultKind) -> bool {
     !matches!(
         kind,
-        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command
+        ResultKind::Calc | ResultKind::Conversion | ResultKind::Command | ResultKind::Web
     )
 }
 
@@ -2393,13 +2396,16 @@ fn update_search_icons(search: &Entry, async_pending: &Rc<Cell<u32>>) {
 }
 
 /// Context-aware leading icon: morph the magnifier into the detected query mode
-/// (calculator, conversion, clock, locale/translation) — Raycast-style glyph.
+/// (calculator, conversion, clock, locale/translation, web) — Raycast-style glyph.
 fn search_mode_icon(query: &str) -> &'static str {
     use crate::providers::translate::{looks_like_translatable_script, strip_translate_prefix};
 
     let q = query.trim();
     if q.is_empty() {
         return "system-search-symbolic";
+    }
+    if crate::providers::web::is_force_web_query(q) {
+        return mode_web_icon();
     }
     let lower = q.to_ascii_lowercase();
     let (forced, text) = strip_translate_prefix(q);
@@ -2523,6 +2529,14 @@ fn mode_clock_icon() -> &'static str {
         "clock-symbolic",
         "preferences-system-time-symbolic",
         "view-refresh-symbolic",
+    ])
+}
+
+fn mode_web_icon() -> &'static str {
+    crate::ui::rows::resolve_icon_name(&[
+        "web-browser-symbolic",
+        "applications-internet-symbolic",
+        "applications-internet",
     ])
 }
 
@@ -3013,6 +3027,7 @@ mod learn_gate_tests {
             ResultKind::Calc,
             ResultKind::Conversion,
             ResultKind::Command,
+            ResultKind::Web,
         ] {
             assert_eq!(
                 should_learn(kind, None),
@@ -3321,6 +3336,7 @@ fn kind_rank_ui(k: ResultKind) -> u8 {
         ResultKind::App => 2,
         ResultKind::Folder => 3,
         ResultKind::File => 4,
+        ResultKind::Web => 5,
     }
 }
 

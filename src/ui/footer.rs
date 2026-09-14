@@ -47,6 +47,7 @@ pub(crate) fn update_footer(
         Some(i) => match i.kind {
             ResultKind::Calc | ResultKind::Conversion => "Copy Result",
             ResultKind::Command => "Open",
+            ResultKind::Web => "Search Web",
             // Files / folders / apps are also draggable (drag path out of the row).
             ResultKind::Folder | ResultKind::File | ResultKind::App => "Open · Drag",
         },
