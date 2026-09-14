@@ -156,7 +156,11 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     let preview_meta_fs = fs(11.0);
     let preview_code_fs = fs(11.0);
     let doc_title_fs = fs(15.0);
-    let doc_body_fs = fs(13.5);
+    // Whole px only: fractional 13.5px shaved 1-2px off cap crowns (B/D/E)
+    // in the define extract on this font stack, while 14px renders full
+    // ink — reproduced pixel-for-pixel in a label A/B (13.5 vs 14 vs
+    // default). Drives both define-body and preview-doc-body.
+    let doc_body_fs = fs(14.0);
     let empty_fs = fs(12.0);
 
     format!(
@@ -456,14 +460,25 @@ window.hark-window .hark-define-title {{
   font-size: {doc_title_fs};
   font-weight: 700;
   color: {on_surface};
-  line-height: 1.35;
+  /* Wrapped heading: NO CSS line-height here — spacing is a Pango
+     line-height attr set in rows.rs (define_line_attrs). CSS line-height
+     needs GTK ≥ 4.6 and would stack on top of the attr where both apply.
+     Padding opens the title↔body gap (box spacing 10px stacks on top) and
+     keeps first-line caps inside the allocation. No height cap — label
+     requests full wrapped height. */
+  padding-top: 5px;
+  padding-bottom: 6px;
 }}
 
 window.hark-window .hark-define-body {{
   font-size: {doc_body_fs};
-  line-height: 1.65;
   color: {on_surface};
   opacity: 0.92;
+  /* Wrapped extract: NO CSS line-height here either (see above) — the 1.6
+     Pango attr in rows.rs opens the inter-line gap + half-leading so cap
+     crowns/descenders clear on every GTK version. */
+  padding-top: 4px;
+  padding-bottom: 2px;
 }}
 
 window.hark-window .hark-define-body selection {{
@@ -1482,5 +1497,47 @@ mod tests {
         // `#abc` == `#aabbcc` == (170, 187, 204); guards the `* 17` rewrite.
         assert_eq!(rgba("#abc", 1.0), rgba("#aabbcc", 1.0));
         assert_eq!(rgba("#abc", 1.0), "rgba(170, 187, 204, 1)");
+    }
+
+    #[test]
+    fn test_define_spacing_is_attr_driven() {
+        // Wrapped-extract spacing is a Pango line-height attr (rows.rs
+        // define_line_attrs) — CSS line-height needs GTK ≥ 4.6 and would
+        // stack on top where both apply. CSS keeps only the gap padding.
+        let theme = Theme::fallback();
+        let css = render(&theme, &UiThemeConfig::default());
+        let body_rule = css
+            .split("window.hark-window .hark-define-body {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(!body_rule.contains("line-height:"), "{body_rule}");
+        let title_rule = css
+            .split("window.hark-window .hark-define-title {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(!title_rule.contains("line-height:"), "{title_rule}");
+        assert!(title_rule.contains("padding-bottom: 6px;"), "{title_rule}");
+    }
+
+    #[test]
+    fn test_doc_body_uses_whole_px_font_size() {
+        // Regression: fractional 13.5px shaved cap crowns in the define
+        // extract (whole 14px renders full ink). Doc text sizes stay whole.
+        let theme = Theme::fallback();
+        let css = render(&theme, &UiThemeConfig::default());
+        let body_rule = css
+            .split("window.hark-window .hark-define-body {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(body_rule.contains("font-size: 14.0px;"), "{body_rule}");
     }
 }

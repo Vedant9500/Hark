@@ -317,6 +317,20 @@ impl BoundSig {
     }
 }
 
+/// Pango line-height factor for the define article labels.
+///
+/// Single source of truth for wrapped-extract spacing — NOT CSS
+/// `line-height` (needs GTK ≥ 4.6, silently ignored below, so the shave
+/// survived on older runtimes). `GtkLabel:attributes` wins over style and
+/// works on any Pango ≥ 1.44. Set once in `new()`; `set_text` rebinds keep
+/// it, so there is no per-keystroke cost.
+fn define_line_attrs(factor: f64) -> gtk::pango::AttrList {
+    let list = gtk::pango::AttrList::new();
+    let attr: gtk::pango::Attribute = gtk::pango::AttrFloat::new_line_height(factor).into();
+    list.insert(attr);
+    list
+}
+
 /// Direction-aware hero animation. `None` = instant (typing), `SlideUp`
 /// = ↓ arrow, `SlideDown` = ↑ arrow, `Crossfade` = mouse click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -423,9 +437,9 @@ impl PooledRow {
         icon.set_pixel_size(26);
         icon.set_valign(gtk::Align::Center);
 
-        // Title/subtitle gap: 3px = +1px card height (6 rows fill the ~6px
-        // viewport remainder: 6x64px rows in a 390px viewport). Keeps
-        // top/bottom gaps symmetric at default icon size / font scale.
+        // Title/subtitle gap: keep 3px (rows already read fine) — cap-crown
+        // clipping is handled in CSS (scaled min-height + headroom padding),
+        // not by widening every row.
         let text = GtkBox::new(Orientation::Vertical, 3);
         text.set_hexpand(true);
         text.set_valign(gtk::Align::Center);
@@ -500,8 +514,10 @@ impl PooledRow {
         // Plain reading view directly on the shell: no card background, no
         // icon row, no badge. Word-wrap (never WordChar: mid-word breaks
         // wreck prose) + dedicated title/body classes for doc typography.
-        let define_root = GtkBox::new(Orientation::Vertical, 4);
-        define_root.add_css_class("hark-row-inner");
+        // Title↔body gap 10px: wrapped extract lines sat tight under the
+        // heading and cap crowns shaved — breathing room lives here only,
+        // never in the standard rows above.
+        let define_root = GtkBox::new(Orientation::Vertical, 10);
         define_root.add_css_class("hark-define");
         define_root.set_hexpand(true);
         define_root.set_vexpand(false);
@@ -511,12 +527,19 @@ impl PooledRow {
         define_title.set_halign(gtk::Align::Start);
         define_title.set_valign(gtk::Align::Start);
         define_title.set_xalign(0.0);
+        // Reading text top-aligns; never cap height (lines/ellipsize limit
+        // height request — short allocation + yalign 0.5 centered the
+        // deficit onto first-line caps: E/P/B crowns clipped 1-2px).
+        define_title.set_yalign(0.0);
+        define_title.set_hexpand(true);
+        define_title.set_justify(gtk::Justification::Left);
         define_title.set_wrap(true);
         define_title.set_wrap_mode(gtk::pango::WrapMode::Word);
-        define_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        define_title.set_lines(2);
         define_title.set_single_line_mode(false);
         define_title.set_max_width_chars(84);
+        // Wrapped-heading spacing lives here (see define_line_attrs), not in
+        // CSS — half-leading also lifts first-line caps clear.
+        define_title.set_attributes(Some(&define_line_attrs(1.35)));
 
         let define_body = Label::new(None);
         define_body.add_css_class("hark-define-body");
@@ -532,6 +555,9 @@ impl PooledRow {
         // Bound the panel's minimum width like the preview doc body: long
         // URLs / technical tokens are single Pango words.
         define_body.set_max_width_chars(84);
+        // Wrapped-extract spacing (see define_line_attrs): inter-line gap +
+        // half-leading so cap crowns/descenders clear on every GTK version.
+        define_body.set_attributes(Some(&define_line_attrs(1.6)));
 
         define_root.append(&define_title);
         define_root.append(&define_body);
