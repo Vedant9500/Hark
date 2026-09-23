@@ -119,11 +119,11 @@ impl ActionPanel {
                 btn.add_css_class("destructive");
             }
 
-            let line = GtkBox::new(Orientation::Horizontal, 12);
-            line.set_margin_top(4);
-            line.set_margin_bottom(4);
-            line.set_margin_start(4);
-            line.set_margin_end(4);
+            let line = GtkBox::new(Orientation::Horizontal, 10);
+            line.set_margin_top(6);
+            line.set_margin_bottom(6);
+            line.set_margin_start(8);
+            line.set_margin_end(8);
             line.set_can_target(false);
 
             let label = Label::new(Some(&spec.label));

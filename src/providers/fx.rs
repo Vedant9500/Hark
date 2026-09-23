@@ -536,10 +536,17 @@ mod tests {
 
     #[test]
     fn parse_rates_body_ok() {
-        let body = br#"{"base":"EUR","date":"2026-08-05","rates":{"USD":1.1,"GBP":0.9}}"#;
-        let c = parse_rates_body(body).unwrap();
+        // Network tables must be within ±45 days of today — build the body
+        // around "today" so the test does not rot into a time-bomb.
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let body =
+            format!(r#"{{"base":"EUR","date":"{today}","rates":{{"USD":1.1,"GBP":0.9}}}}"#);
+        let c = parse_rates_body(body.as_bytes()).unwrap();
         assert_eq!(c.base, "EUR");
-        assert_eq!(c.date, "2026-08-05");
+        assert_eq!(c.date, today);
         assert_eq!(c.rates["USD"], 1.1);
     }
 

@@ -1,7 +1,7 @@
 # Hark — optimization tracker
 
-**Last updated:** 2026-07-17  
-**Metrics:** [`performance.md`](./performance.md)  
+**Last updated:** 2026-09-18  
+**Metrics:** [`performance.md`](./performance.md) (§ Re-run 2026-09-18: apps ~7× faster vs 07, file/µs tracks 3.2× index growth, calc expansion free)  
 **Depth raw data:** [`depth-index-benchmark.json`](./depth-index-benchmark.json)  
 **Bench logs:** [`bench/`](./bench/)  
 **Full historical worklog:** [`archive/optimization-tracker-2026-07-full.md`](./archive/optimization-tracker-2026-07-full.md)

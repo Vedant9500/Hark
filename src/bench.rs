@@ -58,6 +58,10 @@ pub fn run_bench() {
         deep,
         apps_n
     );
+    println!(
+        "providers: translate={} · define={} · web={}",
+        cfg.translate.enabled, cfg.define.enabled, cfg.web.enabled
+    );
     if apps_n == 0 {
         println!("warning: no desktop apps loaded — iso_apps / app cases may be empty");
     }
@@ -94,6 +98,30 @@ pub fn run_bench() {
         ("iso_apps", app_q.as_str(), "apps"),
         ("iso_files", "doc", "files"),
         ("iso_calc", "10 + 20", "calc"),
+    ];
+
+    // Extended prompts: new providers / query modes added since the 2026-07
+    // baseline (calc battery/tz/datetime/duration/cooking/quickwin, web
+    // forced+fallback, translate/define gating, file glob/single/long/path).
+    // All are UI-thread safe: translate/define hit mem-cache/pending only
+    // (network lives in search_network on workers), web is pure construction.
+    let extended: [(&str, &str); 16] = [
+        ("calc_battery", "battery"),
+        ("calc_tz", "now in tokyo"),
+        ("calc_date", "tomorrow"),
+        ("calc_dur", "2d + 3h"),
+        ("calc_tip", "tip 20% on 45"),
+        ("calc_cook", "1 cup sugar in g"),
+        ("calc_quick", "255 to hex"),
+        ("calc_miss", "hello world"),
+        ("web_forced", "? hello world"),
+        ("translate", "tr hello world"),
+        ("define", "what does rust mean"),
+        ("file_glob", "*.md"),
+        ("file_single", "a"),
+        ("file_long", "optimization"),
+        ("file_path", "~/"),
+        ("empty", ""),
     ];
 
     const WARMUP: u32 = 8;
@@ -148,6 +176,22 @@ pub fn run_bench() {
         println!(
             "{:<14} {:<18} {:>10} {:>10} {:>8}",
             name, q, median, p95, hits
+        );
+    }
+
+    println!();
+    println!("=== extended prompts (new since 2026-07 baseline) ===");
+    println!(
+        "{:<14} {:<18} {:>10} {:>10} {:>8}",
+        "case", "query", "median_us", "p95_us", "hits"
+    );
+    println!("{}", "-".repeat(64));
+    for (name, q) in extended {
+        let (median, p95, hits) = bench_query(WARMUP, ITERS, || engine.search(q));
+        let qdisp = if q.is_empty() { "(empty)" } else { q };
+        println!(
+            "{:<14} {:<18} {:>10} {:>10} {:>8}",
+            name, qdisp, median, p95, hits
         );
     }
 

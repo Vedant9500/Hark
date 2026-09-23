@@ -119,9 +119,12 @@ pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     // read too heavy over rows). Kept whisper-thin so the scroll scrim never
     // reads as a shadow bar — 0.28 head over 16px.
     let shell_bg_half = rgba(&theme.surface_container, base * 0.28);
-    // Popovers float over results/previews without Hyprland blur — need higher opacity.
-    let popover_bg = rgba(&theme.surface_container, (base + 0.32).min(0.94));
-    let popover_bg_solid = rgba(&theme.surface_container_high, (base + 0.42).min(0.97));
+    // Popovers float over results/previews without Hyprland blur — keep them
+    // fully opaque. Even 0.94 let result badges ("App"/"Folder") ghost through
+    // the menu (no blur to diffuse them, so bleed reads as dirt, not glass).
+    // Elevation comes from the lighter `surface_container_high` fill, not alpha.
+    let popover_bg = rgba(&theme.surface_container_high, 1.0);
+    let popover_bg_solid = rgba(&theme.surface_container_high, 1.0);
     let search_bg = rgba(&theme.surface_container_high, (base + 0.05).min(1.0));
     let hover_bg = rgba(&theme.on_surface, 0.06);
     let selected_bg = rgba(&primary, 0.18);
@@ -891,7 +894,9 @@ popover.hark-action-panel .hark-action-panel-header {{
   border: none;
 }}
 
-/* ListBox rows (legacy) + Button rows (current panel). */
+/* ListBox rows (legacy) + Button rows (current panel).
+   Transparent 1px border reserves the selected edge so focus never shifts
+   layout by a pixel when the border tints in (same as main result rows). */
 .hark-action-panel-list > row,
 button.hark-action-panel-row {{
   background-color: transparent;
@@ -899,7 +904,7 @@ button.hark-action-panel-row {{
   border-radius: 8px;
   margin: 1px 0;
   padding: 2px 4px;
-  border: none;
+  border: 1px solid transparent;
   outline: none;
   box-shadow: none;
   min-height: 0;
@@ -917,6 +922,9 @@ button.hark-action-panel-row.selected:hover,
 button.hark-action-panel-row:focus {{
   background-color: {selected_bg};
   border: 1px solid {border};
+  {row_bevel}
+  outline: none;
+  box-shadow: none;
 }}
 
 .hark-action-panel-label {{
