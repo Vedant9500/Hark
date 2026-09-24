@@ -542,8 +542,7 @@ mod tests {
             .date_naive()
             .format("%Y-%m-%d")
             .to_string();
-        let body =
-            format!(r#"{{"base":"EUR","date":"{today}","rates":{{"USD":1.1,"GBP":0.9}}}}"#);
+        let body = format!(r#"{{"base":"EUR","date":"{today}","rates":{{"USD":1.1,"GBP":0.9}}}}"#);
         let c = parse_rates_body(body.as_bytes()).unwrap();
         assert_eq!(c.base, "EUR");
         assert_eq!(c.date, today);
