@@ -2,12 +2,15 @@
 # shellcheck disable=SC2034
 pkgname=hark
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
 arch=('x86_64')
 url="https://github.com/Vedant9500/Hark"
 license=('MIT')
-depends=('gtk4' 'gtksourceview5' 'glib2' 'gtk4-layer-shell' 'xdg-utils')
+# Runtime: gtk4 pulls pango/gdk-pixbuf2/glibc (namcap implicit, no explicit dep).
+# xdg-utils is a runtime spawn (xdg-open web fallback), not a linked lib —
+# keep despite namcap's "may not be needed".
+depends=('gtk4' 'gtksourceview5' 'glib2' 'gtk4-layer-shell' 'hicolor-icon-theme' 'xdg-utils')
 makedepends=('cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Hark/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('2a8f98aaed2722b872474848fa994656f0d37391480ab1b129f6083234801332')
