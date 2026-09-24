@@ -4,7 +4,7 @@
 
 | | |
 |--|--|
-| **Version** | 0.1.0 |
+| **Version** | 0.2.0 |
 | **License** | MIT |
 | **Platform** | Linux (x86_64; aarch64 when built for it) |
 

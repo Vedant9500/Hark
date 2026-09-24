@@ -56,8 +56,8 @@ curl -fsSL https://github.com/Vedant9500/Hark/releases/latest/download/install.s
 For machines without Rust or an AUR helper — only GTK4 is needed:
 
 ```bash
-tar xzf hark-0.1.0-x86_64-linux.tar.gz
-./hark-0.1.0-x86_64-linux/install.sh
+tar xzf hark-0.2.0-x86_64-linux.tar.gz
+./hark-0.2.0-x86_64-linux/install.sh
 ```
 
 ### From source

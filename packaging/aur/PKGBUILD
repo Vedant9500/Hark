@@ -1,7 +1,7 @@
 # Maintainer: Vedant Deshmukh <deshmukhvedant95@gmail.com>
 # shellcheck disable=SC2034
 pkgname=hark
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Raycast-style launcher for Linux (Hyprland/Wayland)"
 arch=('x86_64')
@@ -30,8 +30,8 @@ build() {
 
 check() {
   cd "Hark-$pkgver"
-  cargo test --frozen --features layer-shell || \
-    cargo test --frozen
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --features layer-shell
 }
 
 package() {

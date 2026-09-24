@@ -1,4 +1,3 @@
-#!/usr/bin/env xdg-open
 [Desktop Entry]
 Type=Application
 Name=Hark
@@ -7,7 +6,7 @@ Comment=Raycast-style launcher for Linux (Hyprland/Wayland)
 Exec=hark
 Icon=hark
 Terminal=false
-Categories=Utility;Core;
+Categories=Utility;
 Keywords=launcher;search;raycast;rofi;spotlight;
 StartupNotify=false
 X-GNOME-Autostart-enabled=false
