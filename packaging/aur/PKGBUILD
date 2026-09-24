@@ -10,7 +10,7 @@ license=('MIT')
 depends=('gtk4' 'gtksourceview5' 'glib2' 'gtk4-layer-shell' 'xdg-utils')
 makedepends=('cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Vedant9500/Hark/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('8698433a64f16689e85119ab8a58eab7aa21e84f8b6752839faef721f27589a2')
+sha256sums=('2a8f98aaed2722b872474848fa994656f0d37391480ab1b129f6083234801332')
 options=('!lto') # Cargo sets LTO in profile.release
 
 prepare() {
