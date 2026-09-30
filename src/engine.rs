@@ -39,6 +39,7 @@ impl Engine {
         let mut engine = Self::new_headless();
         engine.spawn_warm();
         engine.spawn_periodic_refresh();
+        engine.spawn_net_prewarm();
         engine
     }
 
@@ -81,6 +82,31 @@ impl Engine {
         thread::spawn(move || {
             apps_bg.reload(&excludes);
             files_bg.rebuild_index();
+        });
+    }
+
+    /// One-shot DNS prewarm for define hosts (daemon only, never headless).
+    ///
+    /// The first `en.wikipedia.org` resolution in a fresh boot can stall
+    /// ~5s (cold stub resolver), exceeding the 4s HTTP timeout — so the
+    /// first define query always timed out and retried (~5.5s visible).
+    /// Resolving once here, off the critical path, warms the shared system
+    /// cache. DNS-only (a few UDP packets): no TCP/TLS, no HTTP, and the
+    /// normal system resolver is used so VPN / split-DNS keeps working.
+    /// Called from [`Engine::new`] only — CLI, bench, and tests never pay it.
+    pub fn spawn_net_prewarm(&self) {
+        thread::spawn(|| {
+            use std::net::ToSocketAddrs;
+            for host in [
+                "en.wikipedia.org",
+                "api.duckduckgo.com",
+                "upload.wikimedia.org",
+                "thumb.wikimedia.org",
+            ] {
+                let _ = format!("{host}:443")
+                    .to_socket_addrs()
+                    .map(|it| it.count());
+            }
         });
     }
 
