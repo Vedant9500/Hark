@@ -10,6 +10,16 @@ const CONNECT: Duration = Duration::from_secs(2);
 /// fit. Too tight (1–2s) caused free Google TLS reads to fail while curl was fine.
 const TOTAL: Duration = Duration::from_secs(4);
 
+/// Real version + contact URL: Wikimedia's User-Agent policy throttles or
+/// blocks generic agents without contact info.
+const USER_AGENT: &str = concat!(
+    "hark/",
+    env!("CARGO_PKG_VERSION"),
+    " (+",
+    env!("CARGO_PKG_REPOSITORY"),
+    ")"
+);
+
 /// Shared agent so TLS/DNS sessions can be reused across worker requests.
 /// `no_proxy`: hark talks only to fixed, trusted hosts (Frankfurter,
 /// translate APIs, the user's LibreTranslate endpoint) — an inherited
@@ -21,7 +31,7 @@ fn agent() -> &'static ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(CONNECT)
             .timeout(TOTAL)
-            .user_agent("hark-launcher/0.1")
+            .user_agent(USER_AGENT)
             .try_proxy_from_env(false)
             .build()
     })
@@ -38,7 +48,7 @@ fn no_redirect_agent() -> &'static ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(CONNECT)
             .timeout(TOTAL)
-            .user_agent("hark-launcher/0.1")
+            .user_agent(USER_AGENT)
             .redirects(0)
             .try_proxy_from_env(false)
             .build()
@@ -78,7 +88,7 @@ fn background_agent() -> &'static ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
-            .user_agent("hark-launcher/0.1")
+            .user_agent(USER_AGENT)
             .try_proxy_from_env(false)
             .build()
     })

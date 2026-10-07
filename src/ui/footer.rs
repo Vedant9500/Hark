@@ -42,8 +42,14 @@ pub(crate) fn update_footer(
         item.as_ref().map(|i| i.kind),
         Some(ResultKind::Calc | ResultKind::Conversion)
     );
+    use crate::providers::Action;
     let label = match item.as_ref() {
-        Some(i) if matches!(i.action, crate::providers::Action::SetQuery(_)) => "Use Scope",
+        Some(i) if i.kind == ResultKind::Define => match i.action {
+            Action::SetQuery(_) => "Look Up",
+            Action::OpenUrl(_) => "Open Article",
+            _ => "Copy Definition",
+        },
+        Some(i) if matches!(i.action, Action::SetQuery(_)) => "Use Scope",
         Some(i) => match i.kind {
             ResultKind::Calc | ResultKind::Conversion => "Copy Result",
             ResultKind::Define => "Copy Definition",

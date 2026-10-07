@@ -299,9 +299,32 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 }
             }
         }
+        // "Did you mean" / "Other meanings" rows: the lookup is the only action.
+        ResultKind::Define if matches!(item.action, Action::SetQuery(_)) => {
+            out.push(ActionSpec {
+                id: "open",
+                label: "Look Up".into(),
+                shortcut: Some("↵"),
+                action: item.action.clone(),
+                destructive: false,
+            });
+        }
         ResultKind::Calc | ResultKind::Conversion | ResultKind::Define => {
+            let is_article = crate::providers::define::is_ok_result(item);
+            // People/place lookups open the article on Enter: list it first.
+            if let (true, Action::OpenUrl(url)) = (is_article, &item.action) {
+                out.push(ActionSpec {
+                    id: "open_article",
+                    label: "Open Article".into(),
+                    shortcut: Some("↵"),
+                    action: Action::OpenUrl(url.clone()),
+                    destructive: false,
+                });
+            }
             let text = match &item.action {
                 Action::Copy(t) => t.clone(),
+                // Article rows carry the full paragraph as the subtitle.
+                _ if is_article => item.subtitle.clone(),
                 _ => item.title.clone(),
             };
             out.push(ActionSpec {
@@ -311,9 +334,9 @@ pub fn secondary_actions(item: &SearchResult) -> Vec<ActionSpec> {
                 action: Action::Copy(text),
                 destructive: false,
             });
-            // Define rows with a resolved Wikipedia page offer it as a
+            // Copy-first article rows still offer the Wikipedia page as a
             // secondary action (mem-cache lookup only — no I/O).
-            if item.kind == ResultKind::Define {
+            if is_article && matches!(item.action, Action::Copy(_)) {
                 if let Some(media) = crate::providers::define::lookup_media_by_id(&item.id) {
                     if let Some(url) = media.page_url {
                         out.push(ActionSpec {
@@ -410,6 +433,54 @@ mod action_panel_tests {
         assert!(ids.contains(&"trash"));
         assert!(ids.contains(&"toggle_preview"));
         assert!(acts.iter().any(|a| a.destructive && a.id == "trash"));
+    }
+
+    fn define_item(id: &str, subtitle: &str, action: Action) -> SearchResult {
+        SearchResult {
+            id: id.into(),
+            title: "Linus Sebastian · Wikipedia".into(),
+            subtitle: subtitle.into(),
+            kind: ResultKind::Define,
+            score: 0,
+            icon: None,
+            action,
+            conversion: None,
+            matched: None,
+        }
+    }
+
+    #[test]
+    fn define_lookup_row_opens_first_and_copies_paragraph() {
+        let url = "https://en.wikipedia.org/wiki/Linus_Sebastian";
+        let item = define_item(
+            "define:0123456789abcdef",
+            "Linus Gabriel Sebastian is a Canadian YouTuber.",
+            Action::OpenUrl(url.into()),
+        );
+        let acts = secondary_actions(&item);
+        assert_eq!(acts[0].id, "open_article");
+        assert!(matches!(&acts[0].action, Action::OpenUrl(u) if u == url));
+        let copy = acts.iter().find(|a| a.id == "copy").expect("copy");
+        assert!(matches!(&copy.action,
+            Action::Copy(t) if t == "Linus Gabriel Sebastian is a Canadian YouTuber."));
+        assert_eq!(
+            acts.iter().filter(|a| a.id == "open_article").count(),
+            1,
+            "no duplicate Open Article"
+        );
+    }
+
+    #[test]
+    fn define_list_row_only_looks_up() {
+        let item = define_item(
+            "define:dym:0123456789abcdef",
+            "“LTT” may refer to",
+            Action::SetQuery("wiki Linus Tech Tips".into()),
+        );
+        let acts = secondary_actions(&item);
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].label, "Look Up");
+        assert!(matches!(&acts[0].action, Action::SetQuery(q) if q == "wiki Linus Tech Tips"));
     }
 
     fn calc_item(conv: Option<ConversionView>, title: &str) -> SearchResult {

@@ -103,9 +103,7 @@ impl Engine {
                 "upload.wikimedia.org",
                 "thumb.wikimedia.org",
             ] {
-                let _ = format!("{host}:443")
-                    .to_socket_addrs()
-                    .map(|it| it.count());
+                let _ = format!("{host}:443").to_socket_addrs().map(|it| it.count());
             }
         });
     }
@@ -251,8 +249,13 @@ impl Engine {
 
         // Forced web (`? foo`, `g foo`, `wiki foo`): explicit user intent —
         // owns the query like translate does, skipping local providers.
-        if let Some(row) = self.web.forced(q) {
-            return vec![row];
+        // `wiki foo` is also a define lookup: with define on it answers
+        // inline (article + image) instead of opening a browser search.
+        let define_owns = self.define.is_enabled() && self.define.should_handle(q);
+        if !define_owns {
+            if let Some(row) = self.web.forced(q) {
+                return vec![row];
+            }
         }
 
         let mut results = Vec::new();
@@ -1223,25 +1226,13 @@ mod engine_search_tests {
     use crate::providers::files::FileProvider;
     use crate::providers::{Action, ResultKind};
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicU64;
 
-    /// Hermetic Engine: temp-dir config (translate + web disabled), injected
+    /// Hermetic Engine: in-memory config (translate + web disabled), injected
     /// app list, seeded in-memory file index, empty usage/typos. No disk
     /// scans, no cache writes, no network, no periodic thread.
     /// T1 ranking-matrix testbed.
     struct TestEngine {
         engine: Engine,
-        _dir: PathBuf,
-    }
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn tmp_config_dir() -> PathBuf {
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("hark-engine-test-{}-{}", std::process::id(), n));
-        let _ = std::fs::create_dir_all(&dir);
-        dir
     }
 
     fn base_config() -> HarkConfig {
@@ -1257,9 +1248,9 @@ mod engine_search_tests {
 
     /// Build an engine with the given apps and files.
     fn build_engine(apps: &[(&str, &str)], files: &[(&str, bool)]) -> TestEngine {
-        let dir = tmp_config_dir();
-        let cfg = ConfigStore::with_path(base_config(), dir.join("config.json"));
-        let cfg = Arc::new(cfg);
+        // In-memory config: no temp dir to create or leak (config updates
+        // from tests never touch disk).
+        let cfg = Arc::new(ConfigStore::in_memory(base_config()));
 
         let usage = Arc::new(UsageStore::new_empty());
         let typos = Arc::new(TypoStore::new_empty());
@@ -1286,7 +1277,7 @@ mod engine_search_tests {
             config: cfg,
             periodic: Mutex::new(None),
         };
-        TestEngine { engine, _dir: dir }
+        TestEngine { engine }
     }
 
     fn titles(results: &[SearchResult]) -> Vec<&str> {
@@ -1848,6 +1839,30 @@ mod engine_search_tests {
         assert!(results
             .iter()
             .all(|r| !crate::providers::define::is_pending_result(r)));
+    }
+
+    #[test]
+    fn wiki_prefix_answers_inline_when_define_on() {
+        let te = build_engine(&[], &[]);
+        te.engine.config().update(|c| {
+            c.define.enabled = true;
+            c.web.enabled = true;
+        });
+        let q = "wiki hark engine wiki test term";
+        let results = te.engine.search(q);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(crate::providers::define::is_pending_result(&results[0]));
+        assert!(te.engine.should_define_network(q));
+        // Define off: `wiki X` is still a forced Wikipedia web search.
+        te.engine.config().update(|c| c.define.enabled = false);
+        let results = te.engine.search(q);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].kind, ResultKind::Web);
+        assert!(
+            results[0].title.contains("Wikipedia"),
+            "{}",
+            results[0].title
+        );
     }
 
     #[test]

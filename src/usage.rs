@@ -42,6 +42,11 @@ pub struct UsageStore {
     /// decay progressing through the rollback; records stamped during it
     /// stay sane instead of `last = 0`.
     max_now: AtomicU64,
+    /// Test fixtures own their temp dir: removed after the final `Drop`
+    /// flush (fields drop after `Drop::drop`), so nothing leaks into /tmp.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    scratch: Option<crate::test_support::ScratchDir>,
 }
 
 /// Upper bound for a per-id count. A tampered `usage.json` can carry
@@ -93,27 +98,20 @@ impl UsageStore {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            #[cfg(test)]
+            scratch: None,
         }
     }
 
-    /// Test-only: empty store backed by a unique temp-dir path so any `record`
-    /// debounce-write lands in /tmp, never the working directory.
+    /// Test-only: empty store backed by a unique temp dir so any `record`
+    /// debounce-write lands in /tmp, never the working directory. The dir
+    /// is removed when the store drops.
     #[cfg(test)]
     pub(crate) fn new_empty() -> Self {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("hark-usage-empty-{}-{}", std::process::id(), n));
-        let _ = std::fs::create_dir_all(&dir);
-        // write_private_file refuses non-0700 dirs; tests write real files.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
+        let scratch = crate::test_support::ScratchDir::new("usage-empty");
         Self {
             inner: RwLock::new(UsageFile::default()),
-            path: dir.join("usage.json"),
+            path: scratch.path().join("usage.json"),
             dirty: AtomicBool::new(false),
             max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
@@ -121,6 +119,7 @@ impl UsageStore {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            scratch: Some(scratch),
         }
     }
 
@@ -426,26 +425,14 @@ fn usage_path() -> PathBuf {
 mod usage_tests {
     use super::*;
 
+    /// Store in a private temp dir (removed when the store drops — after
+    /// its final flush). The returned path stays valid for the store's life.
     fn temp_store() -> (UsageStore, PathBuf) {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "hark-usage-{}-{}-{}",
-            std::process::id(),
-            n,
-            now_secs()
-        ));
-        let _ = fs::create_dir_all(&dir);
-        // write_private_file refuses non-0700 dirs; tests write real files.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-        }
-        let path = dir.join("usage.json");
+        let scratch = crate::test_support::ScratchDir::new("usage");
+        let dir = scratch.path().to_path_buf();
         let store = UsageStore {
             inner: RwLock::new(UsageFile::default()),
-            path: path.clone(),
+            path: dir.join("usage.json"),
             dirty: AtomicBool::new(false),
             max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
@@ -453,6 +440,7 @@ mod usage_tests {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            scratch: Some(scratch),
         };
         (store, dir)
     }
@@ -494,7 +482,7 @@ mod usage_tests {
 
     #[test]
     fn debounce_skips_rapid_rewrites() {
-        let (store, dir) = temp_store();
+        let (store, _dir) = temp_store();
         store.record("app:a");
         store.flush(); // force first write
         let m0 = fs::metadata(&store.path).unwrap().modified().unwrap();
@@ -520,27 +508,24 @@ mod usage_tests {
             !raw.contains("\n  "),
             "expected compact JSON without pretty indentation"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn prune_caps_entries() {
-        let (store, dir) = temp_store();
+        let (store, _dir) = temp_store();
         for i in 0..(MAX_ENTRIES + 50) {
             store.record(&format!("app:{i}"));
         }
         store.flush();
         let n = store.inner.read().unwrap().entries.len();
         assert!(n <= MAX_ENTRIES, "entries={n} > {MAX_ENTRIES}");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn record_pins_new_entry() {
         // Audit P3 (Pass 13): a first-use entry must survive its own
         // record call's prune instead of being evicted immediately.
-        let (store, dir) = temp_store();
+        let (store, _dir) = temp_store();
         for i in 0..MAX_ENTRIES {
             store.record(&format!("app:{i}"));
         }
@@ -548,7 +533,6 @@ mod usage_tests {
         let g = store.inner.read().unwrap();
         assert!(g.entries.contains_key("app:newcomer"));
         assert!(g.entries.len() <= MAX_ENTRIES);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -569,13 +553,12 @@ mod usage_tests {
         let g = loaded.inner.read().unwrap();
         let e = g.entries.get("app:evil").expect("entry kept");
         assert_eq!(e.count, MAX_COUNT, "poisoned count clamped on load");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn boost_many_matches_single_boosts() {
         // Audit P3 (Pass 14): batched scoring must equal per-id `boost`.
-        let (store, dir) = temp_store();
+        let (store, _dir) = temp_store();
         store.record("app:a");
         store.record("app:a");
         store.record("app:b");
@@ -586,7 +569,6 @@ mod usage_tests {
         assert!(batched[0] > 0 && batched[1] > 0);
         assert_eq!(batched[2], 0);
         assert!(store.boost_many(&[]).is_empty());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -609,6 +591,6 @@ mod usage_tests {
             "corrupt store must be copied aside"
         );
         drop(store);
-        let _ = fs::remove_dir_all(&dir);
+        // Scratch dir is removed by the store's Drop (after its final flush).
     }
 }

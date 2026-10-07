@@ -29,8 +29,9 @@ Out of the box, Hark is:
 - **timezones & time ranges** — `15:00 here to tokyo`, `7:26 - 9:32`
 - **battery / power status** — `battery`, `power`, `charging`
 - **online translation** — `tr Hola`, `tr en es Hello`, or paste foreign script
-- **web fallback** — no local hit → Enter searches the web (`? foo`, `g foo`, `wiki foo` force it)
+- **web fallback** — no local hit → Enter searches the web (`? foo`, `g foo` force it; `wiki foo` too when definitions are off)
 - **definitions** — `what does SIMD mean`, `AVX full form`, `def gyroscope` (Wikipedia, cached; misses offer a web search)
+- **people & places** — `who is linus sebastian`, `where is delhi`, `tell me about black holes`, `wiki ltt` (article inline, Enter opens it; ambiguous terms list their meanings)
 - **typo learning** — learns from your launches (`wats` → WhatsApp)
 - **media preview, drag-and-drop, Open With, themes**
 

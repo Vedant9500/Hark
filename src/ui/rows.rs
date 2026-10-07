@@ -196,16 +196,11 @@ fn is_define_article(item: &SearchResult) -> bool {
     item.kind == ResultKind::Define && crate::providers::define::is_ok_result(item)
 }
 
-/// Full article text behind a define row (the `Copy` payload). `None` for
-/// every other row shape so the bind skip-key stays allocation-free there.
+/// Full article text behind a define row (its `subtitle` — the action may
+/// be `Copy` or, for people/places, `OpenUrl`). `None` for every other row
+/// shape so the bind skip-key stays allocation-free there.
 fn define_body_text(item: &SearchResult) -> Option<&str> {
-    if !is_define_article(item) {
-        return None;
-    }
-    match &item.action {
-        crate::providers::Action::Copy(t) => Some(t.as_str()),
-        _ => None,
-    }
+    is_define_article(item).then_some(item.subtitle.as_str())
 }
 
 struct PooledRow {
@@ -262,9 +257,8 @@ struct BoundSig {
     icon_size: i32,
     symbolic: bool,
     conv: Option<(String, String, String, String)>,
-    /// Full article text behind a define row (`Copy` action). The visible
-    /// subtitle is only a snippet, so the sig must key the body too or an
-    /// extract refresh would skip its GTK write.
+    /// Full article text behind a define row (its subtitle). Kept as its
+    /// own key so the article/standard layout switch is explicit.
     define_body: Option<String>,
     drag: Option<PathBuf>,
 }
@@ -657,11 +651,7 @@ impl PooledRow {
         if is_define_article(item) {
             self.set_mode_define();
             self.define_title.set_text(&item.title);
-            let body = match &item.action {
-                crate::providers::Action::Copy(t) => t.as_str(),
-                _ => item.subtitle.as_str(),
-            };
-            self.define_body.set_text(body);
+            self.define_body.set_text(&item.subtitle);
             self.drag.set_path(None);
             self.bound_sig = Some(BoundSig::capture(item, as_card, icon_size, symbolic_icons));
             return;

@@ -878,6 +878,15 @@ impl ConfigStore {
         }
     }
 
+    /// Test-only: config with **no backing file** — `update`/`save` never
+    /// touch disk. For hermetic fixtures that don't need persistence (the
+    /// background write in `update` can't be joined, so a temp-dir path
+    /// could be re-created after the fixture removed it).
+    #[cfg(test)]
+    pub(crate) fn in_memory(cfg: HarkConfig) -> Self {
+        Self::with_path(cfg, std::path::PathBuf::new())
+    }
+
     pub fn load() -> Self {
         let path = config_path();
         // True when a corrupt config was replaced — forces a fresh save below.
@@ -1085,6 +1094,10 @@ impl ConfigStore {
         let arc_cfg = Arc::new(cfg);
         *g = arc_cfg.clone();
         drop(g);
+        // No backing file (in-memory test store): nothing to persist.
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
         self.pending_save.store(true, Ordering::Release);
         let data = serde_json::to_string_pretty(&*arc_cfg).unwrap_or_default();
         let path = self.path.clone();
@@ -1119,7 +1132,9 @@ impl ConfigStore {
 /// Settings writers), creates the tmp with mode 0600, and fsyncs before
 /// rename so a crash cannot publish a truncated file.
 fn write_config_disk(path: &Path, data: &str) {
-    if data.is_empty() {
+    // Empty path = in-memory store: an empty path would otherwise write a
+    // stray `.json.tmp-…` into the working directory.
+    if data.is_empty() || path.as_os_str().is_empty() {
         return;
     }
     // Surface persistence failures (audit P3): settings must not look saved

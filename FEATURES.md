@@ -191,7 +191,10 @@ Also:
 ### Online translate
 
 - **Translate-on-paste:** CJK auto / `tr …` / `tr en zh …` direction → conversion card + copy
-- **Definitions:** `what does X mean` / `X full form` / `def X` → one-line row + full article in the preview reader (selectable, Enter copies); misses open a web search on Enter
+- **Definitions:** `what does X mean` / `X full form` / `def X` → article inline in the list + Wikipedia image in the preview (Enter copies)
+- **People / places / things:** `who is X` / `where is X` / `what is X` / `tell me about X` / `wiki X` → same article, Enter opens it (Ctrl+C copies). Titles resolve regardless of case and with typos (`linux sebastian` → Linus Sebastian)
+- **Did you mean:** ambiguous terms (`ltt`, `avx`) list their meanings; Enter looks one up. Auto-picked senses (`python` → the language) add an "Other meanings" row
+- Misses open a web search for the whole question on Enter; offline says so instead of "no definition"
 - Backends: Google∥MyMemory (free) or LibreTranslate (own endpoint + API key)
 - `source:auto` when supported; disk+fail cache; async + generation cancel
 - Master kill switch in Settings → Tools

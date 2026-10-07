@@ -471,7 +471,10 @@ impl Launcher {
                 // Icon feedback is instant — don't wait for the debounce timer.
                 // A keystroke invalidates any async state tied to the old query.
                 async_pending.set(0);
-                entry.set_primary_icon_name(Some(search_mode_icon(&q)));
+                entry.set_primary_icon_name(Some(search_mode_icon(
+                    &q,
+                    engine.define_should_handle(&q),
+                )));
                 update_search_icons(entry, &async_pending);
                 // Expand/collapse body immediately (don't wait for search debounce).
                 // This stays instant for compact idle → typing, but no longer
@@ -519,7 +522,7 @@ impl Launcher {
                 // Longer settle for auto script paste/IME (not forced `tr …`)
                 // and for define prefixes (each `define b/bl/…` used to spawn
                 // a fetch that queued behind the final term).
-                let wait_ms = if crate::providers::define::parse_term(&q).is_some() {
+                let wait_ms = if engine.define_should_handle(&q) {
                     DEFINE_DEBOUNCE_MS
                 } else if engine.translate_is_auto_query(&q) {
                     TRANSLATE_DEBOUNCE_MS
@@ -1976,15 +1979,15 @@ mod tab_complete_tests {
 
     #[test]
     fn search_icon_morphs_with_mode() {
-        assert_eq!(search_mode_icon(""), "system-search-symbolic");
-        assert_eq!(search_mode_icon("  "), "system-search-symbolic");
-        assert_eq!(search_mode_icon("firefox"), "system-search-symbolic");
+        assert_eq!(search_mode_icon("", false), "system-search-symbolic");
+        assert_eq!(search_mode_icon("  ", false), "system-search-symbolic");
+        assert_eq!(search_mode_icon("firefox", false), "system-search-symbolic");
         assert_eq!(
-            search_mode_icon("tr hola"),
+            search_mode_icon("tr hola", false),
             "preferences-desktop-locale-symbolic"
         );
         assert_eq!(
-            search_mode_icon("translate bonjour"),
+            search_mode_icon("translate bonjour", false),
             "preferences-desktop-locale-symbolic"
         );
 
@@ -2418,19 +2421,23 @@ fn update_search_icons(search: &Entry, async_pending: &Rc<Cell<u32>>) {
 
 /// Context-aware leading icon: morph the magnifier into the detected query mode
 /// (calculator, conversion, clock, locale/translation, web) — Raycast-style glyph.
-fn search_mode_icon(query: &str) -> &'static str {
+///
+/// `define_on`: the engine's define gate (enabled + parses) — a disabled
+/// define provider must not show the dictionary glyph.
+fn search_mode_icon(query: &str, define_on: bool) -> &'static str {
     use crate::providers::translate::{looks_like_translatable_script, strip_translate_prefix};
 
     let q = query.trim();
     if q.is_empty() {
         return "system-search-symbolic";
     }
+    // Explicit definition questions beat every other detector — including
+    // forced web, since `wiki X` is answered inline when define is on.
+    if define_on {
+        return mode_define_icon();
+    }
     if crate::providers::web::is_force_web_query(q) {
         return mode_web_icon();
-    }
-    // Explicit definition questions beat every other detector.
-    if crate::providers::define::parse_term(q).is_some() {
-        return mode_define_icon();
     }
     let lower = q.to_ascii_lowercase();
     let (forced, text) = strip_translate_prefix(q);

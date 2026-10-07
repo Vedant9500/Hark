@@ -127,6 +127,11 @@ pub struct TypoStore {
     /// Highest wall-clock seen — same rollback pin as `UsageStore::max_now`
     /// (audit P3): decay must keep progressing when the clock steps back.
     max_now: AtomicU64,
+    /// Test fixtures own their temp dir: removed after the final `Drop`
+    /// save (fields drop after `Drop::drop`), so nothing leaks into /tmp.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    scratch: Option<crate::test_support::ScratchDir>,
 }
 
 impl TypoStore {
@@ -143,6 +148,7 @@ impl TypoStore {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            scratch: None,
         }
     }
 
@@ -165,6 +171,8 @@ impl TypoStore {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            #[cfg(test)]
+            scratch: None,
         }
     }
 
@@ -674,34 +682,19 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
 
-    /// Scratch dir satisfying write_private_file's trust rule (0700,
-    /// owned): tests write real files, so they need a private subdir of
-    /// /tmp rather than /tmp itself.
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "hark-typos-test-{}-{}-{}",
-            tag,
-            std::process::id(),
-            n
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::create_dir(&dir);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-        }
-        dir
+    /// Private scratch dir (0700 — write_private_file's trust rule),
+    /// removed on drop.
+    fn scratch_dir(tag: &str) -> crate::test_support::ScratchDir {
+        crate::test_support::ScratchDir::new(&format!("typos-test-{tag}"))
     }
 
+    /// Store in a private temp dir, removed when the store drops (after
+    /// its final save).
     fn temp_store() -> TypoStore {
-        let path = scratch_dir("store").join("typos.json");
-        let _ = fs::remove_file(&path);
+        let scratch = scratch_dir("store");
         TypoStore {
             inner: RwLock::new(TypoFile::default()),
-            path,
+            path: scratch.path().join("typos.json"),
             dirty: AtomicBool::new(false),
             max_now: AtomicU64::new(now_secs()),
             last_save: Mutex::new(
@@ -709,6 +702,7 @@ mod tests {
                     .checked_sub(SAVE_DEBOUNCE)
                     .unwrap_or_else(Instant::now),
             ),
+            scratch: Some(scratch),
         }
     }
 
@@ -979,7 +973,7 @@ mod tests {
     fn corrupt_store_backs_up_and_salvages_intact_aliases() {
         // Audit P2: one wrong-typed entry must not wipe the whole file.
         let dir = scratch_dir("salvage");
-        let path = dir.join("typos.json");
+        let path = dir.path().join("typos.json");
         fs::write(
             &path,
             r#"{"version":1,"aliases":{"good":{"id":"app:a.desktop","count":2,"last":0},"bad":{"id":"","count":"nope"}}}"#,
@@ -992,17 +986,15 @@ mod tests {
             path.with_extension("json.invalid").exists(),
             "corrupt store must be copied aside"
         );
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn truncated_store_backs_up_to_empty() {
         let dir = scratch_dir("salvage-trunc");
-        let path = dir.join("typos.json");
+        let path = dir.path().join("typos.json");
         fs::write(&path, r#"{"version":1,"aliases":{"a":"#).unwrap();
         let f = load_typo_file(&path);
         assert!(f.aliases.is_empty());
         assert!(path.with_extension("json.invalid").exists());
-        let _ = fs::remove_dir_all(&dir);
     }
 }

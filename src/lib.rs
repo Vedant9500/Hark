@@ -14,5 +14,8 @@ pub mod typos;
 pub mod ui;
 pub mod usage;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 #[cfg(feature = "bench")]
 pub mod bench;
