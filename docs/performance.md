@@ -258,6 +258,25 @@ independent from-scratch re-run: 2.22 ms p50). Everything else — cold start,
 with argv and exit code preserved.
 Raw (local, gitignored): `bench/cold-start-w4-2026-10-17.md`.
 
+### Ghost warm-up (W3, 2026-10-17)
+
+`hark --daemon` now maps the window invisibly (opacity 0, layer-shell
+`KeyboardMode::None`) ~2 s after boot and unmaps it after 350 ms, pre-paying
+renderer init + the first frame off-press. The first real press then behaves
+like a warm show; a press during the 350 ms warm promotes the mapped window in
+place. Lab (instrumented build, headless Sway, private XDG/D-Bus):
+
+| Stage | Measured | Notes |
+|---|---:|---|
+| Ghost warm (invisible) | present 157 ms · frame 233 ms | paid at idle; `grim` before/during/after identical (0 px) |
+| **First press after warm** | present **0 ms** · press→frame **8 ms** | vs cold 153 ms / 230 ms with `HARK_NO_GHOST=1` |
+| Press during warm (promote) | **4 ms** daemon-side | settle timer cancelled; never unmaps a shown window |
+
+Kill switch: `ui.ghost_warmup: false` in config, or `HARK_NO_GHOST=1` (any
+value except `0`/`false`) — restores the pre-W3 path. Non-layer-shell sessions
+(X11) skip the warm-up. Raw (local, gitignored):
+`bench/cold-start-w3-2026-10-17.md`.
+
 ### Socket hygiene (W2, 2026-10-17)
 
 `hark --help` used to toggle a resident daemon, and a help run could leave a
@@ -295,6 +314,9 @@ Derived budgets:
   ≈ **~280 ms to visible**; cold disk cache adds ~35 ms of index walk.
   `request_toggle` fast-paths missing sockets (no retry sleep), so the cold
   path pays no IPC penalty.
+- **First press after a daemon boot**: used to pay that same ~240 ms first
+  render; the ghost warm-up (W3) now pre-pays it ~2 s after boot, so the lab
+  press costs ≈ **8 ms to first frame**.
 
 If toggle ever feels slow, suspect client exec (binary page-in under memory
 pressure) before the daemon — IPC itself is 30 µs, and re-show render is

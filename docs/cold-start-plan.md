@@ -1,6 +1,6 @@
 # Hark — cold-start optimization plan
 
-**Status:** M2 done (W2 + W1/W6 + W4, 2026-10-17) — next: M3 (W3) · **Created:** 2026-10-17
+**Status:** M3 lab-measured (W3, 2026-10-17) — Hyprland spot-check pending; next: M4 (W5, optional) · **Created:** 2026-10-17
 **Source of numbers:** verified cold-start analysis (5 passes, each independently re-measured; see §8).
 **Related:** [performance.md](./performance.md) (§ Cold start) · [OPTIMIZATION.md](./OPTIMIZATION.md) · [bench/](./bench/)
 
@@ -179,6 +179,17 @@ For every bug fix in W1/W2: write the regression test, then **temporarily revert
 - Promote path ≤ ~30 ms, keyboard works immediately (typed query lands in the search field).
 - `HARK_NO_GHOST=1` fully disables; `cargo test --all-features` + layer-shell lab pass.
 
+**Measured (2026-10-17, lab `run-w3.sh`, instrumented build; independent pass pending):**
+
+- Ghost warm (invisible): present **157 ms** · first frame **233 ms** after warm start — paid off-press, mapped ~2.07 s after daemon start, unmapped at +350 ms.
+- First press after settle: present **0 ms** · press→frame **8 ms** (client stub 2.5 ms → ≈11 ms lab end-to-end). Cold without the ghost: present 153 ms · frame 230 ms.
+- Press during warm: promote **4 ms** daemon-side; settle timer cancelled — never unmaps a shown window.
+- Race press-before-warm: the warm due is a no-op while shown (0 warm starts); later hide/show returns to warm levels (0 ms / 7 ms).
+- Flash: `grim` before == during == after — **0 changed px** (1280×720 headless sway).
+- Kill switch: `HARK_NO_GHOST=1` → zero `ui/warm: start` lines; first press takes the pre-W3 path.
+- Revert-proofs (3.3): breaking `Warming+Press → Promote` or the `WarmElapsed`-after-promote guard fails 3 machine tests (recorded 2026-10-17).
+- Raw (local, gitignored): `bench/cold-start-w3-2026-10-17.md`.
+
 ### W4 — Tiny GTK-free hotkey client
 
 **Goal:** every press becomes a ~3–4 ms stub instead of a 22–23 ms GTK-linked exec (114 libs, 53.7k relocs).
@@ -342,23 +353,24 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 
 | Area | Location | What |
 |---|---|---|
-| Help gate | `src/main.rs:30` | `--help` detection (`help_flag_present`, W2) |
-| IPC fast path | `src/main.rs:84` | `should_offer_ipc` gate + `request_toggle` before GTK |
-| Listener spawn | `src/main.rs:133–169` | socket creation + `SocketGuard` held (W2) |
-| Signal cleanup | `src/main.rs:176–193` | removes socket on SIGTERM/SIGINT |
-| `run_with_args` | `src/main.rs:195` | GTK parses `--help` and exits here |
+| Help gate | `src/main.rs:35` | `--help` detection (`help_flag_present`, W2) |
+| IPC fast path | `src/main.rs:89` | `should_offer_ipc` gate + `request_toggle` before GTK |
+| Listener spawn | `src/main.rs:153–190` | socket creation + `SocketGuard` held (W2) |
+| Signal cleanup | `src/main.rs:196–213` | removes socket on SIGTERM/SIGINT |
+| `run_with_args` | `src/main.rs:215` | GTK parses `--help` and exits here |
+| Ghost warm-up (W3) | `src/ui/mod.rs:126` (`next`) · `:1580` (`warm_up`) · `:1628` (`promote`); trigger `src/main.rs:16`, `:127–141` | vis machine, idle warm, promote |
 | `request_toggle` | `src/ipc.rs:40–113` | retry budget: 2 attempts / 10 ms (W2) |
 | Listener / bind | `src/ipc.rs:115–260`, `:267` | `SocketGuard` (`:127`) + sync bind + stale reclaim (W2) |
 | Hotkey stub | `src/bin/hark-hotkey.rs`; `tests/hotkey_stub.rs` | GTK-free client + exec fallback (W4) |
-| Toggle / show / hide | `src/ui/mod.rs:1398–1478`, `:1480+` | state machine seams (W3); `grab_focus` `:1471`, center `:1472` |
-| Keyboard mode | `src/ui/mod.rs:3546`; `src/ui/dnd.rs:253` | Exclusive at construct (W3 deferral) |
-| Settings eager build | `src/ui/settings.rs:271–295`; call `src/ui/mod.rs:371` | 10–12 ms at construct (future option) |
+| Toggle / show / hide | `src/ui/mod.rs:1553–1789`, `dismiss` `:1791` | `toggle`/`show`/`hide`/`warm_up`/`promote`; Real shows `grab_focus`, warm skips it (W3) |
+| Keyboard mode | `src/ui/mod.rs:3803–3809` (construct `None`) · `:3831–3862` (helpers); `src/ui/dnd.rs:253` | Exclusive at real show/promote (W3 deferral) |
+| Settings eager build | `src/ui/settings.rs:271–295`; call `src/ui/mod.rs:502` | 10–12 ms at construct (future option) |
 | Tick | `src/engine.rs:127–142` | 45 min periodic refresh (W1) |
 | TTL / freshness | `src/providers/files/index.rs:21`, `:117–165`, `:894` | TTL decision + ensure_fresh (W1) |
 | Fingerprint | `src/providers/files/index.rs:215–254`, `:248` | config-only, includes `CACHE_VERSION` (v9, `:25`) |
 | Cache write | `src/providers/files/index.rs:945` | fsync ~9 µs |
-| Profile | `Cargo.toml:56–61` | `opt-level = "s"` (W5) |
-| Install | `scripts/install.sh:99`; `packaging/aur/PKGBUILD:42`; `Cargo.toml:75–79` | binary install paths (W4) |
+| Profile | `Cargo.toml:62–67` | `opt-level = "s"` (W5) |
+| Install | `scripts/install.sh:100`; `packaging/aur/PKGBUILD:43`; `Cargo.toml:81–87` | binary install paths (W4) |
 | Docs (W6) | `docs/performance.md` · `docs/OPTIMIZATION.md` | v6→v9, opt-level `"s"`, TTL semantics — fixed 2026-10-17 |
 
 ## Appendix B — Acceptance summary & outcome log
@@ -368,7 +380,7 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 | W1 | comments/docs truthful; decision recorded | ☑ 2026-10-17 |
 | W2 | help no toggle; no leftover socket; stale press ≤10 ms; tests + revert-proof | ☑ 2026-10-17 |
 | W4 | stub ldd has no GTK; ≤5 ms press; fallback exec; packaging updated | ☑ 2026-10-17 |
-| W3 | first press ≤65 ms; no flash; no focus steal; promote ≤30 ms; kill switch | ☐ |
+| W3 | first press ≤65 ms; no flash; no focus steal; promote ≤30 ms; kill switch | ☑ lab 2026-10-17 (present 0 ms · frame 8 ms; promote 4 ms; flash 0 px) · ☐ Hyprland spot-check |
 
 | Date | Milestone | Result (measured) | Evidence |
 |---|---|---|---|
@@ -376,3 +388,4 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 | 2026-10-17 | M0 baseline (post-W2) | warm press p50 28.1 ms (30 runs) · stale overhead 0.1 ms · daemon socket-ready 37.1 ms · help socket absent 3/3 | `bench/cold-start-2026-10-17.md` (local) |
 | 2026-10-17 | W1 + W6 | engine/index comments truthful; `performance.md` v9/opt-level/TTL rows; `OPTIMIZATION.md` E + notes; decision (a) recorded | this doc · `docs/performance.md` |
 | 2026-10-17 | M2: W4 | `hark-hotkey` stub: press p50 **2.7 ms** vs `hark` 27.8 ms (30 runs each; independent pass 2.22 vs 28.9); NEEDED = libc+libgcc only; packaging + tests + docs updated | `bench/cold-start-w4-2026-10-17.md` (local) |
+| 2026-10-17 | M3: W3 | ghost warm present 157 ms off-press; first press **0 ms present · 8 ms to frame** (cold without ghost 153/230); promote **4 ms**; grim before=during=after 0 px; `HARK_NO_GHOST=1` → 0 warm starts | `bench/cold-start-w3-2026-10-17.md` (local) |

@@ -39,6 +39,7 @@ Store batch notes under [`bench/`](./bench/) — do **not** paste full tables ba
 | **Core hygiene** | Config dirty-save, usage debounce/cap, IPC, excludes, headless CLI |
 | **Hot-path free-text** | Usage hot set; skip full scan when strong + len≥4; short queries = baseline |
 | **Cold-start W4** | `hark-hotkey` GTK-free stub: 2.7 ms press p50 (same-harness `hark` 27.8 ms); execs `hark` for flags/cold start |
+| **Cold-start W3** | Ghost warm-up: invisible warm window ~2 s after daemon boot; first press 0 ms present / 8 ms to frame (cold 153/230); promote 4 ms; kill switch `ui.ghost_warmup` / `HARK_NO_GHOST` |
 
 Narrative + old before/after tables: [archive](./archive/optimization-tracker-2026-07-full.md).  
 Hot-path runs: [`bench/hot-path-*`](./bench/).
@@ -49,7 +50,7 @@ Hot-path runs: [`bench/hot-path-*`](./bench/).
 
 | ID | Item | Notes |
 |----|------|--------|
-| S1 | Cold-start plan (W1–W6) | [`cold-start-plan.md`](./cold-start-plan.md) — ghost warm-up, GTK-free hotkey client, socket hygiene |
+| S1 | Cold-start plan (W1–W6) | [`cold-start-plan.md`](./cold-start-plan.md) — W1–W4 landed; remaining: W5 experiments (optional) |
 | H2 | Bench `file_hot` / `file_cold` | Prove hot short-circuit with seeded usage |
 | U1 | UI result row pool | Largest remaining *feel* win (ListBox rebuild) |
 | P1 | Don’t hold index lock during live deep walk | Provider concurrency |
