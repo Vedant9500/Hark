@@ -27,11 +27,8 @@ fn main() {
     // `--help` must still advertise them instead of listing GTK only.
     // Skipped for `--search` invocations: a help-looking query operand is
     // consumed as the query by design (see tension table).
-    if !args.iter().any(|a| a == "--search")
-        && args
-            .iter()
-            .any(|a| a == "--help" || a == "-h" || a == "--help-all")
-    {
+    let help_requested = !args.iter().any(|a| a == "--search") && help_flag_present(&args);
+    if help_requested {
         print!("{HARK_HELP}");
     }
 
@@ -81,8 +78,10 @@ fn main() {
         return;
     }
 
-    // Hotkey path: no GTK startup if daemon is already running.
-    if !daemon && ipc::request_toggle() {
+    // Hotkey path: no GTK startup if daemon is already running. Explicit
+    // invocations never toggle: with a live daemon, `hark --help` used to
+    // deliver a toggle before GTK printed its own help.
+    if !daemon && should_offer_ipc(&args) && ipc::request_toggle() {
         return;
     }
 
@@ -126,7 +125,14 @@ fn main() {
     }
 
     // IPC from lightweight `hark` invocations → main loop toggle.
-    {
+    //
+    // Skipped for `--help`: GTK consumes the flag inside `run_with_args` and
+    // exits without unwinding, so a listener created here could never clean
+    // its socket up — the next press would pay the stale-socket cost. Normal
+    // returns from the main loop drop the guard and take the socket with them.
+    let _socket_guard = if help_requested {
+        None
+    } else {
         let state = state.clone();
         let pending_toggle = pending_toggle.clone();
         let app_weak = app_weak.clone();
@@ -136,7 +142,7 @@ fn main() {
         // A dropped send means a toggle is already pending — exactly the
         // coalescing semantics we want.
         let (tx, rx) = async_channel::bounded::<()>(1);
-        ipc::spawn_listener(move || {
+        let guard = ipc::spawn_listener(move || {
             let _ = tx.try_send(());
         });
         glib::spawn_future_local(async move {
@@ -159,7 +165,8 @@ fn main() {
                 }
             }
         });
-    }
+        guard
+    };
 
     // Graceful SIGTERM/SIGINT (audit P2 lifecycle): flush learned state,
     // stop the refresh thread, and remove the socket so the next start
@@ -247,6 +254,27 @@ fn run_search_once(query: &str) {
             );
         }
     }
+}
+
+/// The help flags GTK consumes itself inside `run_with_args` (it prints and
+/// exits right there, without unwinding). Both the hark option summary and the
+/// IPC listener are gated on these so help stays side-effect free.
+/// `--help-gapplication` is advertised in GTK's own help output, so it gets
+/// the same treatment as the rest.
+fn help_flag_present(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| a == "--help" || a == "-h" || a == "--help-all" || a == "--help-gapplication")
+}
+
+/// True when this invocation may hand the press to a resident daemon over
+/// IPC: a plain `hark` press toggles, nothing else does. Help must stay
+/// side-effect free, `--search` runs headless, and `update` rebuilds — none
+/// of those may touch a live daemon. (`--daemon` is excluded at the call
+/// site: it wants to *be* the resident instance.)
+fn should_offer_ipc(args: &[String]) -> bool {
+    !help_flag_present(args)
+        && !args.iter().any(|a| a == "--search")
+        && update_invocation(args).is_none()
 }
 
 /// Recognize the update invocation: `hark update` (subcommand, first arg
@@ -421,5 +449,39 @@ mod tests {
         for flag in ["--daemon", "--search", "--bench", "update"] {
             assert!(HARK_HELP.contains(flag), "help section missing {flag}");
         }
+    }
+
+    #[test]
+    fn help_invocations_never_offer_ipc() {
+        // GTK prints help and exits without unwinding for all of these; none
+        // may toggle a live daemon first (or bind a socket it cannot clean).
+        for flag in ["--help", "-h", "--help-all", "--help-gapplication"] {
+            assert!(
+                !should_offer_ipc(&argv(&["hark", flag])),
+                "{flag} must not offer the IPC toggle path"
+            );
+        }
+    }
+
+    #[test]
+    fn search_and_update_never_offer_ipc() {
+        assert!(!should_offer_ipc(&argv(&["hark", "--search", "foo"])));
+        // A help-looking query operand is a query, not help — and still no IPC.
+        assert!(!should_offer_ipc(&argv(&["hark", "--search", "--help"])));
+        assert!(!should_offer_ipc(&argv(&["hark", "update"])));
+        assert!(!should_offer_ipc(&argv(&[
+            "hark",
+            "update",
+            "--no-restart"
+        ])));
+        assert!(!should_offer_ipc(&argv(&["hark", "--update"])));
+    }
+
+    #[test]
+    fn plain_press_offers_ipc() {
+        assert!(should_offer_ipc(&argv(&["hark"])));
+        // Unknown/GTK flags still take the fast toggle path; `--daemon` is
+        // gated separately at the call site.
+        assert!(should_offer_ipc(&argv(&["hark", "--name", "hark2"])));
     }
 }

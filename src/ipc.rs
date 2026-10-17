@@ -19,58 +19,85 @@ pub fn socket_path() -> PathBuf {
         .join("hark.sock")
 }
 
+/// Connect attempts for one toggle press. A leftover socket file (daemon
+/// died) refuses connects instantly, and a genuine "fresh daemon rebinding"
+/// race takes ~200 ms (GTK boot) — beyond any client-side budget — so more
+/// than one retry cannot help a real press.
+const RETRY_ATTEMPTS: usize = 2;
+
+/// Sleep between connect attempts. Worst-case stale-socket cost for a press:
+/// one sleep (see [`retry_delay`]).
+const RETRY_SLEEP: Duration = Duration::from_millis(10);
+
+/// Sleep after connect attempt `attempt` (0-based) iff another attempt
+/// remains: at most one [`RETRY_SLEEP`] per press. Pure so tests can pin the
+/// worst-case budget without wall-clock sleeps.
+fn retry_delay(attempt: usize) -> Option<Duration> {
+    (attempt + 1 < RETRY_ATTEMPTS).then_some(RETRY_SLEEP)
+}
+
 /// Fast path for hotkey: tell the daemon to toggle. Returns true if delivered.
 pub fn request_toggle() -> bool {
-    let path = socket_path();
-    // No daemon socket at all → nothing to toggle. Skipping the retry loop
-    // saves ~100ms of cold-start time (5 × 20ms sleeps) when the connect
-    // failure is instant ENOENT. The retries below only matter for the
-    // stale-socket race (daemon died, fresh daemon rebinding), which still
-    // runs because `exists()` is true for a leftover socket file.
+    request_toggle_at(&socket_path())
+}
+
+/// [`request_toggle`] against an explicit socket path (test seam).
+fn request_toggle_at(path: &std::path::Path) -> bool {
+    // No daemon socket at all → nothing to toggle. Skipping the tiny retry
+    // budget saves its cost when the connect failure is instant ENOENT.
     if !path.exists() {
         return false;
     }
-    for _ in 0..5 {
-        match UnixStream::connect(&path) {
+    for attempt in 0..RETRY_ATTEMPTS {
+        match UnixStream::connect(path) {
             Ok(mut stream) => {
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-                if stream.write_all(b"toggle\n").is_err() {
-                    thread::sleep(Duration::from_millis(20));
-                    continue;
-                }
-                // Optional ack from healthy daemons; older daemons may close without
-                // reply. Everything past a successful write counts as delivered —
-                // the listener answers "ok\n" or nothing. An unexpected payload must
-                // NOT fall through to a rewrite: a second "toggle" would immediately
-                // undo the first. A missing/mismatched ack is logged (audit P3)
-                // so a listener that died between write and dispatch is visible
-                // instead of a silently swallowed keypress — but the write
-                // still counts as delivered for old-daemon compatibility.
-                let mut buf = [0u8; 8];
-                let mut pos = 0;
-                while pos < buf.len() {
-                    match stream.read(&mut buf[pos..]) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            pos += n;
-                            if buf[..pos].contains(&b'\n') {
-                                break;
+                if stream.write_all(b"toggle\n").is_ok() {
+                    // Optional ack from healthy daemons; older daemons may close without
+                    // reply. Everything past a successful write counts as delivered —
+                    // the listener answers "ok\n" or nothing. An unexpected payload must
+                    // NOT fall through to a rewrite: a second "toggle" would immediately
+                    // undo the first. A missing/mismatched ack is logged (audit P3)
+                    // so a listener that died between write and dispatch is visible
+                    // instead of a silently swallowed keypress — but the write
+                    // still counts as delivered for old-daemon compatibility.
+                    let mut buf = [0u8; 8];
+                    let mut pos = 0;
+                    while pos < buf.len() {
+                        match stream.read(&mut buf[pos..]) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                pos += n;
+                                if buf[..pos].contains(&b'\n') {
+                                    break;
+                                }
                             }
+                            Err(_) => break,
                         }
-                        Err(_) => break,
                     }
+                    if std::str::from_utf8(&buf[..pos]).unwrap_or("").trim() == "ok" {
+                        // Confirmed delivery.
+                    } else {
+                        eprintln!("hark: ipc: toggle written but not acked");
+                    }
+                    return true;
                 }
-                if std::str::from_utf8(&buf[..pos]).unwrap_or("").trim() == "ok" {
-                    // Confirmed delivery.
-                } else {
-                    eprintln!("hark: ipc: toggle written but not acked");
+                // Write failed on a connected socket (peer closed between
+                // connect and write): fall through to the retry budget.
+            }
+            Err(e) => {
+                // ConnectionRefused means the socket file exists with no
+                // listener behind it — a stale leftover. A retry cannot
+                // revive it (a fresh daemon needs GTK boot, ~200 ms, before
+                // it binds), so fail fast instead of sleeping.
+                if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                    return false;
                 }
-                return true;
             }
-            Err(_) => {
-                thread::sleep(Duration::from_millis(20));
-            }
+        }
+        if let Some(delay) = retry_delay(attempt) {
+            thread::sleep(delay);
         }
     }
     false
@@ -81,8 +108,30 @@ pub fn request_toggle() -> bool {
 /// a channel (see main.rs). Per-connection reads time out after 2s and ack
 /// writes after 1s, so a silent client cannot park the listener and wedge
 /// later toggles.
-pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) {
-    spawn_listener_at(&socket_path(), on_toggle);
+///
+/// Returns the [`SocketGuard`] that owns the socket file, or `None` when the
+/// listener could not start (unusable socket dir, or a live daemon already
+/// owns the path).
+pub fn spawn_listener(on_toggle: impl Fn() + Send + 'static + Clone) -> Option<SocketGuard> {
+    spawn_listener_at(&socket_path(), on_toggle)
+}
+
+/// Removes the IPC socket when dropped. `main` holds the guard for the whole
+/// process lifetime, so exits that unwind through `main` (`app.quit()`,
+/// `run_with_args` returning) take the socket with them; a window close only
+/// hides the launcher and deliberately keeps serving. GTK fatal exits
+/// (`exit(1)` — e.g. no display) and SIGKILL bypass Drop, but the daemon-side
+/// reclaim in [`bind_socket`] covers those leftovers. Unlink is by path and
+/// idempotent: a file already removed (signal handler, reclaimed socket) is a
+/// silent no-op.
+pub struct SocketGuard {
+    path: PathBuf,
+}
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// True when `dir` sits under shared scratch space (`/tmp`, `/var/tmp`).
@@ -94,8 +143,13 @@ fn is_shared_space(dir: &std::path::Path) -> bool {
 }
 
 /// Bind `path` and serve toggles. Split from [`spawn_listener`] so tests can
-/// exercise the accept/handler logic on a scratch socket.
-pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + 'static + Clone) {
+/// exercise the accept/handler logic on a scratch socket. The bind happens
+/// synchronously (before the accept thread spawns), so callers hold the
+/// [`SocketGuard`] — or get `None` — before any toggle can arrive.
+pub fn spawn_listener_at(
+    path: &std::path::Path,
+    on_toggle: impl Fn() + Send + 'static + Clone,
+) -> Option<SocketGuard> {
     // Ensure the socket directory exists and is user-private. XDG_RUNTIME_DIR
     // is already 0700 by spec; the cache-dir fallback needs to be created and
     // locked down here. Failures are logged, not silent (audit P3): a
@@ -106,7 +160,7 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
                 "hark: ipc: cannot create socket dir {}: {e}",
                 parent.display()
             );
-            return;
+            return None;
         }
         #[cfg(unix)]
         {
@@ -116,7 +170,7 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
                     "hark: ipc: cannot lock down socket dir {}",
                     parent.display()
                 );
-                return;
+                return None;
             }
             // Same ownership gate as the private stores (audit P3): refuse to
             // serve from a shared-space dir we do not own — a pre-planted
@@ -126,7 +180,7 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
                     "hark: ipc: refusing untrusted socket dir {}",
                     parent.display()
                 );
-                return;
+                return None;
             }
         }
     }
@@ -135,7 +189,7 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
         Some(l) => l,
         None => {
             eprintln!("hark: ipc bind failed for {}", path.display());
-            return;
+            return None;
         }
     };
 
@@ -198,6 +252,10 @@ pub fn spawn_listener_at(path: &std::path::Path, on_toggle: impl Fn() + Send + '
             });
         }
     });
+
+    Some(SocketGuard {
+        path: path.to_path_buf(),
+    })
 }
 
 /// Bind the IPC socket. If the path exists but is stale (no live peer), remove
@@ -394,7 +452,8 @@ mod ipc_tests {
 
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_c = hits.clone();
-        spawn_listener_at(&path, move || {
+        // The guard must be kept: dropping it unlinks the scratch socket.
+        let _guard = spawn_listener_at(&path, move || {
             hits_c.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -451,7 +510,8 @@ mod ipc_tests {
 
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_c = hits.clone();
-        spawn_listener_at(&path, move || {
+        // The guard must be kept: dropping it unlinks the scratch socket.
+        let _guard = spawn_listener_at(&path, move || {
             hits_c.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -478,6 +538,139 @@ mod ipc_tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(fired, "split toggle never dispatched");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard owns the socket file: dropping it unlinks the path, and a
+    /// second drop for the same (already removed) path is a silent no-op.
+    #[test]
+    fn socket_guard_drop_removes_file_and_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hark.sock");
+        std::fs::write(&path, b"").unwrap();
+
+        let guard = SocketGuard { path: path.clone() };
+        assert!(path.exists(), "guard should own an existing socket file");
+        drop(guard);
+        assert!(!path.exists(), "guard drop must remove the socket");
+
+        // An unlink that races another remover (signal handler, reclaimed
+        // socket) must not fail loudly — the second guard drops harmlessly.
+        let guard = SocketGuard { path: path.clone() };
+        drop(guard);
+        assert!(!path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The retry budget is pure data: one retry slot, one ≤10 ms sleep, and
+    /// nothing after the last attempt. Pinned here so a regression back to the
+    /// old 5 × 20 ms loop fails without any wall-clock sleeps in the test.
+    #[test]
+    fn retry_schedule_is_one_short_sleep_at_most() {
+        let delays: Vec<Duration> = (0..RETRY_ATTEMPTS).filter_map(retry_delay).collect();
+        assert_eq!(delays, vec![RETRY_SLEEP], "exactly one retry sleep");
+        assert!(
+            RETRY_SLEEP <= Duration::from_millis(10),
+            "stale-socket worst case must stay ≤10ms, got {RETRY_SLEEP:?}"
+        );
+        assert_eq!(retry_delay(RETRY_ATTEMPTS), None);
+        assert_eq!(retry_delay(RETRY_ATTEMPTS + 7), None);
+    }
+
+    /// A stale socket file (no listener behind it) must cost a press only the
+    /// fast ECONNREFUSED path — not the old 5 × 20 ms retry loop. Needs
+    /// AF_UNIX bind.
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn stale_socket_press_fails_fast() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-stale-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hark.sock");
+        let listener = UnixListener::bind(&path).expect("bind");
+        drop(listener); // file stays behind with no live peer
+        assert!(path.exists());
+
+        let t0 = std::time::Instant::now();
+        let delivered = request_toggle_at(&path);
+        let elapsed = t0.elapsed();
+
+        assert!(!delivered, "no listener — nothing can be delivered");
+        assert!(
+            elapsed < Duration::from_millis(60),
+            "stale press took {elapsed:?}; old loop burned ~100 ms, budget is ≤10 ms"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The listener guard is bound synchronously and unlinks the socket when
+    /// dropped — the RAII exit path for `main` (which holds it for the whole
+    /// process lifetime). Needs AF_UNIX bind.
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn listener_guard_removes_socket_on_drop() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hark.sock");
+
+        let guard = spawn_listener_at(&path, || {}).expect("clean path must bind");
+        assert!(path.exists(), "socket must exist while the guard is held");
+        drop(guard);
+        assert!(!path.exists(), "socket must be removed with the guard");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live daemon's socket must never be reclaimed — and therefore never
+    /// unlinked by a guard handed to a second listener. Needs AF_UNIX bind.
+    #[test]
+    #[ignore = "unix socket bind"]
+    fn spawn_listener_at_leaves_live_socket_alone() {
+        let dir = std::env::temp_dir().join(format!(
+            "hark-ipc-live-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hark.sock");
+
+        let live = UnixListener::bind(&path).expect("bind live socket");
+        assert!(
+            spawn_listener_at(&path, || {}).is_none(),
+            "second listener must not take over a live socket"
+        );
+        assert!(
+            UnixStream::connect(&path).is_ok(),
+            "live socket must keep serving"
+        );
+        drop(live);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
