@@ -6,6 +6,7 @@
 |-----|------|
 | **[performance.md](./performance.md)** | Latency, index depth, cache, binary, how to bench |
 | **[OPTIMIZATION.md](./OPTIMIZATION.md)** | Short tracker (done / open / measure) |
+| **[cold-start-plan.md](./cold-start-plan.md)** | Systematic plan: first-press latency, ghost warm-up, GTK-free hotkey client |
 | **[TRANSLATE.md](./TRANSLATE.md)** | Translate provider: usage, languages, aliases, backends |
 | **[ACTION-PANEL-AUDIT.md](./ACTION-PANEL-AUDIT.md)** | Raycast-style actions panel research + implementation tracker |
 | **[RELEASING.md](./RELEASING.md)** | Release + AUR publishing roadmap (codebase hygiene → AUR submit) |

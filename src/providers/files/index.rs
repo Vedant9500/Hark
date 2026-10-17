@@ -12,7 +12,12 @@ use walkdir::WalkDir;
 
 /// Hard cap on indexed entries (walk stops when reached).
 pub const MAX_INDEX: usize = 100_000;
-/// Re-walk roots at most this often when fingerprint is unchanged.
+/// Content-freshness bound: a cache older than this is re-walked even when
+/// the config fingerprint matches (the fingerprint covers config only, never
+/// file content — see `compute_fingerprint`). Deliberately shorter than the
+/// daemon's 45 min periodic tick (`engine.rs`) so each tick re-discovers
+/// new/removed files; that walk is the discovery mechanism (W1 decision,
+/// docs/cold-start-plan.md).
 pub const INDEX_TTL_SECS: u64 = 30 * 60;
 /// Bump when on-disk cache layout changes (v9: fixed round-robin
 /// root/walker desync that truncated regular roots after the first

@@ -1,6 +1,6 @@
 # Hark — performance reference
 
-**Last updated:** 2026-09-18  
+**Last updated:** 2026-10-17  
 **Machine (reference):** Linux / Hyprland · 16 CPUs · ~15 GB RAM  
 **Tracker:** [`OPTIMIZATION.md`](./OPTIMIZATION.md)  
 **Depth study (raw):** [`depth-index-benchmark.json`](./depth-index-benchmark.json)  
@@ -26,9 +26,9 @@ Order-of-magnitude; re-run `--bench` on your machine after big changes.
 | Long free-text (11–12 chars) | **~1–2 ms** | Skim fuzzy; hot set cold on this box |
 | Define owned / web forced | **~0–1 µs** | pending-row / pure construction |
 | Strong hot free-text (len≥4) | **≪ full** | skips full index when usage hot hits |
-| Index items (depth 2) | **~5.7k** | home + mounts + 17 deep pins; varies |
+| Index items (depth 2) | **~9.1k** | home + mounts + 17 deep pins; varies (was ~5.7k on 09-18) |
 | Index rebuild | **~43 ms warm** | blocking bench rebuild; cold NTFS reads spike (287 ms seen once) |
-| Cache on disk (v6) | **~526 KB** | ~5.7k items |
+| Cache on disk (v9) | **~815 KB** | ~9.1k items (measured 2026-10-17) |
 | Binary (layer-shell + bench) | **~7.8 MB** | stripped + LTO; daemon build without `bench` is smaller |
 | Daemon RSS idle | **~60–65 MB** | GTK-dominated (unchanged; not re-measured) |
 | GPU | **~0%** | no CUDA path |
@@ -61,7 +61,7 @@ Raw log (local, gitignored): [`bench/run-2026-09-18.txt`](./bench/).
 | iso_calc | ~2 µs | **~3 µs** | flat |
 | Index items (depth 2) | 1,798 | **5,710** | 17 deep-root pins + `/mnt/data` mount since July (was home + windows_d) |
 | Index rebuild | ~15 ms | **~43 ms** (one cold-FS outlier 287 ms) | ~linear in items; NTFS cold reads dominate the outlier |
-| Cache on disk (v6) | ~114 KB | **~526 KB** | 4.6× bytes / 3.18× items → ~94 B/item (longer deep paths) |
+| Cache on disk (v9 format) | ~114 KB | **~526 KB** | 4.6× bytes / 3.18× items → ~94 B/item (longer deep paths); the index later grew to ~9.1k items → ~815 KB |
 | Binary (layer-shell + bench) | ~6.4–6.7 MB | **~7.77 MB** | +~1.2 MB: web/define/translate providers, calc cards, action panel, previews. Daemon build (no `bench`) is smaller |
 | Warm | ~53 ms | ~50 ms | flat (cache hit) |
 | Bench RSS | — | ~27 → ~37.5 MB peak, 2 threads | first recording; no 07 baseline |
@@ -186,7 +186,7 @@ Update the JSON + table when roots or machine change.
 4. App haystack / name_lower  
 5. Merged policy: apps hit → files name-only  
 6. Index fingerprint + TTL  
-7. Compact cache v6  
+7. Compact cache (v6 shape → v9 today)  
 8. Hot set free-text (long strong names only)  
 
 ---
@@ -197,18 +197,22 @@ Update the JSON + table when roots or machine change.
 |------|--------|
 | Path | `~/.cache/hark/file-index.json` |
 | Meta | `file-index.meta` → `version ts fingerprint` |
-| Version | **6** |
-| Schema | `{ "version", "fingerprint", "items": [ { "p", "d", "n" } ] }` |
+| Version | **9** |
+| Schema | `{ "version", "fingerprint", "items": [ { "p", "d", "n", "m" } ] }` |
 | Cap | 100_000 |
-| TTL | 30 min (if fingerprint matches) |
+| TTL | 30 min — content re-walk bound; the fingerprint is config-only, so it cannot extend freshness |
+| Daemon refresh | 45 min tick → full metadata walk (~43–51 ms at ~6.9k items; W1 decision) |
 
-### Cache size evolution (~1.8k items)
+### Cache size evolution (historical formats, ~1.8k items)
 
 | Version | Size | Shape |
 |--------:|-----:|-------|
 | v3–v4 | ~236 KB | fuller JSON |
 | v5 | ~423 KB | path_lower + flags on disk |
 | **v6** | **~114 KB** | path + is_dir + depth only |
+
+Current layout is **v9** (fixed a round-robin root/walker desync); sizes above
+are from the v3–v6 era. The current cache is ~815 KB at ~9.1k items (2026-10-17).
 
 ---
 
@@ -217,7 +221,7 @@ Update the JSON + table when roots or machine change.
 | Metric | Typical |
 |--------|--------:|
 | Release + layer-shell + bench | ~7.8 MB (2026-09-18; was ~6.4–6.7 MB in 07 — web/define/translate, calc cards, action panel, previews) |
-| Profile | LTO, `opt-level=3`, strip, `panic=abort` |
+| Profile | LTO, `opt-level="s"`, strip, `panic=abort` (W5 may test `3`) |
 | Idle daemon RSS | ~60–65 MB |
 | Idle CPU | &lt;1% |
 
@@ -241,6 +245,16 @@ unmeasured — bounded by reasoning, marked ≈.
 | `hark --search` wall, warm cache | ~73 ms | 21 exec + ~7 work + 50 ms poll-quantum artifact in `run_search_once` |
 | Daemon spawn → resident (hidden, warm cache) | **~24 ms** (3/3 runs) | exec + GTK init + `Engine::new` + socket bind; SIGTERM cleanup verified |
 | Warm toggle client (real `hark` binary) | **~21–22 ms** wall | ~all exec; in-process IPC is median **29 µs** / p95 44 µs |
+
+### Socket hygiene (W2, 2026-10-17)
+
+`hark --help` used to toggle a resident daemon, and a help run could leave a
+stale `hark.sock` behind (GTK exits without unwinding), so the next press
+burned 5 × 20 ms connect retries. Now help invocations never touch IPC, a
+`SocketGuard` unlinks the socket on normal exits, and a dead-socket connect
+fails on the first `ECONNREFUSED` with at most one 10 ms retry. Lab (5 runs,
+socket-ready): stale press **126 ms → 27 ms** (target ≤40 ms). Raw runs:
+[`bench/cold-start-2026-10-17.md`](./bench/cold-start-2026-10-17.md).
 
 ### Window: build + first frame (measured in headless Sway + grim)
 
@@ -282,7 +296,7 @@ pressure) before the daemon — IPC itself is 30 µs, and re-show render is
 | max_depth | **2** |
 | Depth clamp | 1–6 |
 | MAX_INDEX | 100_000 |
-| Index TTL | 30 min |
+| Index TTL | 30 min (content re-walk bound; daemon re-walks every 45 min tick) |
 
 ---
 

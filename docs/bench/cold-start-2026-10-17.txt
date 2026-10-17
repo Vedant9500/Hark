@@ -1,0 +1,59 @@
+Hark cold-start baseline — 2026-10-17 (post-W2, pre-W4)
+Lab: private XDG dirs, headless swayfx (wayland-1), private D-Bus; tracked PIDs only.
+Binary: target/release/hark (layer-shell) 7775480 B
+ldd lines: 115 | NEEDED: 12 | R_X86_64 relocs: 48549
+Harness: /tmp/opencode/hark-lab/run-m0.sh (measure.py; wall via monotonic clock)
+
+[A] warm press x30 (daemon resident, hotkey path) — JSON per line
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 48.3, "cpu_user_ms": 30.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26308, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 34.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 28148, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 34.7, "cpu_user_ms": 20.0, "cpu_sys_ms": 0.0, "max_rss_kb": 25084, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 34.8, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26176, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 44.4, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26148, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 35.0, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26356, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 34.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26432, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 35.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 27080, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 41.5, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26668, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 34.7, "cpu_user_ms": 20.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26368, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 29.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26524, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 29.3, "cpu_user_ms": 20.0, "cpu_sys_ms": 0.0, "max_rss_kb": 21396, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 30.0, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26480, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.5, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26056, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 26.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 24132, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.6, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26084, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.8, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26312, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 29.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26428, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 28.3, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 27976, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.6, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26296, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.5, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 19484, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 27112, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 25.8, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26308, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 29076, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26472, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26376, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 26.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 21236, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 25.8, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 26400, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.4, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 21600, "max_threads": 1, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 0, "wall_ms": 27.6, "cpu_user_ms": 10.0, "cpu_sys_ms": 0.0, "max_rss_kb": 26340, "max_threads": 1, "socket_ready_ms": null}
+
+[B] stale socket, no display x5 (stale file present, connect refused)
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.9, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 34812, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.9, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35204, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.8, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35928, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 31.4, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 36892, "max_threads": 9, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35700, "max_threads": 8, "socket_ready_ms": null}
+
+[C] no socket, no display x5 (ENOENT reference for retry overhead)
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 32.6, "cpu_user_ms": 10.0, "cpu_sys_ms": 20.0, "max_rss_kb": 35544, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.8, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35128, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.7, "cpu_user_ms": 10.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35220, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 29.6, "cpu_user_ms": 20.0, "cpu_sys_ms": 0.0, "max_rss_kb": 34380, "max_threads": 8, "socket_ready_ms": null}
+{"cmd": ["/mnt/data/projects/blink/target/release/hark"], "exit": 1, "wall_ms": 32.1, "cpu_user_ms": 20.0, "cpu_sys_ms": 10.0, "max_rss_kb": 35892, "max_threads": 8, "socket_ready_ms": null}
+
+[D] daemon boot -> socket ready (measure.py --watch-socket, killed at 3s deadline)
+{"cmd": ["/mnt/data/projects/blink/target/release/hark", "--daemon"], "exit": null, "wall_ms": 3001.8, "cpu_user_ms": 70.0, "cpu_sys_ms": 30.0, "max_rss_kb": 67060, "max_threads": 9, "socket_ready_ms": 37.1}
+
+[E] hark --help socket-after x3 (fresh state per run)
+run1: socket absent
+run2: socket absent
+run3: socket absent

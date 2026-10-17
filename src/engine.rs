@@ -110,10 +110,18 @@ impl Engine {
 
     /// Long-lived 45m apps reload + files `ensure_fresh` (daemon only).
     ///
+    /// Content cadence (W1 decision, docs/cold-start-plan.md): the tick
+    /// interval (45 min) is longer than `INDEX_TTL_SECS` (30 min), so every
+    /// tick finds the meta TTL expired and `ensure_fresh` runs the full
+    /// metadata walk (~43–51 ms for ~6.9k items on the reference box) — that
+    /// walk *is* how new/removed files are discovered. The config fingerprint
+    /// cannot skip it: it covers roots/depth/excludes only, never content, and
+    /// only spares walks on *earlier* wakes while the TTL is still fresh.
+    /// Accepted as-is (~0.1% duty cycle; new files surface within ≤45 min).
+    ///
     /// Battery note: the thread sleeps in a channel `recv_timeout`, so it only
-    /// wakes the process once per 45 min. `rebuild_index` delegates to
-    /// `ensure_fresh`, which short-circuits when the on-disk fingerprint is
-    /// unchanged, so a quiet daemon costs little beyond that single wake.
+    /// wakes the process once per 45 min, and the walk runs off the UI thread
+    /// (`build_lock` serializes it; the UI only pays the final index swap).
     /// The thread is stoppable via [`Engine::shutdown_periodic_refresh`] (also
     /// called on `Drop`) so in-process `Engine::new()` tests never leak it.
     pub fn spawn_periodic_refresh(&mut self) {
