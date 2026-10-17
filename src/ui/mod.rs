@@ -64,6 +64,129 @@ const DEFINE_DEBOUNCE_MS: u64 = 200;
 const EMPTY_STALE_DELAY_MS: u64 = 140;
 /// Fade-out duration before the layer surface unmaps (app-side close pop).
 const HIDE_FADE_MS: u64 = 110;
+/// W3 ghost warm-up: how long the invisible warm window stays mapped. Covers
+/// renderer init + the first frame (~170 ms measured) with headroom while
+/// staying short enough that a press usually lands on a finished warm.
+const WARM_SETTLE_MS: u64 = 350;
+/// Focus-loss guard after a real show/promote (pre-W3 behavior, shared by the
+/// promote path so a grabbed focus cannot bounce the window hidden).
+const SHOW_FOCUS_GUARD_MS: u64 = 150;
+
+/// Launcher visibility phase (W3 ghost warm-up).
+///
+/// `Hidden` — no mapped surface. `Warming` — mapped at opacity 0 with keyboard
+/// mode `None`, pre-paying the cold show path (present + renderer init + first
+/// frame). `Shown` — the real interactive launcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Vis {
+    Hidden,
+    Warming,
+    Shown,
+}
+
+/// Inputs that drive [`Vis`]. Transitions are pure ([`next`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisEvent {
+    /// Hotkey press / IPC toggle.
+    Press,
+    /// Daemon idle timer requests a ghost warm-up.
+    WarmDue,
+    /// The [`WARM_SETTLE_MS`] window elapsed.
+    WarmElapsed,
+    /// A direct show request (daemon first activate / cold start).
+    Show,
+    /// A direct hide request.
+    Hide,
+}
+
+/// Side effect the driver must run after a transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisAction {
+    None,
+    /// Full interactive show.
+    Show,
+    /// Warm window is still mapped: make it interactive in place.
+    Promote,
+    /// Normal fade + unmap.
+    Hide,
+    /// Map the invisible warm window.
+    StartWarm,
+    /// Unmap the ghost + restore opacity.
+    FinishWarm,
+}
+
+/// Pure visibility transitions — unit-tested without GTK.
+///
+/// Edge cases from the W3 plan that this encodes:
+/// - a press while `Warming` always promotes, never hides;
+/// - a `WarmDue` after the user already showed is a no-op (timer race);
+/// - `WarmElapsed` after a promote is a no-op (the settle timer must not
+///   unmap a window the user is typing in);
+/// - a hide during `Warming` cleans the ghost up via `FinishWarm`.
+fn next(state: Vis, event: VisEvent) -> (Vis, VisAction) {
+    use Vis::*;
+    use VisAction as A;
+    use VisEvent as E;
+    match (state, event) {
+        (Hidden, E::Press) => (Shown, A::Show),
+        (Warming, E::Press) => (Shown, A::Promote),
+        (Shown, E::Press) => (Hidden, A::Hide),
+
+        (Hidden, E::WarmDue) => (Warming, A::StartWarm),
+        (Warming, E::WarmDue) | (Shown, E::WarmDue) => (state, A::None),
+
+        (Warming, E::WarmElapsed) => (Hidden, A::FinishWarm),
+        (Hidden, E::WarmElapsed) | (Shown, E::WarmElapsed) => (state, A::None),
+
+        (Hidden, E::Show) => (Shown, A::Show),
+        (Warming, E::Show) => (Shown, A::Promote),
+        (Shown, E::Show) => (Shown, A::None),
+
+        (Shown, E::Hide) => (Hidden, A::Hide),
+        (Warming, E::Hide) => (Hidden, A::FinishWarm),
+        (Hidden, E::Hide) => (Hidden, A::None),
+    }
+}
+
+/// W3 kill switch precedence: `ui.ghost_warmup` (default true) can be
+/// overridden by `HARK_NO_GHOST`. Any non-empty value except `0`/`false`
+/// disables warm-up; keep it pure so the precedence is testable.
+fn ghost_warmup_allowed(config_enabled: bool, no_ghost_env: Option<&str>) -> bool {
+    let env_disabled = no_ghost_env.is_some_and(|v| {
+        let v = v.trim();
+        !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+    });
+    config_enabled && !env_disabled
+}
+
+/// True only where the ghost makes sense: layer-shell compositors. X11 and
+/// non-layer-shell sessions keep the pre-W3 path.
+fn layer_shell_supported() -> bool {
+    #[cfg(feature = "layer-shell")]
+    {
+        gtk4_layer_shell::is_supported()
+    }
+    #[cfg(not(feature = "layer-shell"))]
+    {
+        false
+    }
+}
+
+/// Config + env + platform gate for [`Launcher::warm_up`].
+fn ghost_warmup_enabled(engine: &Engine) -> bool {
+    if !layer_shell_supported() {
+        return false;
+    }
+    let cfg = engine.config().with(|c| c.ui.ghost_warmup);
+    ghost_warmup_allowed(cfg, std::env::var("HARK_NO_GHOST").ok().as_deref())
+}
+
+/// How a show maps the surface: the invisible ghost pre-pay or a real show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShowKind {
+    Real,
+    Warm,
+}
 
 pub struct Launcher {
     window: ApplicationWindow,
@@ -75,6 +198,9 @@ pub struct Launcher {
     selected: Rc<Cell<usize>>,
     engine: Arc<Engine>,
     ignore_focus_loss: Rc<Cell<bool>>,
+    /// Visibility phase (W3). `Window::is_visible()` cannot distinguish the
+    /// invisible warm ghost from a real show, so toggle reads this instead.
+    vis: Rc<Cell<Vis>>,
     stack: Stack,
     settings: SettingsPanel,
     in_settings: Rc<Cell<bool>>,
@@ -106,6 +232,8 @@ pub struct Launcher {
     empty_delay: Rc<RefCell<Option<glib::SourceId>>>,
     /// Pending fade-out timer for the app-side close pop.
     hide_delay: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Pending ghost warm-up settle timer (cancelled when a press promotes).
+    warm_delay: Rc<RefCell<Option<glib::SourceId>>>,
     /// Pending deferred `preview.clear()` armed by `hide()` (cancelled by `show()`).
     preview_clear: Rc<RefCell<Option<glib::SourceId>>>,
     /// Compact↔expanded resize tween (app-side; compositor anims are off).
@@ -282,6 +410,9 @@ impl Launcher {
 
         // Shared with rows + preview so focus-loss hide is suppressed mid-drag.
         let ignore_focus_loss = Rc::new(Cell::new(false));
+        // W3 visibility phase; the is-active and `visible` notify handlers
+        // below keep it truthful against unmaps that bypass `hide()`.
+        let vis: Rc<Cell<Vis>> = Rc::new(Cell::new(Vis::Hidden));
         let drag_session = DragSession::new(ignore_focus_loss.clone());
         // Needed so DnD can release exclusive keyboard grab under layer-shell.
         drag_session.bind_window(&window);
@@ -429,6 +560,8 @@ impl Launcher {
         // Pending fade-out timer for the app-side close pop (compositor
         // layer animation is off — no_anim — because it ghosts on resize).
         let hide_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        // Pending ghost warm-up settle timer (W3).
+        let warm_delay: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let preview_clear: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
         {
@@ -1341,8 +1474,14 @@ impl Launcher {
         {
             let window_c = window.clone();
             let ignore_focus_loss = ignore_focus_loss.clone();
+            let vis = vis.clone();
             window.connect_notify_local(Some("is-active"), move |w, _| {
                 if ignore_focus_loss.get() {
+                    return;
+                }
+                // W3: the ghost is mapped but intentionally never active — it
+                // must not auto-unmap before the settle timer finishes.
+                if vis.get() != Vis::Shown {
                     return;
                 }
                 if w.is_visible() && !w.is_active() {
@@ -1352,6 +1491,20 @@ impl Launcher {
                             w.set_visible(false);
                         }
                     });
+                }
+            });
+        }
+
+        {
+            // Keep `vis` truthful for unmaps that bypass `hide()`: focus-loss
+            // auto-hide, DnD drop settle, enter/launch paths. Without this the
+            // next press would toggle a stale `Shown` state instead of
+            // showing. `Warming` is excluded: its own settle timer owns the
+            // transition (and restores opacity).
+            let vis = vis.clone();
+            window.connect_notify_local(Some("visible"), move |w, _| {
+                if !w.is_visible() && vis.get() != Vis::Warming {
+                    vis.set(Vis::Hidden);
                 }
             });
         }
@@ -1368,6 +1521,7 @@ impl Launcher {
             selected,
             engine,
             ignore_focus_loss,
+            vis,
             stack,
             settings,
             in_settings,
@@ -1389,6 +1543,7 @@ impl Launcher {
             prev_query,
             empty_delay,
             hide_delay,
+            warm_delay,
             preview_clear,
             size_anim,
             theme: theme.clone(),
@@ -1396,14 +1551,109 @@ impl Launcher {
     }
 
     pub fn toggle(&self) {
-        if self.window.is_visible() {
-            self.hide();
-        } else {
-            self.show();
+        // W3: `Window::is_visible()` is true for the invisible warm ghost, so
+        // decisions come from the phase machine, not the widget state. A press
+        // during warm promotes in place and can never hide.
+        let (state, action) = next(self.vis.get(), VisEvent::Press);
+        self.apply(state, action);
+    }
+
+    /// Real (interactive) show — daemon first activate / cold start. A warming
+    /// ghost is promoted in place instead of re-presented.
+    pub fn show(&self) {
+        let (state, action) = next(self.vis.get(), VisEvent::Show);
+        self.apply(state, action);
+    }
+
+    /// Normal user-driven hide (fade + unmap). Also cleans up a warm ghost.
+    pub fn hide(&self) {
+        let (state, action) = next(self.vis.get(), VisEvent::Hide);
+        self.apply(state, action);
+    }
+
+    /// W3: pre-pay the cold show path while the daemon sits idle — map the
+    /// window at opacity 0 with keyboard mode `None` so it is never visible
+    /// and can never take focus. A real press promotes it in place.
+    ///
+    /// No-op unless hidden, enabled (`ui.ghost_warmup`, `HARK_NO_GHOST`) and
+    /// running under layer-shell.
+    pub fn warm_up(&self) {
+        if !ghost_warmup_enabled(&self.engine) {
+            return;
+        }
+        let (state, action) = next(self.vis.get(), VisEvent::WarmDue);
+        self.vis.set(state);
+        if action != VisAction::StartWarm {
+            return;
+        }
+        self.window.set_opacity(0.0);
+        set_keyboard_mode_none(&self.window);
+        self.show_impl(ShowKind::Warm);
+        let window = self.window.clone();
+        let vis = self.vis.clone();
+        let warm_delay = self.warm_delay.clone();
+        *self.warm_delay.borrow_mut() = Some(glib::timeout_add_local_once(
+            std::time::Duration::from_millis(WARM_SETTLE_MS),
+            move || {
+                // This source is dispatching: drop the id instead of removing
+                // it (same pattern as the other one-shot timers here).
+                *warm_delay.borrow_mut() = None;
+                let (state, action) = next(vis.get(), VisEvent::WarmElapsed);
+                vis.set(state);
+                if action == VisAction::FinishWarm {
+                    window.set_visible(false);
+                    window.set_opacity(1.0);
+                }
+            },
+        ));
+    }
+
+    /// Commit a machine transition and run its side effect. The phase is set
+    /// before the effect so handlers observing visibility changes (is-active,
+    /// `visible`) already see the new state.
+    fn apply(&self, state: Vis, action: VisAction) {
+        self.vis.set(state);
+        match action {
+            VisAction::Show => self.show_impl(ShowKind::Real),
+            VisAction::Promote => self.promote(),
+            VisAction::Hide => self.hide_impl(),
+            VisAction::FinishWarm => self.finish_warm(),
+            // WarmDue/StartWarm are driven by `warm_up`; `None` is a no-op.
+            VisAction::StartWarm | VisAction::None => {}
         }
     }
 
-    pub fn show(&self) {
+    /// Turn the mapped ghost into the real launcher without re-presenting:
+    /// renderer init and the first frame were pre-paid by `warm_up`.
+    fn promote(&self) {
+        if let Some(id) = self.warm_delay.borrow_mut().take() {
+            id.remove();
+        }
+        self.window.set_opacity(1.0);
+        set_keyboard_mode_exclusive(&self.window);
+        // Re-center: the pointer may have moved to another monitor since warm.
+        center_on_active_monitor(&self.window);
+        self.search.grab_focus();
+        // Same focus-loss guard a real show arms (the settle timer never ran).
+        self.ignore_focus_loss.set(true);
+        let ignore = self.ignore_focus_loss.clone();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(SHOW_FOCUS_GUARD_MS),
+            move || ignore.set(false),
+        );
+    }
+
+    /// Unmap a ghost immediately (no CSS fade), restoring opacity so the next
+    /// real show starts clean.
+    fn finish_warm(&self) {
+        if let Some(id) = self.warm_delay.borrow_mut().take() {
+            id.remove();
+        }
+        self.window.set_visible(false);
+        self.window.set_opacity(1.0);
+    }
+
+    fn show_impl(&self, kind: ShowKind) {
         // Cancel a fade-out in progress (rapid hotkey double-tap reopens).
         if let Some(id) = self.hide_delay.borrow_mut().take() {
             id.remove();
@@ -1414,7 +1664,9 @@ impl Launcher {
             id.remove();
         }
         self.shell.remove_css_class("hark-anim-out");
-        self.ignore_focus_loss.set(true);
+        if kind == ShowKind::Real {
+            self.ignore_focus_loss.set(true);
+        }
         self.in_settings.set(false);
         self.stack.set_visible_child_name("search");
         self.session_queries.borrow_mut().clear();
@@ -1458,6 +1710,12 @@ impl Launcher {
             Some(&self.size_anim),
         );
         self.settings.refresh_status();
+        // W3: real shows take the keyboard; the ghost maps with `None` so an
+        // invisible surface can never steal focus from the user.
+        match kind {
+            ShowKind::Real => set_keyboard_mode_exclusive(&self.window),
+            ShowKind::Warm => set_keyboard_mode_none(&self.window),
+        }
         self.window.set_visible(true);
         self.window.present();
         // Entrance pop inside the surface — compositor layer animation is
@@ -1468,16 +1726,21 @@ impl Launcher {
         glib::timeout_add_local_once(std::time::Duration::from_millis(240), move || {
             shell_in.remove_css_class("hark-anim-in");
         });
-        self.search.grab_focus();
+        if kind == ShowKind::Real {
+            self.search.grab_focus();
+        }
         center_on_active_monitor(&self.window);
 
-        let ignore = self.ignore_focus_loss.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-            ignore.set(false);
-        });
+        if kind == ShowKind::Real {
+            let ignore = self.ignore_focus_loss.clone();
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(SHOW_FOCUS_GUARD_MS),
+                move || ignore.set(false),
+            );
+        }
     }
 
-    pub fn hide(&self) {
+    fn hide_impl(&self) {
         // App-side close pop: fade the card inside the surface, unmap after.
         // Compositor layer animation is off (`no_anim` layerrule) because box
         // interpolation ghosts on resize (docs/hyprland-layer-corners.md).
@@ -3543,7 +3806,10 @@ fn setup_window_chrome(window: &ApplicationWindow) {
         if gtk4_layer_shell::is_supported() {
             window.init_layer_shell();
             window.set_layer(Layer::Overlay);
-            window.set_keyboard_mode(KeyboardMode::Exclusive);
+            // W3: real shows set Exclusive at show time (`show_impl` /
+            // `promote`); the ghost warm-up maps this surface with `None` so
+            // it can never steal keyboard focus while invisible.
+            window.set_keyboard_mode(KeyboardMode::None);
             window.set_anchor(Edge::Top, false);
             window.set_anchor(Edge::Bottom, false);
             window.set_anchor(Edge::Left, false);
@@ -3558,6 +3824,38 @@ fn setup_window_chrome(window: &ApplicationWindow) {
     }
 
     window.set_modal(true);
+}
+
+/// Layer-shell keyboard grab for a real show (no-op elsewhere/X11). The ghost
+/// warm-up and any non-layer window stay `None`/untouched.
+fn set_keyboard_mode_exclusive(window: &ApplicationWindow) {
+    #[cfg(feature = "layer-shell")]
+    {
+        use gtk4_layer_shell::{KeyboardMode, LayerShell};
+        if gtk4_layer_shell::is_supported() && window.is_layer_window() {
+            window.set_keyboard_mode(KeyboardMode::Exclusive);
+        }
+    }
+    #[cfg(not(feature = "layer-shell"))]
+    {
+        let _ = window;
+    }
+}
+
+/// Keyboard mode for the invisible ghost: the surface must never take focus
+/// (`dnd.rs` still flips modes itself during drags, unchanged).
+fn set_keyboard_mode_none(window: &ApplicationWindow) {
+    #[cfg(feature = "layer-shell")]
+    {
+        use gtk4_layer_shell::{KeyboardMode, LayerShell};
+        if gtk4_layer_shell::is_supported() && window.is_layer_window() {
+            window.set_keyboard_mode(KeyboardMode::None);
+        }
+    }
+    #[cfg(not(feature = "layer-shell"))]
+    {
+        let _ = window;
+    }
 }
 
 fn center_on_active_monitor(window: &ApplicationWindow) {
@@ -3789,4 +4087,152 @@ fn gdk_monitor_for_hypr(info: &HyprMonitorInfo) -> Option<gtk::gdk::Monitor> {
     }
 
     None
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod ghost_warmup_tests {
+    use super::{ghost_warmup_allowed, next, Vis, VisAction, VisEvent};
+
+    /// Fold a sequence of events through the machine (only the action stream
+    /// matters for behavior assertions).
+    fn seq(events: &[VisEvent]) -> (Vis, Vec<VisAction>) {
+        let mut state = Vis::Hidden;
+        let mut actions = Vec::new();
+        for &e in events {
+            let (s, a) = next(state, e);
+            state = s;
+            actions.push(a);
+        }
+        (state, actions)
+    }
+
+    #[test]
+    fn press_toggles_between_hidden_and_shown() {
+        let (state, actions) = seq(&[VisEvent::Press]);
+        assert_eq!(
+            (state, actions.as_slice()),
+            (Vis::Shown, &[VisAction::Show][..])
+        );
+        let (state, actions) = seq(&[VisEvent::Press, VisEvent::Press]);
+        assert_eq!(
+            (state, actions.as_slice()),
+            (Vis::Hidden, &[VisAction::Show, VisAction::Hide][..])
+        );
+    }
+
+    #[test]
+    fn press_during_warm_promotes_and_never_hides() {
+        let (state, actions) = seq(&[VisEvent::WarmDue, VisEvent::Press]);
+        assert_eq!(state, Vis::Shown);
+        assert_eq!(actions, vec![VisAction::StartWarm, VisAction::Promote]);
+        // The settle timer arriving late must not unmap a promoted window.
+        assert_eq!(
+            next(state, VisEvent::WarmElapsed),
+            (Vis::Shown, VisAction::None)
+        );
+    }
+
+    #[test]
+    fn press_before_warm_skips_the_stale_idle_timer() {
+        let (state, actions) = seq(&[VisEvent::Press, VisEvent::WarmDue]);
+        assert_eq!(state, Vis::Shown);
+        assert_eq!(actions, vec![VisAction::Show, VisAction::None]);
+    }
+
+    #[test]
+    fn rapid_press_hide_during_promote_keeps_toggle_semantics() {
+        let (state, actions) = seq(&[
+            VisEvent::WarmDue,
+            VisEvent::Press,       // promote, not hide
+            VisEvent::Press,       // real hide
+            VisEvent::WarmElapsed, // stale settle timer
+        ]);
+        assert_eq!(state, Vis::Hidden);
+        assert_eq!(
+            actions,
+            vec![
+                VisAction::StartWarm,
+                VisAction::Promote,
+                VisAction::Hide,
+                // Stale settle timer after a real hide: no second unmap.
+                VisAction::None,
+            ]
+        );
+    }
+
+    #[test]
+    fn warm_elapsed_finishes_only_while_warming() {
+        assert_eq!(
+            next(Vis::Warming, VisEvent::WarmElapsed),
+            (Vis::Hidden, VisAction::FinishWarm)
+        );
+        assert_eq!(
+            next(Vis::Hidden, VisEvent::WarmElapsed),
+            (Vis::Hidden, VisAction::None)
+        );
+        assert_eq!(
+            next(Vis::Shown, VisEvent::WarmElapsed),
+            (Vis::Shown, VisAction::None)
+        );
+    }
+
+    #[test]
+    fn warm_due_is_idempotent_while_warming_or_shown() {
+        assert_eq!(
+            next(Vis::Warming, VisEvent::WarmDue),
+            (Vis::Warming, VisAction::None)
+        );
+        assert_eq!(
+            next(Vis::Shown, VisEvent::WarmDue),
+            (Vis::Shown, VisAction::None)
+        );
+    }
+
+    #[test]
+    fn direct_show_promotes_a_warming_ghost() {
+        assert_eq!(
+            next(Vis::Hidden, VisEvent::Show),
+            (Vis::Shown, VisAction::Show)
+        );
+        assert_eq!(
+            next(Vis::Warming, VisEvent::Show),
+            (Vis::Shown, VisAction::Promote)
+        );
+        // Idempotent when already shown.
+        assert_eq!(
+            next(Vis::Shown, VisEvent::Show),
+            (Vis::Shown, VisAction::None)
+        );
+    }
+
+    #[test]
+    fn hide_during_warm_cleans_the_ghost_up() {
+        assert_eq!(
+            next(Vis::Warming, VisEvent::Hide),
+            (Vis::Hidden, VisAction::FinishWarm)
+        );
+        assert_eq!(
+            next(Vis::Shown, VisEvent::Hide),
+            (Vis::Hidden, VisAction::Hide)
+        );
+        assert_eq!(
+            next(Vis::Hidden, VisEvent::Hide),
+            (Vis::Hidden, VisAction::None)
+        );
+    }
+
+    #[test]
+    fn env_kill_switch_overrides_config() {
+        assert!(ghost_warmup_allowed(true, None));
+        assert!(ghost_warmup_allowed(true, Some("")));
+        assert!(ghost_warmup_allowed(true, Some("0")));
+        assert!(ghost_warmup_allowed(true, Some("false")));
+        assert!(ghost_warmup_allowed(true, Some("FALSE")));
+        assert!(!ghost_warmup_allowed(true, Some("1")));
+        assert!(!ghost_warmup_allowed(true, Some("yes")));
+        assert!(!ghost_warmup_allowed(false, None));
+        // Config off wins even without the env override.
+        assert!(!ghost_warmup_allowed(false, Some("0")));
+    }
 }

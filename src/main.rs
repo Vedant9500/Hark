@@ -10,6 +10,11 @@ use std::sync::Arc;
 
 const APP_ID: &str = "dev.hark.launcher";
 
+/// W3 ghost warm-up: idle delay after the daemon boots hidden before the
+/// invisible warm show maps. Long enough to stay clear of the login CPU
+/// burst, short enough that the first press usually lands on a finished warm.
+const GHOST_WARMUP_DELAY_MS: u64 = 2_000;
+
 /// hark-specific CLI surface (parsed manually before GTK sees argv).
 const HARK_HELP: &str = "\
 hark options (parsed before GTK; `--help` also shows GTK options below):
@@ -117,6 +122,21 @@ fn main() {
             };
             if show {
                 launcher.show();
+            } else if daemon {
+                // W3: the daemon booted hidden — pre-pay the cold show path
+                // (present + renderer init + first frame) while idle. The
+                // launcher re-checks vis/config/env; a press before the timer
+                // lands makes this a no-op, and a press after it promotes the
+                // ghost in place.
+                let state = state.clone();
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(GHOST_WARMUP_DELAY_MS),
+                    move || {
+                        if let Some(launcher) = state.borrow().as_ref() {
+                            launcher.warm_up();
+                        }
+                    },
+                );
             }
             pending_toggle.set(false);
             first_activate.set(false);

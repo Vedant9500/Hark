@@ -394,6 +394,10 @@ pub struct UiThemeConfig {
     /// Compact = search+footer until typing; Expanded = always show results body.
     #[serde(default)]
     pub layout_mode: LayoutMode,
+    /// W3 ghost warm-up: at daemon boot, pre-render the hidden launcher so the
+    /// first press behaves like a warm show. `HARK_NO_GHOST=1` overrides.
+    #[serde(default = "default_true")]
+    pub ghost_warmup: bool,
     /// Unknown keys preserved verbatim across rewrites (see `IndexConfig`).
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -422,6 +426,7 @@ impl Default for UiThemeConfig {
             symbolic_icons: false,
             radius: default_radius(),
             layout_mode: LayoutMode::default(),
+            ghost_warmup: true,
             extra: Default::default(),
         }
     }
@@ -2306,5 +2311,25 @@ mod config_store_tests {
         for d in [&data, &kefir, &lower, &esp, &osc, &empty] {
             let _ = fs::remove_dir_all(d);
         }
+    }
+}
+
+#[cfg(test)]
+mod ui_config_tests {
+    use super::*;
+
+    #[test]
+    fn ghost_warmup_defaults_on_and_reads_override() {
+        // Missing key → on (old configs get the W3 warm-up without a rewrite).
+        let cfg: HarkConfig = serde_json::from_str(r#"{"version":2,"ui":{}}"#).unwrap();
+        assert!(cfg.ui.ghost_warmup, "ghost warm-up must default on");
+
+        // Explicit false must survive load (durable kill switch).
+        let cfg: HarkConfig =
+            serde_json::from_str(r#"{"version":2,"ui":{"ghost_warmup":false}}"#).unwrap();
+        assert!(!cfg.ui.ghost_warmup);
+
+        // Settings "reset appearance" keeps the default on.
+        assert!(UiThemeConfig::default().ghost_warmup);
     }
 }
