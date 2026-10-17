@@ -96,19 +96,20 @@ Fedora:
 
   # or manually:
   cargo build --release --features layer-shell
-  # binary: target/release/hark
+  # binaries: target/release/hark + target/release/hark-hotkey
 
 3) Run
 ------
   # preload (recommended)
   hark --daemon &
 
-  # toggle UI (bind this to a hotkey, e.g. Alt+A)
-  hark
+  # toggle UI (bind this to a hotkey, e.g. Alt+A) — GTK-free stub,
+  # execs hark itself for cold start / --search / update:
+  hark-hotkey
 
 Hyprland example (hyprland.conf):
   exec-once = hark --daemon
-  bind = ALT, A, exec, hark
+  bind = ALT, A, exec, hark-hotkey
 
 4) Optional: make a binary package for someone else
 ---------------------------------------------------

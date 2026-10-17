@@ -11,6 +11,7 @@ AUTOSTART_DIR="$DATA_HOME/autostart"
 pkill -x hark 2>/dev/null || true
 
 rm -f "$BIN_DIR/hark"
+rm -f "$BIN_DIR/hark-hotkey"
 rm -f "$APP_DIR/hark.desktop"
 rm -f "$ICON_DIR/hark.svg"
 rm -f "$AUTOSTART_DIR/hark.desktop"

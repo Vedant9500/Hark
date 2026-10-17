@@ -22,6 +22,12 @@ path = "src/lib.rs"
 name = "hark"
 path = "src/main.rs"
 
+# GTK-free hotkey stub: shares `ipc.rs` by path include, never the lib (which
+# would link GTK). Bind it instead of `hark` for a ~5 ms press.
+[[bin]]
+name = "hark-hotkey"
+path = "src/bin/hark-hotkey.rs"
+
 [features]
 default = []
 layer-shell = ["dep:gtk4-layer-shell"]
@@ -74,6 +80,7 @@ Search apps, files, do math and unit conversions from a single overlay."""
 depends = "$auto"
 assets = [
   ["target/release/hark", "usr/bin/", "755"],
+  ["target/release/hark-hotkey", "usr/bin/", "755"],
   ["packaging/hark.desktop", "usr/share/applications/", "644"],
   ["assets/hark.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
   ["README.md", "usr/share/doc/hark/", "644"],

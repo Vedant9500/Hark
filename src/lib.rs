@@ -8,6 +8,7 @@
 pub mod config;
 pub mod engine;
 pub mod ipc;
+mod private_dir;
 pub mod providers;
 pub mod theme;
 pub mod typos;

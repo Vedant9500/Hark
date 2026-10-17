@@ -1,6 +1,6 @@
 # Hark — cold-start optimization plan
 
-**Status:** M1 done (W2 + W1/W6, 2026-10-17) — next: M2 (W4) · **Created:** 2026-10-17
+**Status:** M2 done (W2 + W1/W6 + W4, 2026-10-17) — next: M3 (W3) · **Created:** 2026-10-17
 **Source of numbers:** verified cold-start analysis (5 passes, each independently re-measured; see §8).
 **Related:** [performance.md](./performance.md) (§ Cold start) · [OPTIMIZATION.md](./OPTIMIZATION.md) · [bench/](./bench/)
 
@@ -65,7 +65,7 @@ Targets after this plan:
 
 ### 3.1 The loop
 
-1. **Measure first (M0)** — lock a baseline with the playbook in §7; store raw logs under `docs/bench/` (repo convention: `docs/bench/run-*.txt`).
+1. **Measure first (M0)** — lock a baseline with the playbook in §7; store raw logs under `docs/bench/` (local, gitignored — repo convention: `docs/bench/run-*.txt`).
 2. **Change one thing** per commit/PR; keep workstreams separate so each is independently revertible.
 3. **Verify** — CI matrix + the workstream's acceptance table + a fresh lab pass (§6). For bug fixes: prove the new test catches the bug (see 3.3).
 4. **Document** — update `performance.md`/`OPTIMIZATION.md` and append to the outcome log (§Appendix B).
@@ -185,8 +185,8 @@ For every bug fix in W1/W2: write the regression test, then **temporarily revert
 
 **Design:**
 
-- New bin target `hark-hotkey` (`src/bin/hark-hotkey.rs`); **do not reference the `hark` lib** (that would risk pulling GTK into the link). Share the protocol via a path-include of the std-only module:
-  `#[path = "../ipc.rs"] mod ipc;` — `ipc.rs` uses only `std` + `dirs`, all `pub` entry points.
+- New bin target `hark-hotkey` (`src/bin/hark-hotkey.rs`); **do not reference the `hark` lib** (that would risk pulling GTK into the link). Share the protocol via path-includes of std-only modules:
+  `#[path = "../ipc.rs"] mod ipc;` + `#[path = "../private_dir.rs"] mod private_dir;`. (As shipped, `ipc.rs` needed one non-std symbol — the N1 trust check — so `dir_is_trusted`/`current_euid` were extracted from `config.rs` into `private_dir.rs`; `config.rs` re-exports them for existing callers.)
 - Behaviour: `ipc::request_toggle()`; on `false` (no daemon), **exec** the full binary from `current_exe().parent()` (arg-forwarding via `std::os::unix::process::CommandExt::exec`) so cold start and all flags (`--search`, `--daemon`, `update`) behave exactly like today. The stub fast-paths only the no-arg toggle; everything else is forwarded.
 - Keep the existing fast path in `hark` itself (compat; users can switch back instantly by changing one keybind).
 
@@ -210,6 +210,15 @@ For every bug fix in W1/W2: write the regression test, then **temporarily revert
 - With no daemon: `hark-hotkey` opens the launcher identically to `hark` (args forwarded, exit code preserved via exec).
 - Old daemon/new client and new daemon/old client both interoperate (protocol unchanged).
 
+**Measured (2026-10-17, lab `run-w4.sh`, daemon resident, hot cache):**
+
+- NEEDED = `libgcc_s`, `libc` only (`ldd` 4 lines); 351,544 B vs 7,775,480 B for `hark`.
+- 30 runs each, same harness: `hark` **27.8 ms p50** (25.2–39.3) → `hark-hotkey` **2.7 ms p50** (2.5–3.8).
+- **Independent pass** (§6.3, fresh agent with its own from-scratch lab): `hark-hotkey` **2.22 ms p50** (1.53–3.37) vs `hark` 28.9 ms; `/bin/true` harness floor 1.58 ms; delivery re-proven (`toggle\n` bytes + ack, 60/60 exit 0); no discrepancies.
+- Forwarding/fallback: `tests/hotkey_stub.rs` 4/4 locally — help reaches the real binary; argv + exit code (7) preserved via a fake sibling `hark`; no-daemon fallback; live toggle ack (one test `#[ignore]`d for sandboxed CI, run with `--ignored`).
+- Packaging smoke: `packaging/install-user.sh` installed both binaries into a temp prefix.
+- Raw (local, gitignored): `bench/cold-start-w4-2026-10-17.md`.
+
 ### W5 — Optional experiments (only after W3/W4, only with numbers)
 
 | Experiment | Method | Keep only if |
@@ -230,7 +239,7 @@ For every bug fix in W1/W2: write the regression test, then **temporarily revert
 
 | Milestone | Contents | Definition of done |
 |---|---|---|
-| **M0 Baseline** | Re-run §7 harness on this machine, store `docs/bench/cold-start-*.txt` | Numbers reproduce §8 within noise; stored in repo |
+| **M0 Baseline** | Re-run §7 harness on this machine, store `docs/bench/cold-start-*.txt` | Numbers reproduce §8 within noise; stored under `docs/bench/` (local, gitignored) |
 | **M1** | W2 (+W1 decision +W6 doc fixes) | Acceptance tables pass; revert-test proofs recorded |
 | **M2** | W4 client + packaging | Stub ldd clean; ≤5 ms press; bind documented |
 | **M3** | W3 ghost warm-up (config-gated, default on) | Lab acceptance passes; user spot-check on Hyprland; kill switch works |
@@ -312,7 +321,7 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 > Re-measured 2026-10-17 (M0, post-W2, same lab): warm press p50 28.1 ms
 > (30 runs, the harness W4 will use), daemon socket-ready 37.1 ms,
 > stale-socket overhead 0.1 ms, `--help` leaves no socket 3/3.
-> Raw: [`bench/cold-start-2026-10-17.md`](./bench/cold-start-2026-10-17.md).
+> Raw (local, gitignored): `bench/cold-start-2026-10-17.md`.
 
 ---
 
@@ -340,6 +349,7 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 | `run_with_args` | `src/main.rs:195` | GTK parses `--help` and exits here |
 | `request_toggle` | `src/ipc.rs:40–113` | retry budget: 2 attempts / 10 ms (W2) |
 | Listener / bind | `src/ipc.rs:115–260`, `:267` | `SocketGuard` (`:127`) + sync bind + stale reclaim (W2) |
+| Hotkey stub | `src/bin/hark-hotkey.rs`; `tests/hotkey_stub.rs` | GTK-free client + exec fallback (W4) |
 | Toggle / show / hide | `src/ui/mod.rs:1398–1478`, `:1480+` | state machine seams (W3); `grab_focus` `:1471`, center `:1472` |
 | Keyboard mode | `src/ui/mod.rs:3546`; `src/ui/dnd.rs:253` | Exclusive at construct (W3 deferral) |
 | Settings eager build | `src/ui/settings.rs:271–295`; call `src/ui/mod.rs:371` | 10–12 ms at construct (future option) |
@@ -357,11 +367,12 @@ Metrics to record per run (and their sources): client wall/user/sys/minflt (`tim
 |---|---|---|
 | W1 | comments/docs truthful; decision recorded | ☑ 2026-10-17 |
 | W2 | help no toggle; no leftover socket; stale press ≤10 ms; tests + revert-proof | ☑ 2026-10-17 |
-| W4 | stub ldd has no GTK; ≤5 ms press; fallback exec; packaging updated | ☐ |
+| W4 | stub ldd has no GTK; ≤5 ms press; fallback exec; packaging updated | ☑ 2026-10-17 |
 | W3 | first press ≤65 ms; no flash; no focus steal; promote ≤30 ms; kill switch | ☐ |
 
 | Date | Milestone | Result (measured) | Evidence |
 |---|---|---|---|
 | 2026-10-17 | W2 landed | stale press 126→27 ms; `--help` socket present→absent 3/3; revert-proofs ×4 recorded | commit `980ceb9` · §W2 |
-| 2026-10-17 | M0 baseline (post-W2) | warm press p50 28.1 ms (30 runs) · stale overhead 0.1 ms · daemon socket-ready 37.1 ms · help socket absent 3/3 | [`bench/cold-start-2026-10-17.md`](./bench/cold-start-2026-10-17.md) |
+| 2026-10-17 | M0 baseline (post-W2) | warm press p50 28.1 ms (30 runs) · stale overhead 0.1 ms · daemon socket-ready 37.1 ms · help socket absent 3/3 | `bench/cold-start-2026-10-17.md` (local) |
 | 2026-10-17 | W1 + W6 | engine/index comments truthful; `performance.md` v9/opt-level/TTL rows; `OPTIMIZATION.md` E + notes; decision (a) recorded | this doc · `docs/performance.md` |
+| 2026-10-17 | M2: W4 | `hark-hotkey` stub: press p50 **2.7 ms** vs `hark` 27.8 ms (30 runs each; independent pass 2.22 vs 28.9); NEEDED = libc+libgcc only; packaging + tests + docs updated | `bench/cold-start-w4-2026-10-17.md` (local) |

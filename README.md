@@ -81,7 +81,10 @@ cargo build --release --features layer-shell
 ## Usage
 
 Hark runs as a **resident daemon** so the hotkey path avoids cold GTK startup. By
-default **Alt+A** summons the overlay.
+default **Alt+A** summons the overlay. Bind **`hark-hotkey`** (installed
+alongside `hark`) for the fastest press: it is a GTK-free stub that only writes
+the toggle to the daemon and `exec`s `hark` itself when there is no daemon or
+for CLI flags like `--search`.
 
 | Keys | Action |
 |------|--------|
@@ -102,15 +105,18 @@ default **Alt+A** summons the overlay.
 hl.exec_cmd("hark --daemon")
 
 -- keybinds.lua (toggle)
-hl.bind(vars.kbHark, hl.dsp.exec_cmd("hark"))
+hl.bind(vars.kbHark, hl.dsp.exec_cmd("hark-hotkey"))
 ```
 
 Or in `hyprland.conf`:
 
 ```conf
 exec-once = hark --daemon
-bind = ALT, A, exec, hark
+bind = ALT, A, exec, hark-hotkey   # GTK-free stub; execs hark when needed
 ```
+
+`hark` still works as the bind target; `hark-hotkey` is just ~5× cheaper per
+press.
 
 ## Documentation
 

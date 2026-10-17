@@ -37,6 +37,25 @@ TMP_BIN="$BIN_DIR/.hark.new.$$"
 install -m755 "$BIN_SRC" "$TMP_BIN"
 mv -f "$TMP_BIN" "$BIN_DIR/hark"
 
+# GTK-free hotkey stub (optional: absent in older release dirs).
+STUB_SRC=""
+for candidate in \
+  "$ROOT/hark-hotkey" \
+  "$ROOT/bin/hark-hotkey" \
+  "$ROOT/usr/bin/hark-hotkey"
+do
+  if [[ -x "$candidate" ]]; then
+    STUB_SRC="$candidate"
+    break
+  fi
+done
+if [[ -n "$STUB_SRC" ]]; then
+  echo "Installing hark-hotkey → $BIN_DIR/hark-hotkey"
+  TMP_STUB="$BIN_DIR/.hark-hotkey.new.$$"
+  install -m755 "$STUB_SRC" "$TMP_STUB"
+  mv -f "$TMP_STUB" "$BIN_DIR/hark-hotkey"
+fi
+
 # Escape sed-replacement metacharacters in the install path (`&\` and the
 # `|` delimiter) so exotic XDG_BIN_HOME values can't inject (audit P3).
 ESC_BIN_DIR="${BIN_DIR//\\/\\\\}"
@@ -118,12 +137,13 @@ fi
 echo
 echo "Installed Hark."
 echo "  binary:  $BIN_DIR/hark"
+echo "  stub:    $BIN_DIR/hark-hotkey (GTK-free hotkey client)"
 echo "  desktop: $APP_DIR/hark.desktop"
 echo
 echo "Start daemon:   hark --daemon &"
-echo "Toggle window:  hark"
+echo "Toggle window:  hark-hotkey   (falls back to hark when needed)"
 echo "Optional:       re-run with --autostart to launch daemon on login"
 echo
 echo "Hyprland example:"
 echo "  exec-once = hark --daemon"
-echo "  bind = ALT, A, exec, hark"
+echo "  bind = ALT, A, exec, hark-hotkey"

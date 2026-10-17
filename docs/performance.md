@@ -245,6 +245,18 @@ unmeasured — bounded by reasoning, marked ≈.
 | `hark --search` wall, warm cache | ~73 ms | 21 exec + ~7 work + 50 ms poll-quantum artifact in `run_search_once` |
 | Daemon spawn → resident (hidden, warm cache) | **~24 ms** (3/3 runs) | exec + GTK init + `Engine::new` + socket bind; SIGTERM cleanup verified |
 | Warm toggle client (real `hark` binary) | **~21–22 ms** wall | ~all exec; in-process IPC is median **29 µs** / p95 44 µs |
+| Warm toggle client (`hark-hotkey` stub) | **~2.7 ms** wall p50 (2.5–3.8; independent 2.2) | GTK-free stub: links libc + libgcc_s only; same-harness `hark` = 27.8 ms (2026-10-17) |
+
+### GTK-free hotkey client (W4, 2026-10-17)
+
+`hark-hotkey` (installed alongside `hark`; bind it instead of `hark`) serves
+the plain toggle from a 351 KB binary that links only libc/libgcc_s — no GTK,
+no loader work for ~110 libs. Lab, daemon resident, 30 runs each: press
+**`hark` 27.8 ms p50 → `hark-hotkey` 2.7 ms p50** (min 2.5, max 3.8;
+independent from-scratch re-run: 2.22 ms p50). Everything else — cold start,
+`--search`, `--daemon`, `update`, `--help` — is `exec`'d to the full binary
+with argv and exit code preserved.
+Raw (local, gitignored): `bench/cold-start-w4-2026-10-17.md`.
 
 ### Socket hygiene (W2, 2026-10-17)
 
@@ -253,8 +265,8 @@ stale `hark.sock` behind (GTK exits without unwinding), so the next press
 burned 5 × 20 ms connect retries. Now help invocations never touch IPC, a
 `SocketGuard` unlinks the socket on normal exits, and a dead-socket connect
 fails on the first `ECONNREFUSED` with at most one 10 ms retry. Lab (5 runs,
-socket-ready): stale press **126 ms → 27 ms** (target ≤40 ms). Raw runs:
-[`bench/cold-start-2026-10-17.md`](./bench/cold-start-2026-10-17.md).
+socket-ready): stale press **126 ms → 27 ms** (target ≤40 ms). Raw runs
+(local, gitignored): `bench/cold-start-2026-10-17.md`.
 
 ### Window: build + first frame (measured in headless Sway + grim)
 
@@ -276,7 +288,8 @@ Derived budgets:
 
 - **Warm start** (daemon resident, hotkey): **~50–65 ms toggle → visible**,
   measured end-to-end. The daemon saves the window build + engine warm, not
-  the ~21 ms client exec.
+  the client exec — now ~3 ms with the `hark-hotkey` stub
+  (§ GTK-free hotkey client).
 - **Cold start** (no daemon): ~24 ms to resident + ~20 ms Launcher build
   (built at startup activate, before first toggle) + ~240 ms first render
   ≈ **~280 ms to visible**; cold disk cache adds ~35 ms of index walk.

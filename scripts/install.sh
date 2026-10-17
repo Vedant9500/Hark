@@ -97,7 +97,9 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
   fi
 
   install -Dm755 "$ROOT/target/release/hark" "$BIN"
+  install -Dm755 "$ROOT/target/release/hark-hotkey" "$BIN_DIR/hark-hotkey"
   echo "Installed: $BIN"
+  echo "Installed: $BIN_DIR/hark-hotkey (GTK-free hotkey stub)"
 
   # Desktop entry + icon from packaging/
   # (same sed-escaping as packaging/install-user.sh: `&`/`\`/`|` in the
@@ -136,5 +138,7 @@ fi
 
 echo
 echo "Hark is a resident daemon — hotkey toggles the window only."
+echo "Bind the fast stub:  bind = ALT, A, exec, hark-hotkey   (~3 ms/press)"
+echo "It execs hark itself for cold start / --search / update."
 echo "Shareable package: ./scripts/package-release.sh"
 echo "Done."

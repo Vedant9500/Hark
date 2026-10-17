@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
+use crate::private_dir::dir_is_trusted;
+
 pub fn socket_path() -> PathBuf {
     if let Some(dir) = dirs::runtime_dir() {
         return dir.join("hark.sock");
@@ -175,7 +178,7 @@ pub fn spawn_listener_at(
             // Same ownership gate as the private stores (audit P3): refuse to
             // serve from a shared-space dir we do not own — a pre-planted
             // /tmp/hark must not host our toggle socket.
-            if !crate::config::dir_is_trusted(parent) && is_shared_space(parent) {
+            if !dir_is_trusted(parent) && is_shared_space(parent) {
                 eprintln!(
                     "hark: ipc: refusing untrusted socket dir {}",
                     parent.display()

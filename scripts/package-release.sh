@@ -85,9 +85,15 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing $BIN" >&2
   exit 1
 fi
+STUB="$(dirname "$BIN")/hark-hotkey"
+if [[ ! -x "$STUB" ]]; then
+  echo "error: missing $STUB (GTK-free hotkey stub)" >&2
+  exit 1
+fi
 
 # Stage package contents
 install -Dm755 "$BIN" "$STAGE/hark"
+install -Dm755 "$STUB" "$STAGE/hark-hotkey"
 install -Dm755 "$ROOT/packaging/install-user.sh" "$STAGE/install.sh"
 install -Dm755 "$ROOT/packaging/uninstall-user.sh" "$STAGE/uninstall.sh"
 install -Dm644 "$ROOT/packaging/hark.desktop" "$STAGE/hark.desktop"
@@ -117,7 +123,8 @@ Requirements:
 
 Then:
   hark --daemon &
-  # bind a hotkey to: hark
+  # bind a hotkey to: hark-hotkey
+  # (GTK-free stub, ~5 ms/press; execs hark when no daemon / flags are used)
 EOF
 
 TARBALL="$DIST/${PKG_NAME}.tar.gz"

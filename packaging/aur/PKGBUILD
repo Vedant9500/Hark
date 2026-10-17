@@ -40,6 +40,7 @@ check() {
 package() {
   cd "Hark-$pkgver"
   install -Dm755 "target/release/hark" "$pkgdir/usr/bin/hark"
+  install -Dm755 "target/release/hark-hotkey" "$pkgdir/usr/bin/hark-hotkey"
   install -Dm644 "packaging/hark.desktop" "$pkgdir/usr/share/applications/hark.desktop"
   install -Dm644 "assets/hark.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/hark.svg"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
