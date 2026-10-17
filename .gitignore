@@ -44,8 +44,7 @@ Desktop.ini
 *.tmp
 *.temp
 .cache/
-docs/bench/*
-!docs/bench/cold-start-*
+docs/bench
 docs/archive
 feature.txt
 
