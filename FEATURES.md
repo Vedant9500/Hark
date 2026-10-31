@@ -205,7 +205,7 @@ Also:
 - Default Tokyo Night–style palette
 - Live theme from the active rice: **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`) or **Impasto** (`dynamic-colors.json` for adaptive, `Palettes.qml` for curated palettes), selected by `~/.rice/state/current`; a show-path fingerprint check repaints even if a monitor event was missed
 - Follows Caelestia's transparency switch (`shell.json`) and Hyprland's blur enable flag: if either is off the panel is forced opaque, not a translucent unblurred sheet. Impasto has no global switch, so Hark's own opacity slider applies there
-- Keeps Hyprland's layer `ignore_alpha` in sync with the opacity slider (runtime rule `hark-blur-sync`), so lowering opacity no longer silently kills blur
+- Keeps Hyprland's layer blur and `ignore_alpha` in sync with the opacity slider (runtime rule `hark-blur-sync`), so the panel stays frosted even if the rice config has no static hark rule and lowering opacity no longer silently kills blur
 - **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
 - Hot-reloads on palette, rice switch, or appearance config change via FileMonitor
 - Custom GTK CSS for launcher chrome

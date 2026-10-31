@@ -185,8 +185,8 @@ pub(super) fn sync_blur(opacity: f32) {
     }
 
     let lua = lua_rule(threshold);
-    let modern = format!("ignore_alpha {threshold:.2}, match:namespace hark");
-    let legacy = format!("ignorealpha {threshold:.2}, namespace:hark");
+    let modern = format!("blur on, ignore_alpha {threshold:.2}, match:namespace hark");
+    let legacy = format!("blur, ignorealpha {threshold:.2}, namespace:hark");
     let method = HYPR_METHOD.with(|m| m.get());
     let ok = match method {
         1 => hypr_eval(&lua),
@@ -215,11 +215,14 @@ pub(super) fn sync_blur(opacity: f32) {
 }
 
 fn lua_rule(threshold: f32) -> String {
-    // Only `ignore_alpha` is owned here. Claiming `blur`/`xray`/`no_anim`
-    // would override a user who deliberately disabled blur for this layer.
+    // Hark owns blur for its own layer: not every rice config ships the static
+    // hark rule (Impasto's default does not), and without it the panel is just
+    // plain transparency. Global blur stays the gate — a translucent opacity
+    // is never synced while `decoration:blur:enabled` is off. `xray`/`no_anim`
+    // are left alone so user tuning survives.
     format!(
         "hl.layer_rule({{ name = \"hark-blur-sync\", match = {{ namespace = \"hark\" }}, \
-         ignore_alpha = {threshold:.2} }})"
+         blur = true, ignore_alpha = {threshold:.2} }})"
     )
 }
 
@@ -306,8 +309,9 @@ mod tests {
         assert!(rule.contains("name = \"hark-blur-sync\""), "{rule}");
         assert!(rule.contains("ignore_alpha = 0.38"), "{rule}");
         assert!(rule.contains("namespace = \"hark\""), "{rule}");
-        // Do not re-enable blur / override unrelated effects.
-        assert!(!rule.contains("blur ="), "{rule}");
+        // Blur is owned for Hark's own layer; unrelated effects stay untouched.
+        assert!(rule.contains("blur = true"), "{rule}");
         assert!(!rule.contains("xray ="), "{rule}");
+        assert!(!rule.contains("no_anim ="), "{rule}");
     }
 }
