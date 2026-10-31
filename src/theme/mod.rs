@@ -300,7 +300,6 @@ fn watch_dirs() -> Vec<PathBuf> {
         source::caelestia_shell(),
         source::impasto_state(),
         source::impasto_dynamic(),
-        source::impasto_settings(),
         source::impasto_palettes(),
         source::rice_marker(),
     ]
@@ -373,7 +372,6 @@ fn theme_fingerprint() -> ThemeFingerprint {
         source::Rice::Impasto => {
             files.extend(source::impasto_state());
             files.extend(source::impasto_dynamic());
-            files.extend(source::impasto_settings());
             files.extend(source::impasto_palettes());
         }
     }

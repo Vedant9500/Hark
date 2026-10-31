@@ -50,12 +50,13 @@ pub(super) fn load() -> SystemStyle {
     }
 }
 
-/// The active rice's own transparency switch. Caelestia stores it in
-/// `shell.json`; Impasto's `surfaceStyle` is solid only for `classic`.
+/// The active rice's own transparency opt-out. Caelestia exposes a global
+/// switch in `shell.json`; Impasto has no equivalent (its `surfaceStyle` only
+/// styles the island), so Hark's opacity slider stays authoritative there.
 fn transparency() -> bool {
     match source::active() {
         Rice::Caelestia => caelestia_transparency(),
-        Rice::Impasto => super::impasto::transparency(),
+        Rice::Impasto => true,
     }
 }
 

@@ -34,16 +34,6 @@ pub(super) fn load() -> Option<Theme> {
     theme_from(&active, dynamic.as_deref(), palettes.as_deref())
 }
 
-/// Impasto calls its glass surfaces "glass"/"liquid"; "classic" is the solid
-/// island, the equivalent of Caelestia's transparency switch being off.
-/// Missing or unreadable settings keep the previous translucent default.
-pub(super) fn transparency() -> bool {
-    let Some(raw) = read(source::impasto_settings()) else {
-        return true;
-    };
-    parse_transparency(&raw)
-}
-
 fn active_id() -> Option<String> {
     let raw = read(source::impasto_state())?;
     #[derive(Deserialize)]
@@ -122,18 +112,6 @@ fn theme_from_tokens(tokens: &HashMap<String, String>) -> Option<Theme> {
         outline_variant,
         primary,
     })
-}
-
-fn parse_transparency(raw: &str) -> bool {
-    #[derive(Deserialize)]
-    struct Settings {
-        #[serde(default, rename = "surfaceStyle")]
-        surface_style: Option<String>,
-    }
-    serde_json::from_str::<Settings>(raw)
-        .ok()
-        .and_then(|s| s.surface_style)
-        .map_or(true, |style| !style.eq_ignore_ascii_case("classic"))
 }
 
 #[cfg(test)]
@@ -219,15 +197,5 @@ mod tests {
         assert!(theme_from("adaptive", Some("not json"), None).is_none());
         assert!(theme_from("adaptive", Some("{}"), None).is_none());
         assert!(theme_from("second", Some("{}"), Some("nonsense")).is_none());
-    }
-
-    #[test]
-    fn classic_surface_is_solid_and_glass_is_translucent() {
-        assert!(!parse_transparency(r#"{"surfaceStyle":"classic"}"#));
-        assert!(parse_transparency(r#"{"surfaceStyle":"glass"}"#));
-        assert!(parse_transparency(r#"{"surfaceStyle":"liquid"}"#));
-        // Unknown/absent settings keep the old translucent behaviour.
-        assert!(parse_transparency("{}"));
-        assert!(parse_transparency("not json"));
     }
 }

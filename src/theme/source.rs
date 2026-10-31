@@ -56,10 +56,6 @@ pub(super) fn impasto_dynamic() -> Option<PathBuf> {
     impasto_state_home().map(|p| p.join("dynamic-colors.json"))
 }
 
-pub(super) fn impasto_settings() -> Option<PathBuf> {
-    impasto_state_home().map(|p| p.join("settings.json"))
-}
-
 /// The curated palettes live in QML; this is Impasto's single source of truth
 /// for static (non-wallpaper) themes.
 pub(super) fn impasto_palettes() -> Option<PathBuf> {

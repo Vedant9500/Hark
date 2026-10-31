@@ -1996,7 +1996,7 @@ fn build_appearance_page(
     let (outer, body) = page_shell(
         "Appearance",
         "Tweak layout density, transparency, accent colour, type scale, and icons. \
-         Colours still follow your Caelestia scheme.",
+         Colours follow your active desktop palette.",
     );
 
     let ui = cfg.ui.clone();
@@ -2162,7 +2162,7 @@ fn build_appearance_page(
     let colour_card = GtkBox::new(Orientation::Vertical, 0);
     colour_card.add_css_class("hark-settings-card");
 
-    let accent_row = setting_row("Accent override", Some("Empty = Caelestia primary"));
+    let accent_row = setting_row("Accent override", Some("Empty = palette primary"));
     let accent_entry = Entry::builder()
         .placeholder_text("#7aa2f7")
         .hexpand(false)
