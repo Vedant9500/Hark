@@ -203,9 +203,11 @@ Also:
 ### Theming
 
 - Default Tokyo Night–style palette
-- Live theme from **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`)
+- Live theme from the active rice: **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`) or **Impasto** (`dynamic-colors.json` for adaptive, `Palettes.qml` for curated palettes), selected by `~/.rice/state/current`; a show-path fingerprint check repaints even if a monitor event was missed
+- Follows the active rice's transparency switch (Caelestia `shell.json`, or Impasto's `surfaceStyle` where `classic` is solid) and Hyprland's blur enable flag: if either is off the panel is forced opaque, not a translucent unblurred sheet
+- Keeps Hyprland's layer `ignore_alpha` in sync with the opacity slider (runtime rule `hark-blur-sync`), so lowering opacity no longer silently kills blur
 - **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
-- Hot-reloads on file change via FileMonitor (applies once immediately if monitoring is unavailable)
+- Hot-reloads on palette, rice switch, or appearance config change via FileMonitor
 - Custom GTK CSS for launcher chrome
 
 ---
@@ -277,7 +279,7 @@ Positions near ~20% from the top of the focused monitor.
 | `providers/web` | Web-search fallback (zero I/O until Enter) |
 | `providers/define` | Inline definitions (Wikipedia → DDG, disk-cached) |
 | `ui/*` | Window, rows, preview, DnD, settings, action panel, footer |
-| `theme` | Caelestia + CSS |
+| `theme` | Caelestia / Impasto + CSS |
 | `config` | Index settings + mounts |
 | `usage` | Frecency |
 | `ipc` | Unix socket toggle |

@@ -52,12 +52,25 @@ fn rgba(hex: &str, alpha: f32) -> String {
 }
 
 pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
+    render_with_opacity(theme, ui, ui.opacity)
+}
+
+/// Render with an explicit shell alpha.
+///
+/// `ThemeManager` passes the *effective* opacity here: a desktop with
+/// transparency or blur switched off forces the card opaque even though the
+/// user's saved slider value is lower.
+pub fn render_with_opacity(
+    theme: &Theme,
+    ui: &crate::config::UiThemeConfig,
+    opacity: f32,
+) -> String {
     // `clamp` passes NaN through (all comparisons false), which would emit
     // `NaNpx` / `rgba(..., NaN)` — invalid CSS that GTK drops. JSON cannot
     // express NaN, but guard anyway so a corrupt in-memory value degrades to
     // defaults instead of an unstyled panel.
-    let base = if ui.opacity.is_finite() {
-        ui.opacity.clamp(0.40, 1.0)
+    let base = if opacity.is_finite() {
+        opacity.clamp(0.40, 1.0)
     } else {
         0.85
     };
@@ -1547,5 +1560,24 @@ mod tests {
             .next()
             .unwrap();
         assert!(body_rule.contains("font-size: 14.0px;"), "{body_rule}");
+    }
+
+    #[test]
+    fn test_render_with_forced_opaque_shell() {
+        // System transparency/blur off → ThemeManager passes 1.0 even when the
+        // saved slider is lower. The shell fill must be fully opaque.
+        let theme = Theme::fallback();
+        let css = render_with_opacity(&theme, &UiThemeConfig::default(), 1.0);
+        let shell_rule = css
+            .split("window.hark-window .hark-shell {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(
+            shell_rule.contains("background-color: rgba(36, 40, 59, 1);"),
+            "{shell_rule}"
+        );
     }
 }

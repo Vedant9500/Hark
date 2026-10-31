@@ -1629,6 +1629,7 @@ impl Launcher {
         if let Some(id) = self.warm_delay.borrow_mut().take() {
             id.remove();
         }
+        self.theme.refresh_if_needed();
         self.window.set_opacity(1.0);
         set_keyboard_mode_exclusive(&self.window);
         // Re-center: the pointer may have moved to another monitor since warm.
@@ -1663,6 +1664,8 @@ impl Launcher {
         if let Some(id) = self.preview_clear.borrow_mut().take() {
             id.remove();
         }
+        // Re-read the system theme if the file monitor missed a change.
+        self.theme.refresh_if_needed();
         self.shell.remove_css_class("hark-anim-out");
         if kind == ShowKind::Real {
             self.ignore_focus_loss.set(true);

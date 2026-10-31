@@ -2,9 +2,14 @@
 --
 -- Why: Hyprland blurs the full rectangular layer surface. ignore_alpha decides
 -- which pixels frost: 0.8 sits above the card's AA edge (0.1-0.8) so corners
--- stay unblurred wallpaper while the 0.85 interior stays frosted, even at the
--- lowest opacity slider (0.40). Square corner BLOCKS are a different bug —
--- an outer CSS box-shadow clipped by the surface buffer (see
+-- stay unblurred wallpaper while the 0.85 interior stays frosted.
+--
+-- This 0.8 is the fallback for the default 0.85 shell. Hark keeps a runtime
+-- rule named `hark-blur-sync` in step with the opacity slider (0.38 at the
+-- 0.40 floor), because a fixed 0.8 silently disables blur below 0.8 opacity.
+-- The runtime rule only sets ignore_alpha; it never re-enables blur or
+-- overrides xray/no_anim. Square corner BLOCKS are a different bug — an outer
+-- CSS box-shadow clipped by the surface buffer (see
 -- docs/hyprland-layer-corners.md); never fix those here.
 
 -- Hark frosted glass: wiki https://wiki.hypr.land/Configuring/Basics/Window-Rules/
