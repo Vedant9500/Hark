@@ -2094,6 +2094,74 @@ fn build_appearance_page(
 
     panel_card.append(&Separator::new(Orientation::Horizontal));
 
+    // Frost: Hark-local haze over the compositor blur. Hyprland only exposes
+    // blur on/off per layer, so strength lives here instead of a global
+    // `decoration:blur:size` write that would change every other window.
+    let frost_row = setting_row(
+        "Frost",
+        Some(&format!("{:.0}% haze over the backdrop", ui.frost * 100.0)),
+    );
+    let frost_stepper = GtkBox::new(Orientation::Horizontal, 4);
+    frost_stepper.set_valign(gtk::Align::Center);
+    let fr_dec = Button::with_label("−");
+    fr_dec.add_css_class("hark-settings-btn");
+    fr_dec.add_css_class("hark-settings-icon-btn");
+    let fr_val = Label::new(Some(&format!("{:.0}%", ui.frost * 100.0)));
+    fr_val.add_css_class("hark-settings-stepper-val");
+    fr_val.set_width_chars(4);
+    let fr_inc = Button::with_label("+");
+    fr_inc.add_css_class("hark-settings-btn");
+    fr_inc.add_css_class("hark-settings-icon-btn");
+    frost_stepper.append(&fr_dec);
+    frost_stepper.append(&fr_val);
+    frost_stepper.append(&fr_inc);
+    frost_row.append(&frost_stepper);
+    panel_card.append(&frost_row);
+
+    let frost_hint = frost_row
+        .first_child()
+        .and_then(|c| c.last_child())
+        .and_then(|c| c.downcast::<Label>().ok());
+
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let fr_val = fr_val.clone();
+        let frost_hint = frost_hint.clone();
+        fr_dec.connect_clicked(move |_| {
+            let mut next = 0.35f32;
+            engine.config().update(|c| {
+                next = ((c.ui.frost * 100.0).round() - 5.0).max(0.0) / 100.0;
+                c.ui.frost = next;
+            });
+            fr_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &frost_hint {
+                h.set_text(&format!("{:.0}% haze over the backdrop", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+    {
+        let engine = engine.clone();
+        let theme = theme.clone();
+        let fr_val = fr_val.clone();
+        let frost_hint = frost_hint.clone();
+        fr_inc.connect_clicked(move |_| {
+            let mut next = 0.35f32;
+            engine.config().update(|c| {
+                next = ((c.ui.frost * 100.0).round() + 5.0).min(100.0) / 100.0;
+                c.ui.frost = next;
+            });
+            fr_val.set_text(&format!("{:.0}%", next * 100.0));
+            if let Some(h) = &frost_hint {
+                h.set_text(&format!("{:.0}% haze over the backdrop", next * 100.0));
+            }
+            theme.reload();
+        });
+    }
+
+    panel_card.append(&Separator::new(Orientation::Horizontal));
+
     // Corner radius
     let radius_row = setting_row("Corner radius", Some(&format!("{}px", ui.radius)));
     let radius_stepper = GtkBox::new(Orientation::Horizontal, 4);
@@ -2391,7 +2459,7 @@ fn build_appearance_page(
     reset_card.add_css_class("hark-settings-card");
     let reset_row = setting_row(
         "Restore defaults",
-        Some("Opacity, accent, font, icons, radius, layout"),
+        Some("Opacity, frost, accent, font, icons, radius, layout"),
     );
     let reset_btn = Button::with_label("Reset appearance");
     reset_btn.add_css_class("hark-settings-btn");
@@ -2400,12 +2468,14 @@ fn build_appearance_page(
         let theme = theme.clone();
         let accent_entry = accent_entry.clone();
         let op_val = op_val.clone();
+        let fr_val = fr_val.clone();
         let r_val = r_val.clone();
         let f_val = f_val.clone();
         let i_val = i_val.clone();
         let layout_cb = layout_cb.clone();
         let sym_cb = sym_cb.clone();
         let opacity_hint = opacity_hint.clone();
+        let frost_hint = frost_hint.clone();
         let radius_hint = radius_hint.clone();
         let font_hint = font_hint.clone();
         let icon_hint = icon_hint.clone();
@@ -2418,6 +2488,10 @@ fn build_appearance_page(
             op_val.set_text(&format!("{:.0}%", def.opacity * 100.0));
             if let Some(h) = &opacity_hint {
                 h.set_text(&format!("{:.0}% opaque", def.opacity * 100.0));
+            }
+            fr_val.set_text(&format!("{:.0}%", def.frost * 100.0));
+            if let Some(h) = &frost_hint {
+                h.set_text(&format!("{:.0}% haze over the backdrop", def.frost * 100.0));
             }
             r_val.set_text(&format!("{}", def.radius));
             if let Some(h) = &radius_hint {
@@ -2448,9 +2522,9 @@ fn build_appearance_page(
     body.append(&reset_card);
 
     let note = Label::new(Some(
-        "Base colours come from Caelestia (~/.local/state/caelestia/scheme.json). \
-         Accent override only changes the highlight colour. Icon size applies on the next \
-         search refresh.",
+        "Base colours come from the active rice palette (Caelestia scheme.json or \
+         Impasto dynamic colours). Accent override only changes the highlight colour. \
+         Icon size applies on the next search refresh.",
     ));
     note.add_css_class("hark-hint");
     note.set_halign(gtk::Align::Start);

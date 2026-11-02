@@ -51,6 +51,41 @@ fn rgba(hex: &str, alpha: f32) -> String {
     format!("rgba({r}, {g}, {b}, {alpha})")
 }
 
+/// Shell fill with Hark's local frost applied.
+///
+/// Hyprland's layer rules only expose blur on/off; the blur radius
+/// (`decoration:blur:size`/`passes`) is compositor-global. Frost is therefore
+/// Hark's own readability control: blend the shell toward the elevated
+/// `surface_container_high` tone and raise its alpha at the same time, veiling
+/// the blurred backdrop without touching desktop-wide blur settings.
+fn frosted_shell(theme: &Theme, base: f32, frost: f32) -> String {
+    if !frost.is_finite() {
+        return rgba(&theme.surface_container, base);
+    }
+    let frost = frost.clamp(0.0, 1.0);
+    // Opaque shells have no backdrop left to veil; keep the exact system
+    // fallback colour rather than tinting it toward the elevated tone.
+    if frost <= 0.0 || base >= 0.995 {
+        return rgba(&theme.surface_container, base);
+    }
+
+    let (r1, g1, b1) = rgb_bytes(&theme.surface_container);
+    let (r2, g2, b2) = rgb_bytes(&theme.surface_container_high);
+    let mix = |a: u8, b: u8| -> u8 {
+        (a as f32 + (b as f32 - a as f32) * frost)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    // `base` and `frost` are independent alpha layers over the backdrop.
+    let alpha = 1.0 - (1.0 - base) * (1.0 - frost);
+    format!(
+        "rgba({}, {}, {}, {alpha})",
+        mix(r1, r2),
+        mix(g1, g2),
+        mix(b1, b2)
+    )
+}
+
 pub fn render(theme: &Theme, ui: &crate::config::UiThemeConfig) -> String {
     render_with_opacity(theme, ui, ui.opacity)
 }
@@ -125,7 +160,7 @@ pub fn render_with_opacity(
         "box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.09);"
     };
 
-    let shell_bg = rgba(&theme.surface_container, base);
+    let shell_bg = frosted_shell(theme, base, ui.frost);
     // Transparent twin of shell_bg for the settings scroll-edge fades.
     let shell_bg_clear = rgba(&theme.surface_container, 0.0);
     // Half-strength head of the fade gradient (user-tuned: full shell tone
@@ -216,6 +251,11 @@ window.hark-window .hark-shell stack > * {{
    bottom grounds the card so the list reads as sitting INSIDE it. */
 window.hark-window .hark-shell {{
   background-color: {shell_bg};
+  /* GTK 4.24 advertises ext-background-effect-v1 and only registers a blur
+     region when a backdrop filter's radius crosses gsk's 20px threshold
+     (radius = 2 * blur sigma). Without this the compositor sees an empty
+     region and CLayerSurface::shouldBlur() ignores the layer rule entirely. */
+  backdrop-filter: blur(20px);
   background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.08));
   border: 1px solid {border};
   border-radius: {radius}px;
@@ -1563,11 +1603,88 @@ mod tests {
     }
 
     #[test]
+    fn test_frost_veils_shell_and_tints_toward_elevated_tone() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig {
+            opacity: 0.80,
+            frost: 0.50,
+            ..Default::default()
+        };
+        let css = render(&theme, &ui);
+        let shell_rule = css
+            .split("window.hark-window .hark-shell {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        let bg = shell_rule
+            .split("background-color: ")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        // Halfway from #24283b toward #2a3048.
+        assert!(bg.starts_with("rgba(39, 44, 66, "), "{bg}");
+        // Alpha layers compose: 1 - (1 - 0.80)(1 - 0.50) = 0.90.
+        let alpha: f32 = bg
+            .trim_end_matches(')')
+            .rsplit(',')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!((alpha - 0.90).abs() < 0.001, "{alpha}");
+    }
+
+    #[test]
+    fn test_zero_frost_keeps_the_clear_glass_fill() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig {
+            opacity: 0.80,
+            frost: 0.0,
+            ..Default::default()
+        };
+        let css = render(&theme, &ui);
+        let shell_rule = css
+            .split("window.hark-window .hark-shell {")
+            .nth(1)
+            .unwrap()
+            .split("}\n")
+            .next()
+            .unwrap();
+        assert!(
+            shell_rule.contains("background-color: rgba(36, 40, 59, 0.8);"),
+            "{shell_rule}"
+        );
+    }
+
+    #[test]
+    fn test_non_finite_frost_does_not_leak_into_css() {
+        let theme = Theme::fallback();
+        let ui = UiThemeConfig {
+            opacity: 0.80,
+            frost: f32::NAN,
+            ..Default::default()
+        };
+        let css = render(&theme, &ui);
+        assert!(!css.contains("NaN"), "{css}");
+        assert!(css.contains("window.hark-window .hark-shell"));
+    }
+
+    #[test]
     fn test_render_with_forced_opaque_shell() {
         // System transparency/blur off → ThemeManager passes 1.0 even when the
-        // saved slider is lower. The shell fill must be fully opaque.
+        // saved slider is lower. The shell fill must be fully opaque and must
+        // not pick up the frost tint (there is no backdrop left to veil).
         let theme = Theme::fallback();
-        let css = render_with_opacity(&theme, &UiThemeConfig::default(), 1.0);
+        let ui = UiThemeConfig {
+            frost: 1.0,
+            ..Default::default()
+        };
+        let css = render_with_opacity(&theme, &ui, 1.0);
         let shell_rule = css
             .split("window.hark-window .hark-shell {")
             .nth(1)

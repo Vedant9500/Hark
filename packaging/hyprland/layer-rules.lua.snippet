@@ -9,7 +9,10 @@
 -- 0.40 floor), because a fixed 0.8 silently disables blur below 0.8 opacity.
 -- The runtime rule also enables blur for `namespace:hark`, so the launcher is
 -- frosted even when a rice config (Impasto's default) ships no static hark
--- rule; it leaves xray/no_anim alone. Square corner BLOCKS are a different
+-- rule; it leaves xray/no_anim alone. Hark also sets
+-- `backdrop-filter: blur(20px)` on `.hark-shell` so GTK registers a blur
+-- region — without it Hyprland ignores this rule for Hark (see
+-- docs/hyprland-layer-corners.md). Square corner BLOCKS are a different
 -- bug — an outer CSS box-shadow clipped by the surface buffer (see
 -- docs/hyprland-layer-corners.md); never fix those here.
 

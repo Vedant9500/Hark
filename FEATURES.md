@@ -155,7 +155,7 @@ Examples:
 3. **Exclusions** — names always skipped
 4. **Default apps** — per-category open apps (images, video, audio, PDF, markdown, text, documents, archives); Hark-only, does not change system MIME
 5. **Display** — path style: **Label** vs **Drive** (`~/…` / `Windows C:…` style)
-6. **Appearance** — opacity, accent colour, font scale, icon size/style, corner radius
+6. **Appearance** — opacity, frost, accent colour, font scale, icon size/style, corner radius
 7. **Tools** — translate master switch; definitions toggle; web-search fallback (engine + custom URL); typo aliases management
 
 Also:
@@ -206,7 +206,9 @@ Also:
 - Live theme from the active rice: **Caelestia** `scheme.json` (`~/.local/state/caelestia/scheme.json`) or **Impasto** (`dynamic-colors.json` for adaptive, `Palettes.qml` for curated palettes), selected by `~/.rice/state/current`; a show-path fingerprint check repaints even if a monitor event was missed
 - Follows Caelestia's transparency switch (`shell.json`) and Hyprland's blur enable flag: if either is off the panel is forced opaque, not a translucent unblurred sheet. Impasto has no global switch, so Hark's own opacity slider applies there
 - Keeps Hyprland's layer blur and `ignore_alpha` in sync with the opacity slider (runtime rule `hark-blur-sync`), so the panel stays frosted even if the rice config has no static hark rule and lowering opacity no longer silently kills blur
-- **Appearance settings:** panel opacity, accent override, font scale, icon size, symbolic icons, corner radius
+- Registers a real blur region through GTK's `backdrop-filter` (`ext-background-effect-v1`), so Hyprland actually applies the layer rule instead of leaving background text crisp; blur radius stays compositor-global (`decoration:blur:size`/`passes`)
+- **Frost slider:** palette-tinted haze over the blurred backdrop, 0–100%; raises readability at low opacity without changing Hyprland's desktop-wide blur size/passes
+- **Appearance settings:** panel opacity, frost, accent override, font scale, icon size, symbolic icons, corner radius
 - Hot-reloads on palette, rice switch, or appearance config change via FileMonitor
 - Custom GTK CSS for launcher chrome
 

@@ -376,6 +376,12 @@ pub struct UiThemeConfig {
     /// Panel shell opacity 0.40–1.0 (default 0.85).
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    /// Extra frost/haze over the blurred backdrop, 0.0–1.0 (default 0.35).
+    /// `0.0` keeps the clear-glass look; higher values tint the shell toward
+    /// `surface_container_high` and lift its alpha, so background text stops
+    /// bleeding through without changing Hyprland's global blur strength.
+    #[serde(default = "default_frost")]
+    pub frost: f32,
     /// Optional accent override (`#rrggbb`). Empty = scheme primary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
@@ -406,6 +412,9 @@ pub struct UiThemeConfig {
 fn default_opacity() -> f32 {
     0.85
 }
+fn default_frost() -> f32 {
+    0.35
+}
 fn default_font_scale() -> f32 {
     1.0
 }
@@ -420,6 +429,7 @@ impl Default for UiThemeConfig {
     fn default() -> Self {
         Self {
             opacity: default_opacity(),
+            frost: default_frost(),
             accent: None,
             font_scale: default_font_scale(),
             icon_size: default_icon_size(),
@@ -436,6 +446,11 @@ impl UiThemeConfig {
     /// Clamp all fields into safe ranges (settings + load path).
     pub fn sanitize(&mut self) {
         self.opacity = self.opacity.clamp(0.40, 1.0);
+        self.frost = if self.frost.is_finite() {
+            self.frost.clamp(0.0, 1.0)
+        } else {
+            default_frost()
+        };
         self.font_scale = self.font_scale.clamp(0.85, 1.30);
         self.icon_size = self.icon_size.clamp(18, 36);
         self.radius = self.radius.clamp(8, 24);
@@ -2331,5 +2346,27 @@ mod ui_config_tests {
 
         // Settings "reset appearance" keeps the default on.
         assert!(UiThemeConfig::default().ghost_warmup);
+    }
+
+    #[test]
+    fn ui_frost_defaults_and_sanitizes() {
+        // Older configs predate the field: missing frost uses the shipped haze.
+        let ui: UiThemeConfig = serde_json::from_str(r#"{"opacity":0.9}"#).unwrap();
+        assert_eq!(ui.frost, default_frost());
+
+        let mut ui = UiThemeConfig {
+            frost: 2.0,
+            ..Default::default()
+        };
+        ui.sanitize();
+        assert_eq!(ui.frost, 1.0);
+
+        ui.frost = -1.0;
+        ui.sanitize();
+        assert_eq!(ui.frost, 0.0);
+
+        ui.frost = f32::NAN;
+        ui.sanitize();
+        assert_eq!(ui.frost, default_frost());
     }
 }
